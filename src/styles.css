@@ -168,8 +168,18 @@ button.active {
 }
 
 .actions .icon-btn {
+  border: 1px solid var(--line-strong);
+  background: #ffffff;
+  color: var(--text);
+  border-radius: 8px;
   padding: 0 10px;
   min-height: 32px;
+  text-decoration: none;
+}
+
+.actions .icon-btn:hover {
+  border-color: var(--accent);
+  background: #f9fcff;
 }
 
 .actions .icon-btn:disabled {
@@ -184,6 +194,10 @@ button.active {
 
 .actions .btn-label {
   font-weight: 600;
+}
+
+.github-link .btn-icon {
+  color: #24292f;
 }
 
 #overlay {
