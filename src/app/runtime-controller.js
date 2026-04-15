@@ -138,6 +138,21 @@ export class RuntimeController {
     return this.canonicalModel.getOperations();
   }
 
+  async ensureDefaultModel() {
+    if (this.canonicalModel.getOperations().length > 0) {
+      return {
+        canonicalCode: this.canonicalModel.toTypeScriptModule(),
+        operations: this.canonicalModel.getOperations(),
+      };
+    }
+
+    const result = await this.commitOperation(createDefaultBoxOperation());
+    return {
+      ...result,
+      operations: this.canonicalModel.getOperations(),
+    };
+  }
+
   async clearCanonicalModel() {
     this.cancelManipulation();
     this.canonicalModel.clear();
@@ -161,6 +176,20 @@ export class RuntimeController {
     }
     return this._activeSession;
   }
+}
+
+function createDefaultBoxOperation() {
+  return {
+    type: "create_primitive",
+    targetId: null,
+    selection: null,
+    params: {
+      primitive: "box",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+      objectId: "obj_1",
+    },
+  };
 }
 
 function compressAdjacentTransforms(operations) {

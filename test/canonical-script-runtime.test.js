@@ -239,6 +239,25 @@ test("runtime loads persisted script on clean slate and persists on commit", asy
   assertNoBehaviorComments(scriptStore.saved[0]);
 });
 
+test("runtime creates a default cube when no model script exists", async () => {
+  const scriptStore = new InMemoryModelScriptStore();
+  const runtime = new RuntimeController({
+    canonicalModel: new CanonicalModel(),
+    representationStore: createRepresentationStore({}),
+    modelScriptStore: scriptStore,
+  });
+  runtime.initialize({ scene: null, seedSceneState: {} });
+
+  const loaded = await runtime.loadCanonicalModelFromStorage({ reload: true, cleanSlate: true });
+  assert.equal(loaded.length, 0);
+
+  const result = await runtime.ensureDefaultModel();
+  assert.equal(result.operations.length, 1);
+  assert.match(result.canonicalCode, /let obj_1 = r\.makeBox\(\[-0\.5, 0\.1, -0\.5\], \[0\.5, 1\.1, 0\.5\]\);/);
+  assert.match(scriptStore.script, /return obj_1;/);
+  assert.equal(runtime.getSnapshot().representation.exactSceneState.obj_1.primitive, "box");
+});
+
 test("runtime compresses adjacent translates for the same object into one direct translate call", async () => {
   const scriptStore = new InMemoryModelScriptStore();
   const modelExecutor = {

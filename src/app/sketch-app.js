@@ -114,10 +114,18 @@ export class SketchApp {
   }
 
   async start() {
-    const loadedOperations = await this.runtimeController.loadCanonicalModelFromStorage({
+    let loadedOperations = await this.runtimeController.loadCanonicalModelFromStorage({
       reload: true,
       cleanSlate: true,
     });
+    if (loadedOperations.length === 0) {
+      const defaultResult = await this.runtimeController.ensureDefaultModel();
+      loadedOperations = defaultResult.operations;
+      this.modelHistory.reset(defaultResult.canonicalCode ?? this.runtimeController.getSnapshot().canonicalCode, {
+        label: "Initial Cube",
+      });
+      await this._persistModelHistory();
+    }
     this._syncObjectCounterFromOperations(loadedOperations);
 
     const sessionState = await this._loadSessionState();
@@ -362,14 +370,7 @@ export class SketchApp {
           this.objectCounter = 1;
           this._setPanelPage("script");
           this._setGridVisible(false);
-          const result = await this.runtimeController.commitOperation(
-            createPrimitiveOperation({
-              primitive: "box",
-              position: { x: 0, y: 0.6, z: 0 },
-              size: { x: 1, y: 1, z: 1 },
-              objectId: "obj_1",
-            }),
-          );
+          const result = await this.runtimeController.ensureDefaultModel();
           this.modelHistory.reset(result?.canonicalCode ?? this.runtimeController.getSnapshot().canonicalCode, {
             label: "Reset",
           });
