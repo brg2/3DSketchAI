@@ -172,6 +172,11 @@ button.active {
   min-height: 32px;
 }
 
+.actions .icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .actions .btn-icon {
   width: 16px;
   height: 16px;
@@ -311,7 +316,7 @@ body.code-collapsed .code-panel {
 .settings-list {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 8px;
+  gap: 12px;
 }
 
 .settings-btn {
@@ -320,6 +325,40 @@ body.code-collapsed .code-panel {
   width: 100%;
   justify-content: flex-start;
   font-weight: 600;
+}
+
+.settings-field {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  color: #4f6580;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-field select,
+.settings-field input[type="range"] {
+  width: 100%;
+}
+
+.settings-field select {
+  min-height: 34px;
+  border: 1px solid #b7c4d3;
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 6px 8px;
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.settings-field output {
+  color: #1f7fc8;
+  font-size: 0.72rem;
+  text-transform: none;
 }
 
 .code-toggle {

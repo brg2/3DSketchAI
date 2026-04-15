@@ -29,6 +29,20 @@ Workflow:
 
 Agents must not preserve conflicting code.
 
+## Canonical Model Script Rule
+
+The user's model script must be executable TypeScript made only of real callable modeling code.
+
+Agents must not:
+
+- encode canonical model behavior in comments
+- parse comments into modeling actions
+- serialize hidden operation metadata into comments
+- introduce custom model-script sublanguages
+- inline generated helper implementations into the user's model script
+
+Every committed modeling behavior must appear as a direct function or method call. If Replicad does not expose a needed primitive directly, implement the callable pattern in the 3DSAI modeling library outside the user's model script, then emit a direct call to that library from the script.
+
 ## Intent File Protection
 
 `INTENT.md` is read-only for all agents.

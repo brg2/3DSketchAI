@@ -7,9 +7,12 @@ import { RuntimeController } from "./runtime-controller.js";
 import { RepresentationStore } from "../representation/representation-store.js";
 import { CanonicalModel } from "../modeling/canonical-model.js";
 import { ModelExecutor } from "../modeling/model-executor.js";
+import { ModelScriptHistory } from "../modeling/model-script-history.js";
 import { AppSessionStore } from "../persistence/app-session-store.js";
+import { ModelScriptHistoryStore } from "../persistence/model-script-history-store.js";
 import { createGroupingOperation, createPrimitiveOperation, mapToolGestureToOperation } from "../operation/operation-mapper.js";
 import { OPERATION_TYPES, SELECTION_MODES } from "../operation/operation-types.js";
+import { GROUND_THEMES, normalizeGroundTheme, normalizeTerrainVariation } from "../environment/ground-theme.js";
 
 const TOOL_CONFIG = [
   { id: "select", label: "Select", icon: "cursor" },
@@ -19,11 +22,17 @@ const TOOL_CONFIG = [
   { id: "pushPull", label: "Push/Pull", icon: "pushPull" },
 ];
 
+const DEFAULT_GROUND_THEME = GROUND_THEMES.FOREST;
+const DEFAULT_TERRAIN_VARIATION = 1;
+
 const STATIC_BUTTON_ICONS = Object.freeze({
+  undo: "undo",
+  redo: "redo",
   save: "save",
   load: "load",
   reset: "reset",
   primitive: "cube",
+  zoomExtents: "zoomExtents",
   group: "group",
   component: "component",
   object: "cube",
@@ -42,6 +51,9 @@ export class SketchApp {
     codeCompressButton,
     panelTabButtons,
     gridToggleButton,
+    groundThemeSelect,
+    terrainVariationInput,
+    terrainVariationValue,
     toolGrid,
   }) {
     this.canvas = canvas;
@@ -52,10 +64,16 @@ export class SketchApp {
     this.codeCompressButton = codeCompressButton;
     this.panelTabButtons = Array.isArray(panelTabButtons) ? panelTabButtons : [];
     this.gridToggleButton = gridToggleButton;
+    this.groundThemeSelect = groundThemeSelect;
+    this.terrainVariationInput = terrainVariationInput;
+    this.terrainVariationValue = terrainVariationValue;
     this.codeCopyResetTimer = null;
     this.codeCollapsed = false;
     this.panelPage = "script";
     this.appSessionStore = new AppSessionStore();
+    this.modelHistoryStore = new ModelScriptHistoryStore();
+    this.modelHistory = new ModelScriptHistory();
+    this.actionButtons = new Map();
     this.sessionPersistTimer = null;
     this.lastPersistedSessionSignature = "";
     this.isRestoringSession = false;
@@ -109,6 +127,8 @@ export class SketchApp {
       this._setSelectionMode(SELECTION_MODES.FACE, { render: false });
     }
     await this._persistSessionState();
+    await this._restoreModelHistory();
+    this._syncHistoryButtons();
 
     this._tick();
   }
@@ -139,6 +159,18 @@ export class SketchApp {
 
   _attachInputHandlers() {
     this.canvas.addEventListener("pointerdown", async (event) => {
+      if (event.button === 2 && event.shiftKey) {
+        if (this.viewport.beginCursorOrbit({ clientX: event.clientX, clientY: event.clientY })) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+        return;
+      }
+
+      if (event.button !== 0) {
+        return;
+      }
+
       const selectionResult = this.selectionPipeline.pick({
         clientX: event.clientX,
         clientY: event.clientY,
@@ -153,6 +185,10 @@ export class SketchApp {
       this._scheduleSessionPersist();
 
       if (!selectionResult.selection || !this.tools.canStartDrag()) {
+        if (this.viewport.beginCursorOrbit({ clientX: event.clientX, clientY: event.clientY, button: event.button })) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
         return;
       }
 
@@ -181,10 +217,16 @@ export class SketchApp {
         selection: op.selection,
         params: op.params,
       });
+      event.preventDefault();
+      event.stopImmediatePropagation();
       this._renderOverlay();
-    });
+    }, { capture: true });
 
     this.canvas.addEventListener("pointermove", (event) => {
+      if (event.buttons && (event.buttons & 1) === 0) {
+        return;
+      }
+
       const drag = this.tools.updateDrag({ x: event.clientX, y: event.clientY });
       if (!drag) {
         const hover = this.selectionPipeline.hover({
@@ -217,17 +259,47 @@ export class SketchApp {
       this._renderOverlay();
     });
 
+    this.canvas.addEventListener("contextmenu", (event) => {
+      if (event.shiftKey) {
+        event.preventDefault();
+      }
+    });
+
     window.addEventListener("pointerup", async () => {
       if (!this.tools.dragState) {
         return;
       }
 
       this.tools.endDrag();
-      await this.runtimeController.commitManipulation();
+      const result = await this.runtimeController.commitManipulation();
+      await this._recordModelHistory(result?.canonicalCode, "Manipulation");
       this.viewport.controls.enabled = true;
       this._applySelectionHighlights();
       this._renderOverlay();
       this._scheduleSessionPersist();
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (this._isEditableEventTarget(event.target)) {
+        return;
+      }
+
+      const modifier = event.metaKey || event.ctrlKey;
+      if (!modifier) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "z" && event.shiftKey) {
+        event.preventDefault();
+        void this.redoModel();
+      } else if (key === "z") {
+        event.preventDefault();
+        void this.undoModel();
+      } else if (key === "y") {
+        event.preventDefault();
+        void this.redoModel();
+      }
     });
   }
 
@@ -246,8 +318,19 @@ export class SketchApp {
     for (const button of document.querySelectorAll("[data-action]")) {
       button.classList.add("icon-btn");
       this._setButtonIcon(button, STATIC_BUTTON_ICONS[button.dataset.action], button.textContent.trim());
+      this.actionButtons.set(button.dataset.action, button);
       button.addEventListener("click", async () => {
         const action = button.dataset.action;
+        if (action === "undo") {
+          await this.undoModel();
+          return;
+        }
+
+        if (action === "redo") {
+          await this.redoModel();
+          return;
+        }
+
         if (action === "save") {
           await this.runtimeController.persistCanonicalModel();
           await this._persistSessionState();
@@ -262,6 +345,7 @@ export class SketchApp {
           });
           this._syncObjectCounterFromOperations(loadedOperations);
           this._applySessionState(await this._loadSessionState());
+          await this._recordModelHistory(this.runtimeController.getSnapshot().canonicalCode, "Load");
           this._applySelectionHighlights();
           this._renderOverlay();
           this._scheduleSessionPersist();
@@ -278,7 +362,7 @@ export class SketchApp {
           this.objectCounter = 1;
           this._setPanelPage("script");
           this._setGridVisible(false);
-          await this.runtimeController.commitOperation(
+          const result = await this.runtimeController.commitOperation(
             createPrimitiveOperation({
               primitive: "box",
               position: { x: 0, y: 0.6, z: 0 },
@@ -286,6 +370,10 @@ export class SketchApp {
               objectId: "obj_1",
             }),
           );
+          this.modelHistory.reset(result?.canonicalCode ?? this.runtimeController.getSnapshot().canonicalCode, {
+            label: "Reset",
+          });
+          await this._persistModelHistory();
           this.objectCounter = 2;
           this.selectionPipeline.selectedObjectIds = ["obj_1"];
           this._applySelectionHighlights();
@@ -296,6 +384,13 @@ export class SketchApp {
 
         if (action === "primitive") {
           await this.createPrimitive();
+          this._renderOverlay();
+          this._scheduleSessionPersist();
+          return;
+        }
+
+        if (action === "zoomExtents") {
+          this.viewport.zoomToObjectsExtents(this.representationStore.getSelectableMeshes());
           this._renderOverlay();
           this._scheduleSessionPersist();
           return;
@@ -333,7 +428,8 @@ export class SketchApp {
       objectId,
     });
 
-    await this.runtimeController.commitOperation(operation);
+    const result = await this.runtimeController.commitOperation(operation);
+    await this._recordModelHistory(result?.canonicalCode, "Create Primitive");
     this.selectionPipeline.selectedObjectIds = [objectId];
     this._applySelectionHighlights();
     this._scheduleSessionPersist();
@@ -350,7 +446,8 @@ export class SketchApp {
       groupId: `group_${Date.now()}`,
     });
 
-    await this.runtimeController.commitOperation(operation);
+    const result = await this.runtimeController.commitOperation(operation);
+    await this._recordModelHistory(result?.canonicalCode, "Group");
     this._scheduleSessionPersist();
   }
 
@@ -365,7 +462,8 @@ export class SketchApp {
       componentId: `component_${Date.now()}`,
     });
 
-    await this.runtimeController.commitOperation(operation);
+    const result = await this.runtimeController.commitOperation(operation);
+    await this._recordModelHistory(result?.canonicalCode, "Component");
     this._scheduleSessionPersist();
   }
 
@@ -436,29 +534,35 @@ export class SketchApp {
       };
     }
 
+    if (this.tools.activeTool === "rotate" && selectionResult?.selection?.mode === SELECTION_MODES.FACE) {
+      return {
+        mode: "face-rotate",
+        activeShift: Boolean(shiftKey),
+        startDx: 0,
+        baseAngles: { normal: 0, alternate: 0 },
+      };
+    }
+
     if (shiftKey) {
       const axis = new THREE.Vector3(0, 1, 0);
 
       const origin = hit.point.clone();
+      const movePlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -hit.point.y);
 
       return {
         mode: "move-axis",
         axis,
         origin,
-        movePlane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -hit.point.y),
+        movePlane,
         baseWorldDelta: new THREE.Vector3(0, 0, 0),
         startDy: event.clientY,
       };
     }
 
-    // SketchUp-like move: drag tracks the cursor on a horizontal plane.
+    // SketchUp-like move: drag tracks the cursor over the visible ground surface, with a plane fallback.
     const movePlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -hit.point.y);
     const startPoint =
-      this.selectionPipeline.pointOnPlane({
-        clientX: event.clientX,
-        clientY: event.clientY,
-        plane: movePlane,
-      }) ?? hit.point.clone();
+      this._moveSurfacePointFromEvent(event, movePlane) ?? hit.point.clone();
 
     return {
       mode: "move",
@@ -468,7 +572,7 @@ export class SketchApp {
   }
 
   _buildGestureFromDrag(event, drag) {
-    const gesture = { dx: drag.dx, dy: drag.dy };
+    const gesture = { dx: drag.dx, dy: drag.dy, shiftKey: event.shiftKey };
 
     if (this.tools.activeTool === "pushPull" && drag.context?.mode === "pushPull") {
       const currentDistance = this._axisDistanceFromPointer(event, drag.context.origin, drag.context.axis);
@@ -481,6 +585,30 @@ export class SketchApp {
       return gesture;
     }
 
+    if (this.tools.activeTool === "rotate" && drag.context?.mode === "face-rotate") {
+      const wantsAlternateAxis = Boolean(event.shiftKey);
+      if (wantsAlternateAxis !== drag.context.activeShift) {
+        const previousKey = drag.context.activeShift ? "alternate" : "normal";
+        const previousDelta = Math.round(((drag.dx - drag.context.startDx) * 0.01) * 1000) / 1000;
+        drag.context.baseAngles[previousKey] += previousDelta;
+        drag.context.activeShift = wantsAlternateAxis;
+        drag.context.startDx = drag.dx;
+        if (this.tools.dragState) {
+          this.tools.dragState.context = drag.context;
+        }
+      }
+
+      const activeKey = drag.context.activeShift ? "alternate" : "normal";
+      const activeDelta = Math.round(((drag.dx - drag.context.startDx) * 0.01) * 1000) / 1000;
+      return {
+        ...gesture,
+        faceTiltAngles: {
+          normal: drag.context.baseAngles.normal + (activeKey === "normal" ? activeDelta : 0),
+          alternate: drag.context.baseAngles.alternate + (activeKey === "alternate" ? activeDelta : 0),
+        },
+      };
+    }
+
     if (this.tools.activeTool !== "move") {
       return gesture;
     }
@@ -489,11 +617,7 @@ export class SketchApp {
     if (wantsAxisLock && drag.context?.mode !== "move-axis") {
       const axis = new THREE.Vector3(0, 1, 0);
       const movePlane = drag.context?.movePlane ?? new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-      const currentPoint = this.selectionPipeline.pointOnPlane({
-        clientX: event.clientX,
-        clientY: event.clientY,
-        plane: movePlane,
-      });
+      const currentPoint = this._moveSurfacePointFromEvent(event, movePlane);
       const startPoint = drag.context?.startPoint?.clone?.() ?? currentPoint?.clone?.() ?? drag.context?.origin?.clone?.() ?? new THREE.Vector3();
       const origin = startPoint.clone();
       const currentFreeDelta = drag.context?.baseWorldDelta?.clone?.() ?? new THREE.Vector3();
@@ -514,11 +638,7 @@ export class SketchApp {
       }
     } else if (!wantsAxisLock && drag.context?.mode === "move-axis") {
       const movePlane = drag.context.movePlane ?? new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-      const currentPoint = this.selectionPipeline.pointOnPlane({
-        clientX: event.clientX,
-        clientY: event.clientY,
-        plane: movePlane,
-      });
+      const currentPoint = this._moveSurfacePointFromEvent(event, movePlane);
       const dyFromToggle = event.clientY - (drag.context.startDy ?? event.clientY);
       const baseWorldDelta = drag.context.baseWorldDelta?.clone?.() ?? new THREE.Vector3();
       baseWorldDelta.y += Math.round((-dyFromToggle * 0.02) * 1000) / 1000;
@@ -551,11 +671,7 @@ export class SketchApp {
       return gesture;
     }
 
-    const currentPoint = this.selectionPipeline.pointOnPlane({
-      clientX: event.clientX,
-      clientY: event.clientY,
-      plane: movePlane,
-    });
+    const currentPoint = this._moveSurfacePointFromEvent(event, movePlane);
     if (!currentPoint) {
       return gesture;
     }
@@ -570,6 +686,20 @@ export class SketchApp {
         z: worldDelta.z,
       },
     };
+  }
+
+  _moveSurfacePointFromEvent(event, fallbackPlane) {
+    return (
+      this.viewport.pointOnGroundSurface({
+        clientX: event.clientX,
+        clientY: event.clientY,
+      }) ??
+      this.selectionPipeline.pointOnPlane({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        plane: fallbackPlane,
+      })
+    );
   }
 
   _axisDistanceFromPointer(event, origin, axis) {
@@ -682,6 +812,27 @@ export class SketchApp {
     const edgeMap = new Map();
 
     const getIndexAt = (idx) => (index ? index.getX(idx) : idx);
+    const vertexKeyCache = new Map();
+    const vertexKey = (idx) => {
+      const cached = vertexKeyCache.get(idx);
+      if (cached) {
+        return cached;
+      }
+      const point = new THREE.Vector3().fromBufferAttribute(position, idx);
+      const key = [
+        Math.round(point.x * 10000),
+        Math.round(point.y * 10000),
+        Math.round(point.z * 10000),
+      ].join(":");
+      vertexKeyCache.set(idx, key);
+      return key;
+    };
+    const edgeKey = (v0, v1) => {
+      const k0 = vertexKey(v0);
+      const k1 = vertexKey(v1);
+      return k0 < k1 ? `${k0}|${k1}` : `${k1}|${k0}`;
+    };
+
     for (let tri = 0; tri < triCount; tri += 1) {
       const base = tri * 3;
       const a = getIndexAt(base + 0);
@@ -700,7 +851,7 @@ export class SketchApp {
         [c, a],
       ];
       for (const [v0, v1] of edges) {
-        const key = v0 < v1 ? `${v0}:${v1}` : `${v1}:${v0}`;
+        const key = edgeKey(v0, v1);
         const list = edgeMap.get(key);
         if (list) {
           list.push(tri);
@@ -852,6 +1003,109 @@ export class SketchApp {
     this.objectCounter = Math.max(this.objectCounter, max + 1);
   }
 
+  async _restoreModelHistory() {
+    const currentCode = this.runtimeController.getSnapshot().canonicalCode;
+    try {
+      const snapshot = await this.modelHistoryStore.loadHistory();
+      if (snapshot) {
+        this.modelHistory.restore(snapshot);
+      }
+    } catch (error) {
+      console.warn("Failed to load model history", error);
+    }
+
+    const currentEntry = this.modelHistory.current();
+    if (!currentEntry || currentEntry.script !== currentCode) {
+      this.modelHistory.push(currentCode, { label: "Loaded Model" });
+      await this._persistModelHistory();
+      return;
+    }
+
+    this._syncHistoryButtons();
+  }
+
+  async _recordModelHistory(canonicalCode, label) {
+    const code = typeof canonicalCode === "string" ? canonicalCode : this.runtimeController.getSnapshot().canonicalCode;
+    this.modelHistory.push(code, { label });
+    await this._persistModelHistory();
+  }
+
+  async _persistModelHistory() {
+    this._syncHistoryButtons();
+    try {
+      await this.modelHistoryStore.saveHistory(this.modelHistory.snapshot());
+    } catch (error) {
+      console.warn("Failed to persist model history", error);
+    }
+  }
+
+  async undoModel() {
+    const entry = this.modelHistory.undo();
+    if (!entry) {
+      this._syncHistoryButtons();
+      return;
+    }
+    await this._applyModelHistoryEntry(entry);
+  }
+
+  async redoModel() {
+    const entry = this.modelHistory.redo();
+    if (!entry) {
+      this._syncHistoryButtons();
+      return;
+    }
+    await this._applyModelHistoryEntry(entry);
+  }
+
+  async _applyModelHistoryEntry(entry) {
+    if (!entry?.script) {
+      this._syncHistoryButtons();
+      return;
+    }
+
+    await this.runtimeController.reloadFromCanonicalCode(entry.script, { cleanSlate: true });
+    this._syncObjectCounterFromOperations(this.runtimeController.canonicalModel.getOperations());
+    this._dropInvalidSelections();
+    const canonicalCode = await this.runtimeController.persistCanonicalModel();
+    this.modelHistory.replaceCurrent(canonicalCode, { label: entry.label });
+    await this._persistModelHistory();
+    this._applySelectionHighlights();
+    this._renderOverlay();
+  }
+
+  _dropInvalidSelections() {
+    const selectable = new Set(
+      this.representationStore.getSelectableMeshes().map((mesh) => mesh.userData.objectId).filter(Boolean),
+    );
+    this.selectionPipeline.selectedObjectIds = this.selectionPipeline.selectedObjectIds.filter((id) => selectable.has(id));
+    if (this.hoveredObjectId && !selectable.has(this.hoveredObjectId)) {
+      this.hoveredObjectId = null;
+      this.hoveredHit = null;
+    }
+  }
+
+  _syncHistoryButtons() {
+    const undoButton = this.actionButtons.get("undo");
+    if (undoButton) {
+      undoButton.disabled = !this.modelHistory.canUndo();
+      undoButton.setAttribute("aria-disabled", String(undoButton.disabled));
+    }
+
+    const redoButton = this.actionButtons.get("redo");
+    if (redoButton) {
+      redoButton.disabled = !this.modelHistory.canRedo();
+      redoButton.setAttribute("aria-disabled", String(redoButton.disabled));
+    }
+  }
+
+  _isEditableEventTarget(target) {
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+    const tagName = target.tagName.toLowerCase();
+    return target.isContentEditable || tagName === "input" || tagName === "textarea" || tagName === "select";
+  }
+
   _attachCodePanelHandlers() {
     if (!this.codeToggle || !this.codePanel) {
       return;
@@ -891,6 +1145,28 @@ export class SketchApp {
       });
     }
 
+    if (this.groundThemeSelect) {
+      this.groundThemeSelect.addEventListener("change", () => {
+        this._setGroundTheme({
+          theme: this.groundThemeSelect.value,
+          terrainVariation: this.terrainVariationInput?.value,
+        });
+        void this._persistSessionState();
+      });
+    }
+
+    if (this.terrainVariationInput) {
+      this.terrainVariationInput.addEventListener("input", () => {
+        this._setGroundTheme({
+          theme: this.groundThemeSelect?.value,
+          terrainVariation: this.terrainVariationInput.value,
+        });
+      });
+      this.terrainVariationInput.addEventListener("change", () => {
+        void this._persistSessionState();
+      });
+    }
+
     this.codeToggle.addEventListener("click", () => {
       this._setCodePanelCollapsed(!this.codeCollapsed);
       void this._persistSessionState();
@@ -899,6 +1175,7 @@ export class SketchApp {
     this._setCodePanelCollapsed(false);
     this._setPanelPage("script");
     this._setGridVisible(false);
+    this._setGroundTheme({ theme: DEFAULT_GROUND_THEME, terrainVariation: DEFAULT_TERRAIN_VARIATION });
   }
 
   _setCodePanelCollapsed(collapsed) {
@@ -932,6 +1209,25 @@ export class SketchApp {
       this.gridToggleButton.textContent = `Ground Grid: ${isVisible ? "On" : "Off"}`;
       this.gridToggleButton.setAttribute("aria-pressed", String(isVisible));
       this.gridToggleButton.classList.toggle("active", isVisible);
+    }
+  }
+
+  _setGroundTheme({ theme = DEFAULT_GROUND_THEME, terrainVariation = DEFAULT_TERRAIN_VARIATION } = {}) {
+    const normalizedTheme = normalizeGroundTheme(theme);
+    const normalizedVariation = normalizeTerrainVariation(terrainVariation);
+    this.viewport.setGroundTheme({
+      theme: normalizedTheme,
+      terrainVariation: normalizedVariation,
+    });
+
+    if (this.groundThemeSelect) {
+      this.groundThemeSelect.value = normalizedTheme;
+    }
+    if (this.terrainVariationInput) {
+      this.terrainVariationInput.value = String(normalizedVariation);
+    }
+    if (this.terrainVariationValue) {
+      this.terrainVariationValue.textContent = `${Math.round(normalizedVariation * 100)}%`;
     }
   }
 
@@ -992,6 +1288,7 @@ export class SketchApp {
       scene: {
         objectCounter: this.objectCounter,
         gridVisible: this.viewport.isGridVisible(),
+        groundTheme: this.viewport.getGroundThemeState(),
       },
     };
   }
@@ -1014,6 +1311,9 @@ export class SketchApp {
       this._setCodePanelCollapsed(Boolean(state?.ui?.codeCollapsed));
       this._setPanelPage(state?.ui?.panelPage ?? "script");
       this._setGridVisible(Boolean(state?.scene?.gridVisible));
+      this._setGroundTheme(
+        state?.scene?.groundTheme ?? { theme: DEFAULT_GROUND_THEME, terrainVariation: DEFAULT_TERRAIN_VARIATION },
+      );
 
       const selectable = new Set(
         this.representationStore.getSelectableMeshes().map((mesh) => mesh.userData.objectId).filter(Boolean),
@@ -1137,7 +1437,8 @@ export class SketchApp {
     }
 
     try {
-      await this.runtimeController.compressCanonicalModel();
+      const result = await this.runtimeController.compressCanonicalModel();
+      await this._recordModelHistory(result?.canonicalCode, "Compress");
       this._setCodeToolButtonState(this.codeCompressButton, "compressed", "Compressed");
       this._applySelectionHighlights();
       this._renderOverlay();
@@ -1232,6 +1533,10 @@ function iconSvg(name) {
       return svg('<rect x="4" y="4" width="8" height="8"/><rect x="12" y="12" width="8" height="8"/><path d="M11 13l2-2"/>');
     case "pushPull":
       return svg('<rect x="4" y="13" width="16" height="7"/><path d="M12 4v10"/><path d="M9 7l3-3 3 3"/>');
+    case "undo":
+      return svg('<path d="M9 7H4v5"/><path d="M4 12a7 7 0 101.9-4.8L4 9"/>');
+    case "redo":
+      return svg('<path d="M15 7h5v5"/><path d="M20 12a7 7 0 11-1.9-4.8L20 9"/>');
     case "save":
       return svg('<path d="M5 4h12l2 2v14H5z"/><path d="M8 4v6h8V4"/><path d="M9 16h6"/>');
     case "load":
@@ -1240,6 +1545,8 @@ function iconSvg(name) {
       return svg('<path d="M4 12a8 8 0 111.9 5.2"/><path d="M4 4v5h5"/>');
     case "cube":
       return svg('<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 3v18"/><path d="M4 7.5l8 4.5 8-4.5"/>');
+    case "zoomExtents":
+      return svg('<path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/><path d="M8 12h8"/><path d="M12 8v8"/>');
     case "group":
       return svg('<rect x="3" y="4" width="8" height="8"/><rect x="13" y="4" width="8" height="8"/><rect x="8" y="13" width="8" height="8"/>');
     case "component":

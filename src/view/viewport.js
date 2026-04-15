@@ -1,5 +1,11 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import {
+  GROUND_THEMES,
+  createGroundThemeGroup,
+  normalizeGroundTheme,
+  normalizeTerrainVariation,
+} from "../environment/ground-theme.js";
 
 export class Viewport {
   constructor({ canvas }) {
@@ -10,7 +16,11 @@ export class Viewport {
     this._zoomFocusPoint = null;
     this._zoomRaycaster = new THREE.Raycaster();
     this._zoomPointer = new THREE.Vector2();
+    this._cursorOrbit = null;
     this.gridHelper = null;
+    this.groundThemeGroup = null;
+    this.groundTheme = GROUND_THEMES.FOREST;
+    this.terrainVariation = 1;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0xeef3f8);
@@ -27,6 +37,7 @@ export class Viewport {
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    this.controls.panSpeed = 2.75;
     // OrbitControls wheel zoom is discrete; we apply our own eased zoom.
     this.controls.enableZoom = false;
     this._attachSmoothZoomHandlers();
@@ -61,16 +72,31 @@ export class Viewport {
     this.gridHelper = new THREE.GridHelper(100, 100, 0x90a4ba, 0xc9d5e1);
     this.scene.add(this.gridHelper);
 
-    const plane = new THREE.Mesh(
-      new THREE.PlaneGeometry(100, 100),
-      new THREE.MeshStandardMaterial({ color: 0xf3f6fa, roughness: 1.0, metalness: 0.0 }),
-    );
-    plane.rotation.x = -Math.PI / 2;
-    plane.position.y = -0.001;
-    plane.receiveShadow = true;
-    this.scene.add(plane);
-
+    this.setGroundTheme({ theme: GROUND_THEMES.FOREST, terrainVariation: 1 });
     this.setGridVisible(false);
+  }
+
+  setGroundTheme({ theme = this.groundTheme, terrainVariation = this.terrainVariation } = {}) {
+    this.groundTheme = normalizeGroundTheme(theme);
+    this.terrainVariation = normalizeTerrainVariation(terrainVariation);
+
+    if (this.groundThemeGroup) {
+      this.scene.remove(this.groundThemeGroup);
+      disposeObject3D(this.groundThemeGroup);
+    }
+
+    this.groundThemeGroup = createGroundThemeGroup({
+      theme: this.groundTheme,
+      terrainVariation: this.terrainVariation,
+    });
+    this.scene.add(this.groundThemeGroup);
+  }
+
+  getGroundThemeState() {
+    return {
+      theme: this.groundTheme,
+      terrainVariation: this.terrainVariation,
+    };
   }
 
   setGridVisible(visible) {
@@ -82,6 +108,198 @@ export class Viewport {
 
   isGridVisible() {
     return Boolean(this.gridHelper?.visible);
+  }
+
+  pointOnGroundSurface({ clientX, clientY } = {}) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+
+    this._zoomPointer.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this._zoomRaycaster.setFromCamera(this._zoomPointer, this.camera);
+
+    const groundSurfaces = [];
+    this.groundThemeGroup?.traverse((child) => {
+      if (child.visible !== false && child.userData?.groundSurface === true) {
+        groundSurfaces.push(child);
+      }
+    });
+
+    const hit = this._zoomRaycaster.intersectObjects(groundSurfaces, false)[0] ?? null;
+    return hit?.point?.clone?.() ?? null;
+  }
+
+  zoomToObjectsExtents(objects) {
+    const bounds = new THREE.Box3();
+    const objectList = Array.isArray(objects) ? objects : [];
+    for (const object of objectList) {
+      if (!object || object.visible === false || object.userData?.environment === true) {
+        continue;
+      }
+      bounds.expandByObject(object);
+    }
+
+    if (bounds.isEmpty()) {
+      return false;
+    }
+
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    bounds.getCenter(center);
+    bounds.getSize(size);
+
+    const radius = Math.max(size.length() * 0.5, 0.75);
+    const fov = THREE.MathUtils.degToRad(this.camera.fov);
+    const fitHeightDistance = radius / Math.sin(fov / 2);
+    const fitWidthDistance = fitHeightDistance / Math.max(this.camera.aspect, 0.001);
+    const defaultViewDistance = Math.hypot(6, 6, 8);
+    const distance = Math.max(fitHeightDistance, fitWidthDistance, defaultViewDistance);
+
+    const viewDirection = this.camera.position.clone().sub(this.controls.target);
+    if (viewDirection.lengthSq() < 1e-8) {
+      viewDirection.set(1, 1, 1);
+    }
+    viewDirection.normalize();
+
+    this.controls.target.copy(center);
+    this.camera.position.copy(center).add(viewDirection.multiplyScalar(distance));
+    this._zoomTargetDistance = null;
+    this._zoomFocusPoint = null;
+    this.camera.updateProjectionMatrix();
+    this.controls.update();
+    return true;
+  }
+
+  beginCursorOrbit({ clientX, clientY } = {}) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return false;
+    }
+
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const currentDistance = offset.length();
+    if (!Number.isFinite(currentDistance) || currentDistance <= 1e-6) {
+      return false;
+    }
+
+    const focusPoint = this._pickFocusPointAtClient({ clientX, clientY }, currentDistance);
+    if (!focusPoint) {
+      return false;
+    }
+
+    this._cursorOrbit = {
+      pivot: focusPoint,
+      startX: clientX,
+      startY: clientY,
+      startPosition: this.camera.position.clone(),
+      startQuaternion: this.camera.quaternion.clone(),
+      startTargetDistance: Math.max(currentDistance, 0.1),
+      targetYaw: 0,
+      targetPitch: 0,
+      currentYaw: 0,
+      currentPitch: 0,
+      velocityYaw: 0,
+      velocityPitch: 0,
+      dragging: true,
+    };
+    this.controls.enabled = false;
+    this._zoomTargetDistance = null;
+    this._zoomFocusPoint = null;
+
+    const move = (event) => this._updateCursorOrbit(event);
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      this._releaseCursorOrbit();
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
+    return true;
+  }
+
+  _updateCursorOrbit({ clientX, clientY } = {}) {
+    const orbit = this._cursorOrbit;
+    if (!orbit || !Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return;
+    }
+
+    const element = this.renderer.domElement;
+    const height = Math.max(element.clientHeight, 1);
+    const rotateSpeed = this.controls.rotateSpeed ?? 1;
+    const yaw = ((clientX - orbit.startX) * rotateSpeed * Math.PI * 2) / height;
+    const pitch = ((clientY - orbit.startY) * rotateSpeed * Math.PI * 2) / height;
+
+    orbit.velocityYaw = yaw - orbit.targetYaw;
+    orbit.velocityPitch = pitch - orbit.targetPitch;
+    orbit.targetYaw = yaw;
+    orbit.targetPitch = pitch;
+  }
+
+  _applyCursorOrbitStep() {
+    const orbit = this._cursorOrbit;
+    if (!orbit) {
+      return;
+    }
+
+    if (!orbit.dragging) {
+      orbit.targetYaw += orbit.velocityYaw;
+      orbit.targetPitch += orbit.velocityPitch;
+      orbit.velocityYaw *= 0.88;
+      orbit.velocityPitch *= 0.88;
+    }
+
+    const damping = orbit.dragging ? 0.28 : 0.16;
+    orbit.currentYaw += (orbit.targetYaw - orbit.currentYaw) * damping;
+    orbit.currentPitch += (orbit.targetPitch - orbit.currentPitch) * damping;
+
+    this._applyCursorOrbitAngles(orbit, orbit.currentYaw, orbit.currentPitch);
+
+    const yawRemaining = Math.abs(orbit.targetYaw - orbit.currentYaw);
+    const pitchRemaining = Math.abs(orbit.targetPitch - orbit.currentPitch);
+    const yawVelocity = Math.abs(orbit.velocityYaw);
+    const pitchVelocity = Math.abs(orbit.velocityPitch);
+    if (!orbit.dragging && yawRemaining < 0.0005 && pitchRemaining < 0.0005 && yawVelocity < 0.0005 && pitchVelocity < 0.0005) {
+      this._endCursorOrbit();
+    }
+  }
+
+  _applyCursorOrbitAngles(orbit, yaw, pitch) {
+    const startOffset = orbit.startPosition.clone().sub(orbit.pivot);
+    const worldUp = this.camera.up.clone().normalize();
+    const yawRotation = new THREE.Quaternion().setFromAxisAngle(worldUp, -yaw);
+    const startRight = new THREE.Vector3(1, 0, 0).applyQuaternion(orbit.startQuaternion).normalize();
+    const pitchAxis = startRight.applyQuaternion(yawRotation).normalize();
+    const pitchRotation = new THREE.Quaternion().setFromAxisAngle(pitchAxis, -pitch);
+    const rotation = pitchRotation.multiply(yawRotation);
+
+    this.camera.position.copy(orbit.pivot).add(startOffset.applyQuaternion(rotation));
+    this.camera.quaternion.copy(orbit.startQuaternion).premultiply(rotation);
+    this.camera.updateMatrixWorld();
+  }
+
+  _releaseCursorOrbit() {
+    if (!this._cursorOrbit) {
+      return;
+    }
+    this._cursorOrbit.dragging = false;
+  }
+
+  _endCursorOrbit() {
+    const orbit = this._cursorOrbit;
+    this._cursorOrbit = null;
+
+    const forward = new THREE.Vector3();
+    this.camera.getWorldDirection(forward);
+    const distance = orbit?.startTargetDistance ?? this.camera.position.distanceTo(this.controls.target);
+    this.controls.target.copy(this.camera.position).add(forward.multiplyScalar(Math.max(distance, 0.1)));
+    this.controls.enabled = true;
+    this.controls.update();
   }
 
   _attachSmoothZoomHandlers() {
@@ -115,7 +333,7 @@ export class Viewport {
       this._zoomTargetDistance = currentDistance;
     }
 
-    this._zoomFocusPoint = this._pickZoomFocusPoint(event, currentDistance);
+    this._zoomFocusPoint = this._pickFocusPointAtClient(event, currentDistance);
     const wheelSensitivity = 0.0012;
     const factor = Math.exp(normalizedDeltaY * wheelSensitivity);
     this._zoomTargetDistance = THREE.MathUtils.clamp(this._zoomTargetDistance * factor, minDistance, maxDistance);
@@ -162,15 +380,19 @@ export class Viewport {
     this.camera.position.copy(this.controls.target).add(offset);
   }
 
-  _pickZoomFocusPoint(event, currentDistance) {
+  _pickFocusPointAtClient({ clientX, clientY } = {}, currentDistance) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return null;
+    }
+
     const rect = this.renderer.domElement.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) {
       return null;
     }
 
     this._zoomPointer.set(
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
     );
     this._zoomRaycaster.setFromCamera(this._zoomPointer, this.camera);
 
@@ -209,8 +431,27 @@ export class Viewport {
 
   frame() {
     this.resize();
-    this._applySmoothZoomStep();
-    this.controls.update();
+    if (this._cursorOrbit) {
+      this._applyCursorOrbitStep();
+    } else {
+      this._applySmoothZoomStep();
+      this.controls.update();
+    }
     this.renderer.render(this.scene, this.camera);
   }
+}
+
+function disposeObject3D(object) {
+  object.traverse((child) => {
+    if (child.geometry) {
+      child.geometry.dispose();
+    }
+    if (Array.isArray(child.material)) {
+      for (const material of child.material) {
+        material.dispose();
+      }
+    } else if (child.material) {
+      child.material.dispose();
+    }
+  });
 }

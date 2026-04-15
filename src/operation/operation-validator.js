@@ -48,6 +48,12 @@ export function validateOperation(operation) {
     case OPERATION_TYPES.PUSH_PULL:
       assertNumber(params.distance, "params.distance");
       assertVector3(params.axis, "params.axis");
+      if (params.faceIndex !== undefined && params.faceIndex !== null) {
+        assertNumber(params.faceIndex, "params.faceIndex");
+      }
+      if (params.mode !== undefined && params.mode !== "move" && params.mode !== "extend") {
+        throw new Error("push_pull params.mode must be move|extend");
+      }
       break;
     case OPERATION_TYPES.GROUP:
       if (!params.groupId || typeof params.groupId !== "string") {

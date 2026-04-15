@@ -8,6 +8,9 @@ function cloneSceneState(sceneState) {
       position: { ...value.position },
       rotation: { ...value.rotation },
       scale: { ...value.scale },
+      faceTilts: Array.isArray(value.faceTilts) ? value.faceTilts.map((tilt) => structuredClone(tilt)) : [],
+      faceExtrudes: Array.isArray(value.faceExtrudes) ? value.faceExtrudes.map((extrude) => structuredClone(extrude)) : [],
+      faceExtensions: Array.isArray(value.faceExtensions) ? value.faceExtensions.map((extension) => structuredClone(extension)) : [],
       groupId: value.groupId ?? null,
       componentId: value.componentId ?? null,
     };
@@ -18,6 +21,15 @@ function cloneSceneState(sceneState) {
 function applyPushPullToState(state, params) {
   const axis = params.axis ?? { x: 0, y: 0, z: 1 };
   const distance = params.distance ?? 0;
+  if (state.primitive === "box" && params.mode === "extend") {
+    state.faceExtensions = [...(state.faceExtensions ?? []), makeFaceOperation(params)];
+    return;
+  }
+  if (state.primitive === "box" && !isAxisAligned(axis)) {
+    state.faceExtrudes = [...(state.faceExtrudes ?? []), makeFaceOperation(params)];
+    return;
+  }
+
   const axisEntries = [
     ["x", axis.x ?? 0],
     ["y", axis.y ?? 0],
@@ -33,6 +45,39 @@ function applyPushPullToState(state, params) {
 
   state.scale[dominantAxis] = nextScale;
   state.position[dominantAxis] += axisSign * (appliedDelta * 0.5);
+}
+
+function makeFaceOperation(params) {
+  const axis = normalizeAxis(params.axis ?? { x: 0, y: 0, z: 1 });
+  const faceAxis = dominantAxis(axis);
+  return {
+    faceIndex: Number.isInteger(params.faceIndex) ? params.faceIndex : null,
+    axis,
+    distance: params.distance ?? 0,
+    faceAxis,
+    faceSign: Math.sign(axis[faceAxis] ?? 0) || 1,
+  };
+}
+
+function normalizeAxis(axis) {
+  const length = Math.hypot(axis.x ?? 0, axis.y ?? 0, axis.z ?? 0);
+  if (length < 1e-8) return { x: 0, y: 0, z: 1 };
+  return { x: axis.x / length, y: axis.y / length, z: axis.z / length };
+}
+
+function dominantAxis(axis) {
+  const entries = [
+    ["x", axis.x ?? 0],
+    ["y", axis.y ?? 0],
+    ["z", axis.z ?? 0],
+  ];
+  entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  return entries[0][0];
+}
+
+function isAxisAligned(axis) {
+  const normalized = normalizeAxis(axis);
+  return [Math.abs(normalized.x), Math.abs(normalized.y), Math.abs(normalized.z)].filter((value) => value > 1e-4).length <= 1;
 }
 
 function replayOperations({ operations, sceneState, exactBackend }) {
@@ -51,9 +96,16 @@ function replayOperations({ operations, sceneState, exactBackend }) {
         break;
       case "rotate":
         if (target) {
-          target.rotation.x += operation.params.deltaEuler.x;
-          target.rotation.y += operation.params.deltaEuler.y;
-          target.rotation.z += operation.params.deltaEuler.z;
+          if (operation.selection?.mode === "face" && operation.params.faceTilt) {
+            const faceTilts = Array.isArray(operation.params.faceTilts)
+              ? operation.params.faceTilts
+              : [operation.params.faceTilt];
+            target.faceTilts = [...(target.faceTilts ?? []), ...faceTilts.map((tilt) => structuredClone(tilt))];
+          } else {
+            target.rotation.x += operation.params.deltaEuler.x;
+            target.rotation.y += operation.params.deltaEuler.y;
+            target.rotation.z += operation.params.deltaEuler.z;
+          }
         }
         break;
       case "scale":
@@ -76,6 +128,9 @@ function replayOperations({ operations, sceneState, exactBackend }) {
             position: { ...operation.params.position },
             rotation: { x: 0, y: 0, z: 0 },
             scale: { ...operation.params.size },
+            faceTilts: [],
+            faceExtrudes: [],
+            faceExtensions: [],
             groupId: null,
             componentId: null,
           };

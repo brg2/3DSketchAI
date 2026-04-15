@@ -101,7 +101,7 @@ export class RuntimeController {
 
   async compressCanonicalModel() {
     this.cancelManipulation();
-    const compressedOperations = compressAdjacentMoves(this.canonicalModel.getOperations());
+    const compressedOperations = compressAdjacentTransforms(this.canonicalModel.getOperations());
     this.canonicalModel.replaceCommittedOperations(compressedOperations);
     const canonicalCode = this.canonicalModel.toTypeScriptModule();
 
@@ -163,22 +163,175 @@ export class RuntimeController {
   }
 }
 
-function compressAdjacentMoves(operations) {
+function compressAdjacentTransforms(operations) {
   const compressed = [];
+  let run = null;
+  const objectScales = new Map();
 
   for (const operation of operations) {
-    const previous = compressed.at(-1);
-    if (operation.type === "move" && previous?.type === "move" && previous.targetId === operation.targetId) {
-      previous.params.delta.x = roundMillimeters(previous.params.delta.x + operation.params.delta.x);
-      previous.params.delta.y = roundMillimeters(previous.params.delta.y + operation.params.delta.y);
-      previous.params.delta.z = roundMillimeters(previous.params.delta.z + operation.params.delta.z);
+    if (isCompressibleTransform(operation)) {
+      if (!run || run.targetId !== operation.targetId) {
+        flushTransformRun(compressed, run);
+        run = createTransformRun(operation);
+      }
+      addToTransformRun(run, operation, objectScales);
       continue;
     }
 
+    flushTransformRun(compressed, run);
+    run = null;
     compressed.push(structuredClone(operation));
+    if (operation.type === "create_primitive" && operation.params.objectId) {
+      objectScales.set(operation.params.objectId, { ...operation.params.size });
+    }
   }
 
+  flushTransformRun(compressed, run);
   return compressed;
+}
+
+function isCompressibleTransform(operation) {
+  return (
+    operation?.type === "move" ||
+    operation?.type === "scale" ||
+    (operation?.type === "push_pull" && operation.params.mode !== "extend" && isAxisAligned(operation.params.axis))
+  );
+}
+
+function createTransformRun(operation) {
+  return {
+    targetId: operation.targetId,
+    selection: structuredClone(operation.selection ?? null),
+    scaleFactor: { x: 1, y: 1, z: 1 },
+    delta: { x: 0, y: 0, z: 0 },
+    hasScale: false,
+    hasMove: false,
+    operationCount: 0,
+  };
+}
+
+function addToTransformRun(run, operation, objectScales) {
+  run.operationCount += 1;
+  if (operation.type === "move") {
+    run.delta.x = roundMillimeters(run.delta.x + operation.params.delta.x);
+    run.delta.y = roundMillimeters(run.delta.y + operation.params.delta.y);
+    run.delta.z = roundMillimeters(run.delta.z + operation.params.delta.z);
+    run.hasMove = true;
+    return;
+  }
+
+  if (operation.type === "scale") {
+    const scale = {
+      x: effectiveScaleFactor(operation.params.scaleFactor.x),
+      y: effectiveScaleFactor(operation.params.scaleFactor.y),
+      z: effectiveScaleFactor(operation.params.scaleFactor.z),
+    };
+    addScaleToTransformRun(run, scale);
+    multiplyObjectScale(objectScales, operation.targetId, scale);
+    return;
+  }
+
+  const pushPullTransform = pushPullToTransform(operation, objectScales);
+  addScaleToTransformRun(run, pushPullTransform.scaleFactor);
+  run.delta.x = roundMillimeters(run.delta.x + pushPullTransform.delta.x);
+  run.delta.y = roundMillimeters(run.delta.y + pushPullTransform.delta.y);
+  run.delta.z = roundMillimeters(run.delta.z + pushPullTransform.delta.z);
+  objectScales.set(operation.targetId, pushPullTransform.nextScale);
+  run.hasMove = run.hasMove || !isZeroDelta(pushPullTransform.delta);
+}
+
+function addScaleToTransformRun(run, scaleFactor) {
+  run.scaleFactor.x = roundMillimeters(run.scaleFactor.x * scaleFactor.x);
+  run.scaleFactor.y = roundMillimeters(run.scaleFactor.y * scaleFactor.y);
+  run.scaleFactor.z = roundMillimeters(run.scaleFactor.z * scaleFactor.z);
+  run.hasScale = true;
+}
+
+function multiplyObjectScale(objectScales, targetId, scaleFactor) {
+  const current = objectScales.get(targetId) ?? { x: 1, y: 1, z: 1 };
+  objectScales.set(targetId, {
+    x: roundMillimeters(current.x * scaleFactor.x),
+    y: roundMillimeters(current.y * scaleFactor.y),
+    z: roundMillimeters(current.z * scaleFactor.z),
+  });
+}
+
+function pushPullToTransform(operation, objectScales) {
+  const axis = operation.params.axis ?? { x: 0, y: 0, z: 1 };
+  const dominant = dominantAxis(axis);
+  const currentScale = objectScales.get(operation.targetId) ?? { x: 1, y: 1, z: 1 };
+  const previousScale = Math.max(0.1, currentScale[dominant] ?? 1);
+  const nextAxisScale = Math.max(0.1, previousScale + (operation.params.distance ?? 0));
+  const appliedDelta = nextAxisScale - previousScale;
+  const axisSign = Math.sign(axis[dominant] ?? 0) || 1;
+  const scaleFactor = { x: 1, y: 1, z: 1 };
+  const delta = { x: 0, y: 0, z: 0 };
+  const nextScale = { ...currentScale };
+
+  scaleFactor[dominant] = roundMillimeters(nextAxisScale / previousScale);
+  delta[dominant] = roundMillimeters(axisSign * (appliedDelta * 0.5));
+  nextScale[dominant] = roundMillimeters(nextAxisScale);
+
+  return { scaleFactor, delta, nextScale };
+}
+
+function dominantAxis(axis) {
+  const entries = [
+    ["x", axis.x ?? 0],
+    ["y", axis.y ?? 0],
+    ["z", axis.z ?? 0],
+  ];
+  entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  return entries[0][0];
+}
+
+function isAxisAligned(axis) {
+  const normalized = normalizeAxis(axis ?? { x: 0, y: 0, z: 1 });
+  return [Math.abs(normalized.x), Math.abs(normalized.y), Math.abs(normalized.z)].filter((value) => value > 1e-4).length <= 1;
+}
+
+function normalizeAxis(axis) {
+  const length = Math.hypot(axis.x ?? 0, axis.y ?? 0, axis.z ?? 0);
+  if (length < 1e-8) {
+    return { x: 0, y: 0, z: 1 };
+  }
+  return { x: (axis.x ?? 0) / length, y: (axis.y ?? 0) / length, z: (axis.z ?? 0) / length };
+}
+
+function flushTransformRun(compressed, run) {
+  if (!run) {
+    return;
+  }
+
+  if (run.hasScale && !isIdentityScale(run.scaleFactor)) {
+    compressed.push({
+      type: "scale",
+      targetId: run.targetId,
+      selection: run.selection,
+      params: { scaleFactor: { ...run.scaleFactor } },
+    });
+  }
+
+  if (run.hasMove && !isZeroDelta(run.delta)) {
+    compressed.push({
+      type: "move",
+      targetId: run.targetId,
+      selection: run.selection,
+      params: { delta: { ...run.delta } },
+    });
+  }
+}
+
+function effectiveScaleFactor(value) {
+  return Math.max(0.1, value);
+}
+
+function isIdentityScale(scale) {
+  return scale.x === 1 && scale.y === 1 && scale.z === 1;
+}
+
+function isZeroDelta(delta) {
+  return delta.x === 0 && delta.y === 0 && delta.z === 0;
 }
 
 function roundMillimeters(value) {

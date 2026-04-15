@@ -7,7 +7,7 @@ function round3(value) {
 
 export function mapToolGestureToOperation({ tool, targetId, selection, gesture }) {
   const operationType = operationForTool(tool);
-  const { dx = 0, dy = 0, worldDelta = null, pushPullDistance = null } = gesture ?? {};
+  const { dx = 0, dy = 0, shiftKey = false, worldDelta = null, pushPullDistance = null, faceTiltAngles = null } = gesture ?? {};
   const pushPullAxis = normalizeAxis(selection?.faceNormalWorld ?? { x: 0, y: 0, z: 1 });
   const nextPushPullDistance =
     typeof pushPullDistance === "number" ? round3(pushPullDistance) : round3(dy * -0.02);
@@ -23,13 +23,24 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
         z: round3(-dy * 0.02),
       };
 
+  const rotateParams =
+    selection?.mode === "face"
+      ? faceRotateParams({
+          selection,
+          faceNormalWorld: selection.faceNormalWorld ?? { x: 0, y: 0, z: 1 },
+          shiftKey,
+          angle: round3(dx * 0.01),
+          faceTiltAngles,
+        })
+      : {
+          deltaEuler: { x: 0, y: round3(dx * 0.01), z: 0 },
+        };
+
   const paramsByType = {
     [OPERATION_TYPES.MOVE]: {
       delta: moveDelta,
     },
-    [OPERATION_TYPES.ROTATE]: {
-      deltaEuler: { x: 0, y: round3(dx * 0.01), z: 0 },
-    },
+    [OPERATION_TYPES.ROTATE]: rotateParams,
     [OPERATION_TYPES.SCALE]: {
       scaleFactor: {
         x: round3(1 + dy * -0.005),
@@ -40,6 +51,8 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
     [OPERATION_TYPES.PUSH_PULL]: {
       axis: pushPullAxis,
       distance: nextPushPullDistance,
+      faceIndex: selection?.faceIndex ?? null,
+      mode: shiftKey ? "extend" : "move",
     },
   };
 
@@ -51,6 +64,61 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
   };
 
   return validateOperation(operation);
+}
+
+function faceRotateParams({ selection, faceNormalWorld, shiftKey, angle, faceTiltAngles }) {
+  const makeTilt = (alternateAxis, tiltAngle) => ({
+    faceIndex: selection.faceIndex ?? null,
+    ...faceTiltIdentity(faceNormalWorld, alternateAxis),
+    angle: round3(tiltAngle),
+  });
+
+  if (faceTiltAngles && typeof faceTiltAngles === "object") {
+    const faceTilts = [
+      makeTilt(false, faceTiltAngles.normal ?? 0),
+      makeTilt(true, faceTiltAngles.alternate ?? 0),
+    ].filter((tilt) => Math.abs(tilt.angle) > 1e-6);
+    return {
+      deltaEuler: { x: 0, y: 0, z: 0 },
+      faceTilt: faceTilts.at(-1) ?? makeTilt(Boolean(shiftKey), 0),
+      faceTilts,
+    };
+  }
+
+  return {
+    deltaEuler: { x: 0, y: 0, z: 0 },
+    faceTilt: makeTilt(Boolean(shiftKey), angle),
+  };
+}
+
+function faceTiltIdentity(faceNormalWorld, alternateAxis = false) {
+  const faceNormal = normalizeAxis(faceNormalWorld);
+  const entries = [
+    ["x", faceNormal.x],
+    ["y", faceNormal.y],
+    ["z", faceNormal.z],
+  ];
+  entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const [faceAxis, component] = entries[0];
+  const hinge = hingeForFaceAxis(faceAxis, alternateAxis);
+  return {
+    faceNormalWorld: faceNormal,
+    faceAxis,
+    faceSign: Math.sign(component) || 1,
+    hingeAxis: hinge.axis,
+    hingeSideAxis: hinge.sideAxis,
+    hingeSideSign: -1,
+  };
+}
+
+function hingeForFaceAxis(faceAxis, alternateAxis) {
+  if (faceAxis === "x") {
+    return alternateAxis ? { axis: "z", sideAxis: "y" } : { axis: "y", sideAxis: "z" };
+  }
+  if (faceAxis === "y") {
+    return alternateAxis ? { axis: "z", sideAxis: "x" } : { axis: "x", sideAxis: "z" };
+  }
+  return alternateAxis ? { axis: "y", sideAxis: "x" } : { axis: "x", sideAxis: "y" };
 }
 
 function normalizeAxis(axis) {
