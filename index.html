@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D Sketch AI</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <h1>3D Sketch AI</h1>
+          <span class="doc-name">Untitled</span>
+        </div>
+        <div class="actions">
+          <button data-action="save">Save</button>
+          <button data-action="load">Load</button>
+          <button data-action="reset">Reset</button>
+        </div>
+      </header>
+
+      <aside class="sidebar">
+        <h2>Tools</h2>
+        <div class="tool-grid" id="tool-grid"></div>
+
+        <h2>Selection</h2>
+        <div class="selection-grid">
+          <button data-selection-mode="object">Object</button>
+          <button data-selection-mode="face">Face</button>
+          <button data-selection-mode="edge">Edge</button>
+        </div>
+
+        <h2>Scene</h2>
+        <div class="scene-ops">
+          <button data-action="primitive">Primitive</button>
+          <button data-action="group">Group</button>
+          <button data-action="component">Component</button>
+        </div>
+      </aside>
+
+      <main class="viewport-wrap">
+        <canvas id="viewport"></canvas>
+        <div id="overlay"></div>
+        <button id="code-toggle" class="code-toggle" type="button" aria-expanded="true" title="Hide Side Panel">
+          Panel ◂
+        </button>
+      </main>
+
+      <section class="code-panel" id="code-panel">
+        <div class="panel-tabs" role="tablist" aria-label="Panel Sections">
+          <button class="panel-tab active" id="panel-tab-script" data-panel-page="script" type="button" role="tab" aria-selected="true">
+            Script
+          </button>
+          <button class="panel-tab" id="panel-tab-settings" data-panel-page="settings" type="button" role="tab" aria-selected="false">
+            Settings
+          </button>
+        </div>
+        <div class="panel-page active" data-panel-page-content="script">
+          <div class="code-header">
+            <h2>Model Script</h2>
+            <div class="code-actions">
+              <button
+                id="code-compress"
+                class="code-tool-btn"
+                type="button"
+                title="Compress Model Script"
+                aria-label="Compress Model Script"
+              ></button>
+              <button
+                id="code-copy"
+                class="code-tool-btn"
+                type="button"
+                title="Copy Model Script"
+                aria-label="Copy Model Script"
+              ></button>
+            </div>
+          </div>
+          <pre id="code-view"></pre>
+        </div>
+        <div class="panel-page" data-panel-page-content="settings">
+          <h2>Settings</h2>
+          <div class="settings-list">
+            <button id="grid-toggle" class="settings-btn" type="button" aria-pressed="false">Ground Grid: Off</button>
+          </div>
+        </div>
+      </section>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

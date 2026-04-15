@@ -1,10 +1,20 @@
 {
   "name": "3dsketchai",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "test": "node --test"
+  },
+  "dependencies": {
+    "replicad": "^0.23.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.19"
   }
 }

@@ -1,47 +1,73 @@
+import {
+  parseOperationsFromCanonicalModelCode,
+  serializeCanonicalModelModule,
+} from "../operation/operation-serializer.js";
+
+const DEFAULT_STORAGE_KEY = "3dsketchai:canonical:model:ts";
+const DEFAULT_OPS_STORAGE_KEY = "3dsketchai:canonical:model:ops";
+
 export class CanonicalModel {
-  constructor() {
-    this._entries = [];
+  constructor({ storageKey = DEFAULT_STORAGE_KEY, opsStorageKey = DEFAULT_OPS_STORAGE_KEY } = {}) {
+    this.storageKey = storageKey;
+    this.opsStorageKey = opsStorageKey;
+    this._operations = [];
   }
 
-  appendCommittedOperation(operation, operationCode) {
-    this._entries.push({
-      operation: {
-        type: operation.type,
-        targetId: operation.targetId,
-        params: { ...operation.params },
-      },
-      operationCode,
-    });
+  appendCommittedOperation(operation) {
+    this._operations.push(structuredClone(operation));
   }
 
-  getEntries() {
-    return this._entries.map((entry) => ({
-      operation: {
-        type: entry.operation.type,
-        targetId: entry.operation.targetId,
-        params: { ...entry.operation.params },
-      },
-      operationCode: entry.operationCode,
-    }));
+  replaceCommittedOperations(operations) {
+    this._operations = operations.map((operation) => structuredClone(operation));
+  }
+
+  getOperations() {
+    return this._operations.map((operation) => structuredClone(operation));
   }
 
   toTypeScriptModule() {
-    const body = this._entries.map((entry) => entry.operationCode).join("\n\n");
-
-    return [
-      "export function buildModel(seedModel, applyOperation) {",
-      "  let model = seedModel;",
-      body ? `\n${indentLines(body, 2)}\n` : "",
-      "  return model;",
-      "}",
-    ].join("\n");
+    return serializeCanonicalModelModule(this._operations);
   }
-}
 
-function indentLines(text, spaces) {
-  const prefix = " ".repeat(spaces);
-  return text
-    .split("\n")
-    .map((line) => `${prefix}${line}`)
-    .join("\n");
+  fromTypeScriptModule(code) {
+    this._operations = parseOperationsFromCanonicalModelCode(code).map((operation) => structuredClone(operation));
+    return this.getOperations();
+  }
+
+  persistToLocalStorage(storage = globalThis.localStorage ?? null) {
+    if (!storage) {
+      return this.toTypeScriptModule();
+    }
+    const code = this.toTypeScriptModule();
+    storage.setItem(this.storageKey, code);
+    storage.setItem(this.opsStorageKey, JSON.stringify(this._operations));
+    return code;
+  }
+
+  loadFromLocalStorage(storage = globalThis.localStorage ?? null) {
+    if (!storage) {
+      return [];
+    }
+    const operationsJson = storage.getItem(this.opsStorageKey);
+    if (operationsJson) {
+      const parsed = JSON.parse(operationsJson);
+      this._operations = Array.isArray(parsed) ? parsed.map((operation) => structuredClone(operation)) : [];
+      return this.getOperations();
+    }
+
+    const code = storage.getItem(this.storageKey);
+    if (!code) {
+      return [];
+    }
+    return this.fromTypeScriptModule(code);
+  }
+
+  clear(storage = globalThis.localStorage ?? null) {
+    this._operations = [];
+    if (!storage) {
+      return;
+    }
+    storage.removeItem(this.storageKey);
+    storage.removeItem(this.opsStorageKey);
+  }
 }

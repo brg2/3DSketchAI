@@ -1,0 +1,1258 @@
+import * as THREE from "three";
+import { Viewport } from "../view/viewport.js";
+import { Overlay } from "../view/overlay.js";
+import { SelectionPipeline } from "../interaction/selection-pipeline.js";
+import { ToolStateMachine } from "../interaction/tool-state-machine.js";
+import { RuntimeController } from "./runtime-controller.js";
+import { RepresentationStore } from "../representation/representation-store.js";
+import { CanonicalModel } from "../modeling/canonical-model.js";
+import { ModelExecutor } from "../modeling/model-executor.js";
+import { AppSessionStore } from "../persistence/app-session-store.js";
+import { createGroupingOperation, createPrimitiveOperation, mapToolGestureToOperation } from "../operation/operation-mapper.js";
+import { OPERATION_TYPES, SELECTION_MODES } from "../operation/operation-types.js";
+
+const TOOL_CONFIG = [
+  { id: "select", label: "Select", icon: "cursor" },
+  { id: "move", label: "Move", icon: "move" },
+  { id: "rotate", label: "Rotate", icon: "rotate" },
+  { id: "scale", label: "Scale", icon: "scale" },
+  { id: "pushPull", label: "Push/Pull", icon: "pushPull" },
+];
+
+const STATIC_BUTTON_ICONS = Object.freeze({
+  save: "save",
+  load: "load",
+  reset: "reset",
+  primitive: "cube",
+  group: "group",
+  component: "component",
+  object: "cube",
+  face: "face",
+  edge: "edge",
+});
+
+export class SketchApp {
+  constructor({
+    canvas,
+    overlayElement,
+    codeElement,
+    codePanel,
+    codeToggle,
+    codeCopyButton,
+    codeCompressButton,
+    panelTabButtons,
+    gridToggleButton,
+    toolGrid,
+  }) {
+    this.canvas = canvas;
+    this.codeElement = codeElement;
+    this.codePanel = codePanel;
+    this.codeToggle = codeToggle;
+    this.codeCopyButton = codeCopyButton;
+    this.codeCompressButton = codeCompressButton;
+    this.panelTabButtons = Array.isArray(panelTabButtons) ? panelTabButtons : [];
+    this.gridToggleButton = gridToggleButton;
+    this.codeCopyResetTimer = null;
+    this.codeCollapsed = false;
+    this.panelPage = "script";
+    this.appSessionStore = new AppSessionStore();
+    this.sessionPersistTimer = null;
+    this.lastPersistedSessionSignature = "";
+    this.isRestoringSession = false;
+
+    this.viewport = new Viewport({ canvas });
+    this.overlay = new Overlay({ element: overlayElement });
+
+    this.representationStore = new RepresentationStore();
+    this.selectionPipeline = new SelectionPipeline({
+      camera: this.viewport.camera,
+      domElement: this.viewport.renderer.domElement,
+    });
+    this.tools = new ToolStateMachine();
+    this.hoveredObjectId = null;
+    this.hoveredHit = null;
+
+    this.objectCounter = 1;
+
+    this.runtimeController = new RuntimeController({
+      canonicalModel: new CanonicalModel(),
+      modelExecutor: new ModelExecutor(),
+      representationStore: this.representationStore,
+      onCanonicalCodeChanged: (code) => {
+        this.codeElement.textContent = code;
+      },
+    });
+
+    this.runtimeController.initialize({ scene: this.viewport.scene, seedSceneState: {} });
+    this._initPreselectionOverlays();
+    this.viewport.controls.addEventListener("change", () => {
+      this._scheduleSessionPersist();
+    });
+
+    this._buildToolButtons(toolGrid);
+    this._attachInputHandlers();
+    this._attachUiHandlers();
+    this._attachCodePanelHandlers();
+  }
+
+  async start() {
+    const loadedOperations = await this.runtimeController.loadCanonicalModelFromStorage({
+      reload: true,
+      cleanSlate: true,
+    });
+    this._syncObjectCounterFromOperations(loadedOperations);
+
+    const sessionState = await this._loadSessionState();
+    this._applySessionState(sessionState);
+    if (!sessionState) {
+      this._setActiveTool("pushPull", { render: false });
+      this._setSelectionMode(SELECTION_MODES.FACE, { render: false });
+    }
+    await this._persistSessionState();
+
+    this._tick();
+  }
+
+  _buildToolButtons(toolGrid) {
+    for (const tool of TOOL_CONFIG) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.classList.add("icon-btn", "tool-btn");
+      button.dataset.tool = tool.id;
+      this._setButtonIcon(button, tool.icon, tool.label);
+      if (tool.id === this.tools.activeTool) {
+        button.classList.add("active");
+      }
+      button.addEventListener("click", () => {
+        this._setActiveTool(tool.id);
+        void this._persistSessionState();
+      });
+      toolGrid.appendChild(button);
+    }
+  }
+
+  _syncToolButtons() {
+    for (const button of document.querySelectorAll("[data-tool]")) {
+      button.classList.toggle("active", button.dataset.tool === this.tools.activeTool);
+    }
+  }
+
+  _attachInputHandlers() {
+    this.canvas.addEventListener("pointerdown", async (event) => {
+      const selectionResult = this.selectionPipeline.pick({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        selectableMeshes: this.representationStore.getSelectableMeshes(),
+        multiSelect: event.shiftKey,
+      });
+      this.hoveredObjectId = selectionResult?.selection?.objectId ?? null;
+      this.hoveredHit = selectionResult?.hit ?? null;
+
+      this._applySelectionHighlights();
+      this._renderOverlay();
+      this._scheduleSessionPersist();
+
+      if (!selectionResult.selection || !this.tools.canStartDrag()) {
+        return;
+      }
+
+      const selectedObjectId = selectionResult.selection.objectId;
+      if (!selectedObjectId) {
+        return;
+      }
+
+      this.tools.startDrag({
+        pointerDown: { x: event.clientX, y: event.clientY },
+        selection: selectionResult.selection,
+        context: this._buildDragContext(event, selectionResult, { shiftKey: event.shiftKey }),
+      });
+      this.viewport.controls.enabled = false;
+
+      const op = mapToolGestureToOperation({
+        tool: this.tools.activeTool,
+        targetId: selectedObjectId,
+        selection: selectionResult.selection,
+        gesture: { dx: 0, dy: 0 },
+      });
+
+      this.runtimeController.beginManipulation({
+        type: op.type,
+        targetId: op.targetId,
+        selection: op.selection,
+        params: op.params,
+      });
+      this._renderOverlay();
+    });
+
+    this.canvas.addEventListener("pointermove", (event) => {
+      const drag = this.tools.updateDrag({ x: event.clientX, y: event.clientY });
+      if (!drag) {
+        const hover = this.selectionPipeline.hover({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          selectableMeshes: this.representationStore.getSelectableMeshes(),
+        });
+        this.hoveredObjectId = hover.objectId;
+        this.hoveredHit = hover.hit;
+        this._applySelectionHighlights();
+        this._renderOverlay();
+        return;
+      }
+      const gesture = this._buildGestureFromDrag(event, drag);
+
+      const op = mapToolGestureToOperation({
+        tool: this.tools.activeTool,
+        targetId: drag.selection.objectId,
+        selection: drag.selection,
+        gesture,
+      });
+      this.runtimeController.updateManipulation(op.params);
+      this._renderOverlay();
+    });
+
+    this.canvas.addEventListener("pointerleave", () => {
+      this.hoveredObjectId = null;
+      this.hoveredHit = null;
+      this._applySelectionHighlights();
+      this._renderOverlay();
+    });
+
+    window.addEventListener("pointerup", async () => {
+      if (!this.tools.dragState) {
+        return;
+      }
+
+      this.tools.endDrag();
+      await this.runtimeController.commitManipulation();
+      this.viewport.controls.enabled = true;
+      this._applySelectionHighlights();
+      this._renderOverlay();
+      this._scheduleSessionPersist();
+    });
+  }
+
+  _attachUiHandlers() {
+    for (const button of document.querySelectorAll("[data-selection-mode]")) {
+      button.classList.add("icon-btn");
+      this._setButtonIcon(button, STATIC_BUTTON_ICONS[button.dataset.selectionMode], button.textContent.trim());
+
+      button.addEventListener("click", () => {
+        this._setSelectionMode(button.dataset.selectionMode);
+        void this._persistSessionState();
+      });
+    }
+    this._syncSelectionModeButtons();
+
+    for (const button of document.querySelectorAll("[data-action]")) {
+      button.classList.add("icon-btn");
+      this._setButtonIcon(button, STATIC_BUTTON_ICONS[button.dataset.action], button.textContent.trim());
+      button.addEventListener("click", async () => {
+        const action = button.dataset.action;
+        if (action === "save") {
+          await this.runtimeController.persistCanonicalModel();
+          await this._persistSessionState();
+          this._renderOverlay();
+          return;
+        }
+
+        if (action === "load") {
+          const loadedOperations = await this.runtimeController.loadCanonicalModelFromStorage({
+            reload: true,
+            cleanSlate: true,
+          });
+          this._syncObjectCounterFromOperations(loadedOperations);
+          this._applySessionState(await this._loadSessionState());
+          this._applySelectionHighlights();
+          this._renderOverlay();
+          this._scheduleSessionPersist();
+          return;
+        }
+
+        if (action === "reset") {
+          await this.runtimeController.clearCanonicalModel();
+          await this.appSessionStore.clear().catch(() => {});
+          this.representationStore.setInitialSceneState({});
+          this.selectionPipeline.selectedObjectIds = [];
+          this.hoveredObjectId = null;
+          this.hoveredHit = null;
+          this.objectCounter = 1;
+          this._setPanelPage("script");
+          this._setGridVisible(false);
+          await this.runtimeController.commitOperation(
+            createPrimitiveOperation({
+              primitive: "box",
+              position: { x: 0, y: 0.6, z: 0 },
+              size: { x: 1, y: 1, z: 1 },
+              objectId: "obj_1",
+            }),
+          );
+          this.objectCounter = 2;
+          this.selectionPipeline.selectedObjectIds = ["obj_1"];
+          this._applySelectionHighlights();
+          this._renderOverlay();
+          await this._persistSessionState();
+          return;
+        }
+
+        if (action === "primitive") {
+          await this.createPrimitive();
+          this._renderOverlay();
+          this._scheduleSessionPersist();
+          return;
+        }
+
+        if (action === "group") {
+          await this.groupSelected();
+          this._renderOverlay();
+          this._scheduleSessionPersist();
+          return;
+        }
+
+        if (action === "component") {
+          await this.componentSelected();
+          this._renderOverlay();
+          this._scheduleSessionPersist();
+          return;
+        }
+      });
+    }
+  }
+
+  async createPrimitive() {
+    const objectId = `obj_${this.objectCounter++}`;
+    const position = {
+      x: (Math.random() - 0.5) * 4,
+      y: 0.6,
+      z: (Math.random() - 0.5) * 4,
+    };
+
+    const operation = createPrimitiveOperation({
+      primitive: "box",
+      position,
+      size: { x: 1, y: 1, z: 1 },
+      objectId,
+    });
+
+    await this.runtimeController.commitOperation(operation);
+    this.selectionPipeline.selectedObjectIds = [objectId];
+    this._applySelectionHighlights();
+    this._scheduleSessionPersist();
+  }
+
+  async groupSelected() {
+    if (this.selectionPipeline.selectedObjectIds.length < 2) {
+      return;
+    }
+
+    const operation = createGroupingOperation({
+      type: OPERATION_TYPES.GROUP,
+      objectIds: this.selectionPipeline.selectedObjectIds,
+      groupId: `group_${Date.now()}`,
+    });
+
+    await this.runtimeController.commitOperation(operation);
+    this._scheduleSessionPersist();
+  }
+
+  async componentSelected() {
+    if (this.selectionPipeline.selectedObjectIds.length < 1) {
+      return;
+    }
+
+    const operation = createGroupingOperation({
+      type: OPERATION_TYPES.COMPONENT,
+      objectIds: this.selectionPipeline.selectedObjectIds,
+      componentId: `component_${Date.now()}`,
+    });
+
+    await this.runtimeController.commitOperation(operation);
+    this._scheduleSessionPersist();
+  }
+
+  _applySelectionHighlights() {
+    const selected = new Set(this.selectionPipeline.selectedObjectIds);
+    const objectHoverEnabled = this.selectionPipeline.selectionMode === SELECTION_MODES.OBJECT;
+    const objectSelectionEnabled = this.selectionPipeline.selectionMode === SELECTION_MODES.OBJECT;
+    for (const mesh of this.representationStore.getSelectableMeshes()) {
+      const objectId = mesh.userData.objectId;
+      if (objectSelectionEnabled && selected.has(objectId)) {
+        mesh.material.emissive?.setHex(0x183a5b);
+        mesh.material.color.setHex(0x7dc8ff);
+      } else if (objectHoverEnabled && objectId === this.hoveredObjectId) {
+        mesh.material.emissive?.setHex(0x1d4468);
+        mesh.material.color.setHex(0x7dc8ff);
+      } else {
+        mesh.material.emissive?.setHex(0x000000);
+        mesh.material.color.setHex(0x7aa2f7);
+      }
+    }
+
+    this._updatePreselectionOverlays();
+  }
+
+  _renderOverlay() {
+    const snapshot = this.runtimeController.getSnapshot();
+    this.overlay.render({
+      tool: this.tools.activeTool,
+      selectionMode: this.selectionPipeline.selectionMode,
+      selectedIds: this.selectionPipeline.selectedObjectIds,
+      hoveredId: this.hoveredObjectId,
+      previewing: snapshot.hasActiveSession,
+      exactBackend: snapshot.exactBackend,
+      operationCount: snapshot.operationCount,
+    });
+  }
+
+  _tick() {
+    this._applySelectionHighlights();
+    this.viewport.frame();
+    this._renderOverlay();
+    requestAnimationFrame(() => this._tick());
+  }
+
+  _buildDragContext(event, selectionResult, { shiftKey = false } = {}) {
+    const hit = selectionResult?.hit;
+    if (!hit?.point || !hit?.object) {
+      return null;
+    }
+
+    if (this.tools.activeTool === "pushPull") {
+      const axisObj = selectionResult?.selection?.faceNormalWorld ?? { x: 0, y: 0, z: 1 };
+      const axis = new THREE.Vector3(axisObj.x ?? 0, axisObj.y ?? 0, axisObj.z ?? 1);
+      if (axis.lengthSq() < 1e-8) {
+        axis.set(0, 0, 1);
+      } else {
+        axis.normalize();
+      }
+
+      const origin = hit.point.clone();
+      const startDistance = this._axisDistanceFromPointer(event, origin, axis);
+
+      return {
+        mode: "pushPull",
+        axis,
+        origin,
+        startDistance: startDistance ?? 0,
+      };
+    }
+
+    if (shiftKey) {
+      const axis = new THREE.Vector3(0, 1, 0);
+
+      const origin = hit.point.clone();
+
+      return {
+        mode: "move-axis",
+        axis,
+        origin,
+        movePlane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -hit.point.y),
+        baseWorldDelta: new THREE.Vector3(0, 0, 0),
+        startDy: event.clientY,
+      };
+    }
+
+    // SketchUp-like move: drag tracks the cursor on a horizontal plane.
+    const movePlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -hit.point.y);
+    const startPoint =
+      this.selectionPipeline.pointOnPlane({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        plane: movePlane,
+      }) ?? hit.point.clone();
+
+    return {
+      mode: "move",
+      movePlane,
+      startPoint,
+    };
+  }
+
+  _buildGestureFromDrag(event, drag) {
+    const gesture = { dx: drag.dx, dy: drag.dy };
+
+    if (this.tools.activeTool === "pushPull" && drag.context?.mode === "pushPull") {
+      const currentDistance = this._axisDistanceFromPointer(event, drag.context.origin, drag.context.axis);
+      if (typeof currentDistance === "number") {
+        return {
+          ...gesture,
+          pushPullDistance: currentDistance - drag.context.startDistance,
+        };
+      }
+      return gesture;
+    }
+
+    if (this.tools.activeTool !== "move") {
+      return gesture;
+    }
+
+    const wantsAxisLock = Boolean(event.shiftKey);
+    if (wantsAxisLock && drag.context?.mode !== "move-axis") {
+      const axis = new THREE.Vector3(0, 1, 0);
+      const movePlane = drag.context?.movePlane ?? new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+      const currentPoint = this.selectionPipeline.pointOnPlane({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        plane: movePlane,
+      });
+      const startPoint = drag.context?.startPoint?.clone?.() ?? currentPoint?.clone?.() ?? drag.context?.origin?.clone?.() ?? new THREE.Vector3();
+      const origin = startPoint.clone();
+      const currentFreeDelta = drag.context?.baseWorldDelta?.clone?.() ?? new THREE.Vector3();
+      if (currentPoint) {
+        currentFreeDelta.add(currentPoint.clone().sub(startPoint));
+      }
+      drag.context = {
+        mode: "move-axis",
+        axis,
+        origin,
+        movePlane,
+        startPoint,
+        baseWorldDelta: currentFreeDelta,
+        startDy: event.clientY,
+      };
+      if (this.tools.dragState) {
+        this.tools.dragState.context = drag.context;
+      }
+    } else if (!wantsAxisLock && drag.context?.mode === "move-axis") {
+      const movePlane = drag.context.movePlane ?? new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+      const currentPoint = this.selectionPipeline.pointOnPlane({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        plane: movePlane,
+      });
+      const dyFromToggle = event.clientY - (drag.context.startDy ?? event.clientY);
+      const baseWorldDelta = drag.context.baseWorldDelta?.clone?.() ?? new THREE.Vector3();
+      baseWorldDelta.y += Math.round((-dyFromToggle * 0.02) * 1000) / 1000;
+      drag.context = {
+        mode: "move",
+        movePlane,
+        startPoint: currentPoint ?? drag.context.startPoint?.clone?.() ?? drag.context.origin?.clone?.() ?? new THREE.Vector3(),
+        baseWorldDelta,
+      };
+      if (this.tools.dragState) {
+        this.tools.dragState.context = drag.context;
+      }
+    }
+
+    if (drag.context?.mode === "move-axis") {
+      const dyFromToggle = event.clientY - (drag.context.startDy ?? event.clientY);
+      const deltaY = (drag.context.baseWorldDelta?.y ?? 0) + Math.round((-dyFromToggle * 0.02) * 1000) / 1000;
+      return {
+        ...gesture,
+        worldDelta: {
+          x: drag.context.baseWorldDelta?.x ?? 0,
+          y: deltaY,
+          z: drag.context.baseWorldDelta?.z ?? 0,
+        },
+      };
+    }
+
+    const movePlane = drag.context?.movePlane;
+    if (!movePlane) {
+      return gesture;
+    }
+
+    const currentPoint = this.selectionPipeline.pointOnPlane({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      plane: movePlane,
+    });
+    if (!currentPoint) {
+      return gesture;
+    }
+
+    const worldDelta = currentPoint.sub(drag.context.startPoint);
+    worldDelta.add(drag.context.baseWorldDelta ?? new THREE.Vector3());
+    return {
+      ...gesture,
+      worldDelta: {
+        x: worldDelta.x,
+        y: worldDelta.y,
+        z: worldDelta.z,
+      },
+    };
+  }
+
+  _axisDistanceFromPointer(event, origin, axis) {
+    const ray = this.selectionPipeline.rayFromClient(event.clientX, event.clientY);
+    const rayDir = ray.direction.clone().normalize();
+    const axisDir = axis.clone().normalize();
+    const w0 = ray.origin.clone().sub(origin);
+
+    const b = rayDir.dot(axisDir);
+    const denom = 1 - b * b;
+    if (Math.abs(denom) < 1e-5) {
+      return null;
+    }
+
+    const d = rayDir.dot(w0);
+    const e = axisDir.dot(w0);
+    return (e - b * d) / denom;
+  }
+
+  _initPreselectionOverlays() {
+    this.preselectionFaceOverlay = new THREE.Mesh(
+      new THREE.BufferGeometry(),
+      new THREE.MeshBasicMaterial({
+        color: 0x7dc8ff,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.35,
+        depthTest: false,
+      }),
+    );
+    this.preselectionFaceOverlay.visible = false;
+    this.preselectionFaceOverlay.renderOrder = 40;
+    this.preselectionFaceOverlay.frustumCulled = false;
+    this.viewport.scene.add(this.preselectionFaceOverlay);
+
+    this.preselectionEdgeOverlay = new THREE.Line(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({
+        color: 0x7dc8ff,
+        depthTest: false,
+      }),
+    );
+    this.preselectionEdgeOverlay.visible = false;
+    this.preselectionEdgeOverlay.renderOrder = 41;
+    this.preselectionEdgeOverlay.frustumCulled = false;
+    this.viewport.scene.add(this.preselectionEdgeOverlay);
+  }
+
+  _updatePreselectionOverlays() {
+    if (!this.preselectionFaceOverlay || !this.preselectionEdgeOverlay) {
+      return;
+    }
+
+    this.preselectionFaceOverlay.visible = false;
+    this.preselectionEdgeOverlay.visible = false;
+
+    if (!this.hoveredHit || this.tools.dragState) {
+      return;
+    }
+
+    const mode = this.selectionPipeline.selectionMode;
+    if (mode === SELECTION_MODES.FACE) {
+      const facePatch = this._facePatchFromHit(this.hoveredHit);
+      if (!facePatch || facePatch.length < 3) {
+        return;
+      }
+      this._setOverlayGeometry(this.preselectionFaceOverlay, facePatch);
+      this.preselectionFaceOverlay.visible = true;
+      return;
+    }
+
+    if (mode === SELECTION_MODES.EDGE) {
+      const edge = this._edgeFromHit(this.hoveredHit);
+      if (!edge) {
+        return;
+      }
+      const [a, b] = edge;
+      this._setOverlayGeometry(this.preselectionEdgeOverlay, [a, b]);
+      this.preselectionEdgeOverlay.visible = true;
+    }
+  }
+
+  _triangleFromHit(hit) {
+    if (!hit?.face || !hit?.object?.geometry?.attributes?.position) {
+      return null;
+    }
+    const pos = hit.object.geometry.attributes.position;
+    const a = hit.object.localToWorld(new THREE.Vector3().fromBufferAttribute(pos, hit.face.a));
+    const b = hit.object.localToWorld(new THREE.Vector3().fromBufferAttribute(pos, hit.face.b));
+    const c = hit.object.localToWorld(new THREE.Vector3().fromBufferAttribute(pos, hit.face.c));
+    return [a, b, c];
+  }
+
+  _facePatchFromHit(hit) {
+    if (!hit?.object?.geometry?.attributes?.position) {
+      return null;
+    }
+
+    const geometry = hit.object.geometry;
+    const position = geometry.attributes.position;
+    const index = geometry.index;
+    const triCount = index ? Math.floor(index.count / 3) : Math.floor(position.count / 3);
+    const seedTri = hit.faceIndex ?? -1;
+    if (seedTri < 0 || seedTri >= triCount) {
+      return this._triangleFromHit(hit);
+    }
+
+    const triVerts = new Array(triCount);
+    const triNormals = new Array(triCount);
+    const edgeMap = new Map();
+
+    const getIndexAt = (idx) => (index ? index.getX(idx) : idx);
+    for (let tri = 0; tri < triCount; tri += 1) {
+      const base = tri * 3;
+      const a = getIndexAt(base + 0);
+      const b = getIndexAt(base + 1);
+      const c = getIndexAt(base + 2);
+      triVerts[tri] = [a, b, c];
+
+      const va = new THREE.Vector3().fromBufferAttribute(position, a);
+      const vb = new THREE.Vector3().fromBufferAttribute(position, b);
+      const vc = new THREE.Vector3().fromBufferAttribute(position, c);
+      triNormals[tri] = vb.clone().sub(va).cross(vc.clone().sub(va)).normalize();
+
+      const edges = [
+        [a, b],
+        [b, c],
+        [c, a],
+      ];
+      for (const [v0, v1] of edges) {
+        const key = v0 < v1 ? `${v0}:${v1}` : `${v1}:${v0}`;
+        const list = edgeMap.get(key);
+        if (list) {
+          list.push(tri);
+        } else {
+          edgeMap.set(key, [tri]);
+        }
+      }
+    }
+
+    const adjacency = new Array(triCount);
+    for (let tri = 0; tri < triCount; tri += 1) {
+      adjacency[tri] = [];
+    }
+    for (const triList of edgeMap.values()) {
+      if (triList.length < 2) {
+        continue;
+      }
+      for (let i = 0; i < triList.length; i += 1) {
+        for (let j = i + 1; j < triList.length; j += 1) {
+          const a = triList[i];
+          const b = triList[j];
+          adjacency[a].push(b);
+          adjacency[b].push(a);
+        }
+      }
+    }
+
+    const normalMatrix = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
+    const toWorldNormal = (n) => n.clone().applyMatrix3(normalMatrix).normalize();
+    const targetNormal = toWorldNormal(triNormals[seedTri]);
+    const worldVertexCache = new Map();
+    const worldVertex = (idx) => {
+      const cached = worldVertexCache.get(idx);
+      if (cached) {
+        return cached;
+      }
+      const point = hit.object.localToWorld(new THREE.Vector3().fromBufferAttribute(position, idx));
+      worldVertexCache.set(idx, point);
+      return point;
+    };
+
+    const seedA = worldVertex(triVerts[seedTri][0]);
+    const planeD = -targetNormal.dot(seedA);
+    const normalDotTolerance = 0.999;
+    const planeTolerance = 1e-4;
+    const isCoplanar = (tri) => {
+      const triNormal = toWorldNormal(triNormals[tri]);
+      if (triNormal.dot(targetNormal) < normalDotTolerance) {
+        return false;
+      }
+      const [a, b, c] = triVerts[tri];
+      const da = Math.abs(targetNormal.dot(worldVertex(a)) + planeD);
+      const db = Math.abs(targetNormal.dot(worldVertex(b)) + planeD);
+      const dc = Math.abs(targetNormal.dot(worldVertex(c)) + planeD);
+      return da <= planeTolerance && db <= planeTolerance && dc <= planeTolerance;
+    };
+
+    const queue = [seedTri];
+    const seen = new Set([seedTri]);
+    const patchTris = [];
+    while (queue.length > 0) {
+      const tri = queue.shift();
+      if (!isCoplanar(tri)) {
+        continue;
+      }
+      patchTris.push(tri);
+      for (const next of adjacency[tri]) {
+        if (seen.has(next)) {
+          continue;
+        }
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+
+    if (patchTris.length === 0) {
+      return this._triangleFromHit(hit);
+    }
+
+    const points = [];
+    for (const tri of patchTris) {
+      const [a, b, c] = triVerts[tri];
+      points.push(worldVertex(a), worldVertex(b), worldVertex(c));
+    }
+    return points;
+  }
+
+  _edgeFromHit(hit) {
+    const tri = this._triangleFromHit(hit);
+    if (!tri || !hit?.point) {
+      return null;
+    }
+    const [a, b, c] = tri;
+    const edges = [
+      [a, b],
+      [b, c],
+      [c, a],
+    ];
+    let best = edges[0];
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const [p0, p1] of edges) {
+      const dist = this._distancePointToSegmentSquared(hit.point, p0, p1);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = [p0, p1];
+      }
+    }
+    return best;
+  }
+
+  _distancePointToSegmentSquared(point, a, b) {
+    const ab = b.clone().sub(a);
+    const ap = point.clone().sub(a);
+    const denom = ab.lengthSq();
+    if (denom <= 1e-10) {
+      return point.distanceToSquared(a);
+    }
+    const t = THREE.MathUtils.clamp(ap.dot(ab) / denom, 0, 1);
+    const closest = a.clone().add(ab.multiplyScalar(t));
+    return point.distanceToSquared(closest);
+  }
+
+  _setOverlayGeometry(overlay, points) {
+    const flat = new Float32Array(points.length * 3);
+    points.forEach((p, index) => {
+      flat[index * 3 + 0] = p.x;
+      flat[index * 3 + 1] = p.y;
+      flat[index * 3 + 2] = p.z;
+    });
+    overlay.geometry.dispose();
+    overlay.geometry = new THREE.BufferGeometry();
+    overlay.geometry.setAttribute("position", new THREE.BufferAttribute(flat, 3));
+  }
+
+  _syncObjectCounterFromOperations(operations) {
+    let max = 0;
+    for (const operation of operations) {
+      const objectId = operation?.params?.objectId;
+      if (!objectId || !objectId.startsWith("obj_")) {
+        continue;
+      }
+
+      const serial = Number.parseInt(objectId.slice(4), 10);
+      if (Number.isFinite(serial) && serial > max) {
+        max = serial;
+      }
+    }
+
+    this.objectCounter = Math.max(this.objectCounter, max + 1);
+  }
+
+  _attachCodePanelHandlers() {
+    if (!this.codeToggle || !this.codePanel) {
+      return;
+    }
+
+    for (const tab of this.panelTabButtons) {
+      tab.addEventListener("click", () => {
+        const page = tab.dataset.panelPage;
+        if (!page) {
+          return;
+        }
+        this._setPanelPage(page);
+        void this._persistSessionState();
+      });
+    }
+
+    if (this.codeCopyButton) {
+      this.codeCopyButton.classList.add("icon-btn");
+      this._setButtonIcon(this.codeCopyButton, "copy", "Copy Model Script");
+      this.codeCopyButton.addEventListener("click", () => {
+        void this._copyModelScriptToClipboard();
+      });
+    }
+
+    if (this.codeCompressButton) {
+      this.codeCompressButton.classList.add("icon-btn");
+      this._setButtonIcon(this.codeCompressButton, "compress", "Compress Model Script");
+      this.codeCompressButton.addEventListener("click", () => {
+        void this._compressModelScript();
+      });
+    }
+
+    if (this.gridToggleButton) {
+      this.gridToggleButton.addEventListener("click", () => {
+        this._setGridVisible(!this.viewport.isGridVisible());
+        void this._persistSessionState();
+      });
+    }
+
+    this.codeToggle.addEventListener("click", () => {
+      this._setCodePanelCollapsed(!this.codeCollapsed);
+      void this._persistSessionState();
+    });
+
+    this._setCodePanelCollapsed(false);
+    this._setPanelPage("script");
+    this._setGridVisible(false);
+  }
+
+  _setCodePanelCollapsed(collapsed) {
+    this.codeCollapsed = collapsed;
+    document.body.classList.toggle("code-collapsed", collapsed);
+    this.codeToggle.setAttribute("aria-expanded", String(!collapsed));
+    this.codeToggle.textContent = collapsed ? "Panel ▸" : "Panel ◂";
+    this.codeToggle.title = collapsed ? "Show Side Panel" : "Hide Side Panel";
+  }
+
+  _setPanelPage(page) {
+    const nextPage = page === "settings" ? "settings" : "script";
+    this.panelPage = nextPage;
+
+    for (const tab of this.panelTabButtons) {
+      const isActive = tab.dataset.panelPage === nextPage;
+      tab.classList.toggle("active", isActive);
+      tab.setAttribute("aria-selected", String(isActive));
+    }
+
+    for (const panel of this.codePanel.querySelectorAll("[data-panel-page-content]")) {
+      const isActive = panel.dataset.panelPageContent === nextPage;
+      panel.classList.toggle("active", isActive);
+    }
+  }
+
+  _setGridVisible(visible) {
+    const isVisible = Boolean(visible);
+    this.viewport.setGridVisible(isVisible);
+    if (this.gridToggleButton) {
+      this.gridToggleButton.textContent = `Ground Grid: ${isVisible ? "On" : "Off"}`;
+      this.gridToggleButton.setAttribute("aria-pressed", String(isVisible));
+      this.gridToggleButton.classList.toggle("active", isVisible);
+    }
+  }
+
+  _setActiveTool(tool, { render = true } = {}) {
+    if (!TOOL_CONFIG.some((entry) => entry.id === tool)) {
+      return;
+    }
+    this.tools.setActiveTool(tool);
+    this._syncToolButtons();
+    if (render) {
+      this._renderOverlay();
+    }
+  }
+
+  _setSelectionMode(mode, { render = true } = {}) {
+    if (!Object.values(SELECTION_MODES).includes(mode)) {
+      return;
+    }
+    this.selectionPipeline.setSelectionMode(mode);
+    this._syncSelectionModeButtons();
+    this._applySelectionHighlights();
+    if (render) {
+      this._renderOverlay();
+    }
+  }
+
+  _syncSelectionModeButtons() {
+    for (const button of document.querySelectorAll("[data-selection-mode]")) {
+      button.classList.toggle("active", button.dataset.selectionMode === this.selectionPipeline.selectionMode);
+    }
+  }
+
+  _captureSessionState() {
+    return {
+      version: 1,
+      camera: {
+        position: {
+          x: this.viewport.camera.position.x,
+          y: this.viewport.camera.position.y,
+          z: this.viewport.camera.position.z,
+        },
+        target: {
+          x: this.viewport.controls.target.x,
+          y: this.viewport.controls.target.y,
+          z: this.viewport.controls.target.z,
+        },
+        zoom: this.viewport.camera.zoom,
+      },
+      ui: {
+        activeTool: this.tools.activeTool,
+        selectionMode: this.selectionPipeline.selectionMode,
+        codeCollapsed: this.codeCollapsed,
+        panelPage: this.panelPage,
+      },
+      selection: {
+        selectedObjectIds: [...this.selectionPipeline.selectedObjectIds],
+      },
+      scene: {
+        objectCounter: this.objectCounter,
+        gridVisible: this.viewport.isGridVisible(),
+      },
+    };
+  }
+
+  _applySessionState(state) {
+    if (!state || typeof state !== "object" || Array.isArray(state)) {
+      return;
+    }
+
+    this.isRestoringSession = true;
+    try {
+      this._applyCameraState(state.camera);
+
+      if (typeof state?.scene?.objectCounter === "number" && Number.isFinite(state.scene.objectCounter)) {
+        this.objectCounter = Math.max(this.objectCounter, Math.floor(state.scene.objectCounter));
+      }
+
+      this._setActiveTool(state?.ui?.activeTool ?? "select", { render: false });
+      this._setSelectionMode(state?.ui?.selectionMode ?? SELECTION_MODES.OBJECT, { render: false });
+      this._setCodePanelCollapsed(Boolean(state?.ui?.codeCollapsed));
+      this._setPanelPage(state?.ui?.panelPage ?? "script");
+      this._setGridVisible(Boolean(state?.scene?.gridVisible));
+
+      const selectable = new Set(
+        this.representationStore.getSelectableMeshes().map((mesh) => mesh.userData.objectId).filter(Boolean),
+      );
+      const nextSelected = Array.isArray(state?.selection?.selectedObjectIds) ? state.selection.selectedObjectIds : [];
+      this.selectionPipeline.selectedObjectIds = nextSelected.filter((id) => selectable.has(id));
+
+      this._applySelectionHighlights();
+      this._renderOverlay();
+    } finally {
+      this.isRestoringSession = false;
+    }
+  }
+
+  _applyCameraState(cameraState) {
+    if (!cameraState || typeof cameraState !== "object") {
+      return;
+    }
+
+    const pos = cameraState.position;
+    const target = cameraState.target;
+    const zoom = cameraState.zoom;
+
+    if (this._isFiniteVec3(pos)) {
+      this.viewport.camera.position.set(pos.x, pos.y, pos.z);
+    }
+    if (this._isFiniteVec3(target)) {
+      this.viewport.controls.target.set(target.x, target.y, target.z);
+    }
+    if (typeof zoom === "number" && Number.isFinite(zoom) && zoom > 0) {
+      this.viewport.camera.zoom = zoom;
+      this.viewport.camera.updateProjectionMatrix();
+    }
+    this.viewport.controls.update();
+  }
+
+  _isFiniteVec3(value) {
+    return Boolean(
+      value &&
+        typeof value === "object" &&
+        Number.isFinite(value.x) &&
+        Number.isFinite(value.y) &&
+        Number.isFinite(value.z),
+    );
+  }
+
+  _scheduleSessionPersist(delayMs = 140) {
+    if (this.isRestoringSession) {
+      return;
+    }
+    if (this.sessionPersistTimer) {
+      window.clearTimeout(this.sessionPersistTimer);
+      this.sessionPersistTimer = null;
+    }
+
+    this.sessionPersistTimer = window.setTimeout(() => {
+      this.sessionPersistTimer = null;
+      void this._persistSessionState();
+    }, delayMs);
+  }
+
+  async _persistSessionState() {
+    if (this.isRestoringSession) {
+      return;
+    }
+
+    const snapshot = this._captureSessionState();
+    const signature = JSON.stringify(snapshot);
+    if (signature === this.lastPersistedSessionSignature) {
+      return;
+    }
+
+    try {
+      await this.appSessionStore.saveState(snapshot);
+      this.lastPersistedSessionSignature = signature;
+    } catch (error) {
+      console.warn("Failed to persist app session state", error);
+    }
+  }
+
+  async _loadSessionState() {
+    try {
+      return await this.appSessionStore.loadState();
+    } catch (error) {
+      console.warn("Failed to load app session state", error);
+      return null;
+    }
+  }
+
+  async _copyModelScriptToClipboard() {
+    const scriptText = this.codeElement?.textContent ?? "";
+    if (scriptText.trim().length === 0) {
+      this._setCodeCopyButtonState("copy-empty", "No Script To Copy");
+      return;
+    }
+
+    let copied = false;
+    if (navigator?.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(scriptText);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+    }
+
+    if (!copied) {
+      copied = this._copyTextFallback(scriptText);
+    }
+
+    if (copied) {
+      this._setCodeCopyButtonState("copied", "Copied");
+    } else {
+      this._setCodeCopyButtonState("copy-failed", "Copy Failed");
+    }
+  }
+
+  async _compressModelScript() {
+    if (!this.codeCompressButton) {
+      return;
+    }
+
+    try {
+      await this.runtimeController.compressCanonicalModel();
+      this._setCodeToolButtonState(this.codeCompressButton, "compressed", "Compressed");
+      this._applySelectionHighlights();
+      this._renderOverlay();
+      await this._persistSessionState();
+    } catch (error) {
+      console.warn("Failed to compress model script", error);
+      this._setCodeToolButtonState(this.codeCompressButton, "copy-failed", "Compress Failed");
+    }
+  }
+
+  _copyTextFallback(text) {
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      textarea.style.pointerEvents = "none";
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      const success = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return success;
+    } catch {
+      return false;
+    }
+  }
+
+  _setCodeCopyButtonState(stateClass, title) {
+    if (!this.codeCopyButton) {
+      return;
+    }
+
+    this._setCodeToolButtonState(this.codeCopyButton, stateClass, title);
+  }
+
+  _setCodeToolButtonState(button, stateClass, title) {
+    if (!button) {
+      return;
+    }
+
+    button.classList.remove("copied", "compressed", "copy-failed", "copy-empty");
+    if (stateClass) {
+      button.classList.add(stateClass);
+    }
+    button.title = title;
+    button.setAttribute("aria-label", title);
+
+    if (this.codeCopyResetTimer) {
+      window.clearTimeout(this.codeCopyResetTimer);
+      this.codeCopyResetTimer = null;
+    }
+
+    this.codeCopyResetTimer = window.setTimeout(() => {
+      if (!button) {
+        return;
+      }
+      button.classList.remove("copied", "compressed", "copy-failed", "copy-empty");
+      const defaultTitle = button === this.codeCompressButton ? "Compress Model Script" : "Copy Model Script";
+      button.title = defaultTitle;
+      button.setAttribute("aria-label", defaultTitle);
+      this.codeCopyResetTimer = null;
+    }, 1200);
+  }
+
+  _setButtonIcon(button, iconName, label) {
+    if (!iconName) {
+      return;
+    }
+
+    button.innerHTML = `
+      <span class="btn-icon" aria-hidden="true">${iconSvg(iconName)}</span>
+      <span class="btn-label">${label}</span>
+    `;
+    button.title = label;
+  }
+}
+
+function iconSvg(name) {
+  const svg = (body) =>
+    `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+
+  switch (name) {
+    case "cursor":
+      return svg('<path d="M5 3l12 9-6 1 2.5 7-2.8 1-2.6-7-3.1 3z"/>');
+    case "move":
+      return svg('<path d="M12 3v18M3 12h18"/><path d="M12 3l-2 2M12 3l2 2M21 12l-2-2M21 12l-2 2M12 21l-2-2M12 21l2-2M3 12l2-2M3 12l2 2"/>');
+    case "rotate":
+      return svg('<path d="M20 12a8 8 0 10-2.3 5.7"/><path d="M20 6v6h-6"/>');
+    case "scale":
+      return svg('<rect x="4" y="4" width="8" height="8"/><rect x="12" y="12" width="8" height="8"/><path d="M11 13l2-2"/>');
+    case "pushPull":
+      return svg('<rect x="4" y="13" width="16" height="7"/><path d="M12 4v10"/><path d="M9 7l3-3 3 3"/>');
+    case "save":
+      return svg('<path d="M5 4h12l2 2v14H5z"/><path d="M8 4v6h8V4"/><path d="M9 16h6"/>');
+    case "load":
+      return svg('<path d="M3 19h18"/><path d="M12 4v10"/><path d="M8 10l4 4 4-4"/>');
+    case "reset":
+      return svg('<path d="M4 12a8 8 0 111.9 5.2"/><path d="M4 4v5h5"/>');
+    case "cube":
+      return svg('<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 3v18"/><path d="M4 7.5l8 4.5 8-4.5"/>');
+    case "group":
+      return svg('<rect x="3" y="4" width="8" height="8"/><rect x="13" y="4" width="8" height="8"/><rect x="8" y="13" width="8" height="8"/>');
+    case "component":
+      return svg('<path d="M6 7h12v12H6z"/><path d="M3 4h12v12"/><path d="M9 10h6v6H9z"/>');
+    case "face":
+      return svg('<polygon points="4,6 20,6 16,18 8,18"/><path d="M8 18l4-6 4 6"/>');
+    case "edge":
+      return svg('<path d="M4 16l16-8"/><circle cx="4" cy="16" r="2"/><circle cx="20" cy="8" r="2"/>');
+    case "copy":
+      return svg('<rect x="9" y="9" width="10" height="11" rx="2"/><rect x="5" y="4" width="10" height="11" rx="2"/>');
+    case "compress":
+      return svg('<path d="M4 7h16"/><path d="M7 12h10"/><path d="M10 17h4"/><path d="M8 4l-4 3 4 3"/><path d="M16 14l4 3-4 3"/>');
+    default:
+      return svg('<circle cx="12" cy="12" r="7"/>');
+  }
+}

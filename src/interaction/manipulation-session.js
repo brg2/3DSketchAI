@@ -1,32 +1,34 @@
 import { createOperation, normalizeOperationParams } from "../operation/operation-types.js";
+import { validateOperation } from "../operation/operation-validator.js";
 
 export class ManipulationSession {
-  constructor({ type, targetId = null, params }) {
-    this._operation = createOperation({ type, targetId, params });
+  constructor({ type, targetId = null, selection = null, params }) {
+    this._operation = validateOperation(
+      createOperation({
+        type,
+        targetId,
+        selection,
+        params,
+      }),
+    );
     this._active = true;
   }
 
-  updateParams(partialParams) {
+  updateParams(nextParams) {
     this._ensureActive();
-    const nextParams = {
-      ...this._operation.params,
-      ...normalizeOperationParams(partialParams),
-    };
-    this._operation = {
-      ...this._operation,
-      params: nextParams,
-    };
+    this._operation.params = normalizeOperationParams(nextParams);
+    validateOperation(this._operation);
   }
 
   getPreviewOperation() {
     this._ensureActive();
-    return cloneOperation(this._operation);
+    return structuredClone(this._operation);
   }
 
   commitOperation() {
     this._ensureActive();
     this._active = false;
-    return cloneOperation(this._operation);
+    return structuredClone(this._operation);
   }
 
   cancel() {
@@ -42,12 +44,4 @@ export class ManipulationSession {
       throw new Error("Manipulation session is no longer active");
     }
   }
-}
-
-function cloneOperation(operation) {
-  return {
-    type: operation.type,
-    targetId: operation.targetId,
-    params: { ...operation.params },
-  };
 }

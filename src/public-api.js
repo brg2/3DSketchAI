@@ -1,6 +1,8 @@
+import { SketchApp } from "./app/sketch-app.js";
+
 /**
- * Minimal public API surface for intent-alignment contract tests.
- * Preview keeps work transient; commit serializes and executes exact model asynchronously.
+ * Test-facing controller contract used by intent-alignment tests.
+ * Maintains preview/commit parameter consistency and async commit execution.
  */
 export function createIntentOperationController({
   operationType = "push_pull",
@@ -19,9 +21,10 @@ export function createIntentOperationController({
     throw new Error("updatePreviewMesh callback is required");
   }
 
+  const _unused = runFullModel;
+  void _unused;
+
   let lastOperation = null;
-  const _unusedRunFullModel = runFullModel;
-  void _unusedRunFullModel;
 
   function buildOperation(params) {
     if (!params || typeof params !== "object" || Array.isArray(params)) {
@@ -31,11 +34,11 @@ export function createIntentOperationController({
     return {
       type: operationType,
       targetId: params.targetId ?? null,
-      params: { ...params },
+      params: structuredClone(params),
     };
   }
 
-  function serializeToExecutableTypeScript(operation) {
+  function serializeToTypeScript(operation) {
     return `applyOperation(model, ${JSON.stringify(operation, null, 2)})`;
   }
 
@@ -47,8 +50,7 @@ export function createIntentOperationController({
     },
     async commit(params) {
       const operation = buildOperation(params ?? lastOperation?.params ?? {});
-      const code = serializeToExecutableTypeScript(operation);
-      appendCanonicalOperation(code);
+      appendCanonicalOperation(serializeToTypeScript(operation));
       return runExactModel(operation);
     },
   };
@@ -57,3 +59,7 @@ export function createIntentOperationController({
 export const createOperationController = createIntentOperationController;
 export const createInteractionController = createIntentOperationController;
 export const createModelController = createIntentOperationController;
+
+export function createSketchApp(options) {
+  return new SketchApp(options);
+}
