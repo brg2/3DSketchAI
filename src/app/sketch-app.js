@@ -175,9 +175,21 @@ export class SketchApp {
         return;
       }
 
-      if (event.button !== 0) {
+      if (event.button === 2) {
+        if (this.viewport.beginCursorPan({ clientX: event.clientX, clientY: event.clientY })) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
         return;
       }
+
+      if (event.button !== 0) {
+        this.viewport.cancelCursorOrbit();
+        return;
+      }
+
+      this.viewport.cancelCursorOrbit();
+      this.viewport.cancelCursorPan();
 
       const selectionResult = this.selectionPipeline.pick({
         clientX: event.clientX,
@@ -268,10 +280,8 @@ export class SketchApp {
     });
 
     this.canvas.addEventListener("contextmenu", (event) => {
-      if (event.shiftKey) {
-        event.preventDefault();
-      }
-    });
+      event.preventDefault();
+    }, { capture: true });
 
     window.addEventListener("pointerup", async () => {
       if (!this.tools.dragState) {
@@ -279,9 +289,9 @@ export class SketchApp {
       }
 
       this.tools.endDrag();
+      this.viewport.controls.enabled = true;
       const result = await this.runtimeController.commitManipulation();
       await this._recordModelHistory(result?.canonicalCode, "Manipulation");
-      this.viewport.controls.enabled = true;
       this._applySelectionHighlights();
       this._renderOverlay();
       this._scheduleSessionPersist();

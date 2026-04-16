@@ -17,6 +17,7 @@ export class Viewport {
     this._zoomRaycaster = new THREE.Raycaster();
     this._zoomPointer = new THREE.Vector2();
     this._cursorOrbit = null;
+    this._cursorPan = null;
     this.gridHelper = null;
     this.groundThemeGroup = null;
     this.groundTheme = GROUND_THEMES.FOREST;
@@ -179,6 +180,8 @@ export class Viewport {
       return false;
     }
 
+    this.cancelCursorPan();
+
     const offset = this.camera.position.clone().sub(this.controls.target);
     const currentDistance = offset.length();
     if (!Number.isFinite(currentDistance) || currentDistance <= 1e-6) {
@@ -221,6 +224,139 @@ export class Viewport {
     window.addEventListener("pointerup", end, { once: true });
     window.addEventListener("pointercancel", end, { once: true });
     return true;
+  }
+
+  cancelCursorOrbit() {
+    if (!this._cursorOrbit) {
+      return false;
+    }
+
+    this._endCursorOrbit();
+    return true;
+  }
+
+  beginCursorPan({ clientX, clientY } = {}) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return false;
+    }
+
+    this.cancelCursorOrbit();
+    this.cancelCursorPan();
+
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const currentDistance = offset.length();
+    if (!Number.isFinite(currentDistance) || currentDistance <= 1e-6) {
+      return false;
+    }
+
+    const anchorPoint = this._pickFocusPointAtClient({ clientX, clientY }, currentDistance)
+      ?? this._pointAtClientDepth({ clientX, clientY }, currentDistance);
+    if (!anchorPoint) {
+      return false;
+    }
+
+    const forward = new THREE.Vector3();
+    this.camera.getWorldDirection(forward);
+    if (forward.lengthSq() < 1e-8) {
+      return false;
+    }
+
+    const panPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(forward.normalize(), anchorPoint);
+    this._cursorPan = {
+      anchorPoint,
+      panPlane,
+      velocity: new THREE.Vector3(),
+      dragging: true,
+    };
+    this.controls.enabled = false;
+    this._zoomTargetDistance = null;
+    this._zoomFocusPoint = null;
+
+    const move = (event) => {
+      event.preventDefault();
+      this._updateCursorPan(event);
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      this._releaseCursorPan();
+    };
+
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
+    return true;
+  }
+
+  _updateCursorPan({ clientX, clientY } = {}) {
+    const pan = this._cursorPan;
+    if (!pan || !Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return;
+    }
+
+    const pointAtCursor = this._pointOnPlaneAtClient({ clientX, clientY }, pan.panPlane);
+    if (!pointAtCursor) {
+      return;
+    }
+
+    const delta = pan.anchorPoint.clone().sub(pointAtCursor);
+    if (delta.lengthSq() < 1e-12) {
+      return;
+    }
+
+    this.camera.position.add(delta);
+    this.controls.target.add(delta);
+    pan.velocity.copy(delta);
+    this.camera.updateMatrixWorld();
+    this.controls.update();
+  }
+
+  cancelCursorPan() {
+    if (!this._cursorPan) {
+      return false;
+    }
+
+    this._endCursorPan();
+    return true;
+  }
+
+  _releaseCursorPan() {
+    if (!this._cursorPan) {
+      return;
+    }
+
+    this._cursorPan.dragging = false;
+    if (this._cursorPan.velocity.lengthSq() < 1e-10) {
+      this._endCursorPan();
+    }
+  }
+
+  _applyCursorPanStep() {
+    const pan = this._cursorPan;
+    if (!pan || pan.dragging) {
+      return;
+    }
+
+    this.camera.position.add(pan.velocity);
+    this.controls.target.add(pan.velocity);
+    this.camera.updateMatrixWorld();
+    this.controls.update();
+
+    pan.velocity.multiplyScalar(0.88);
+    if (pan.velocity.lengthSq() < 1e-8) {
+      this._endCursorPan();
+    }
+  }
+
+  _endCursorPan() {
+    if (!this._cursorPan) {
+      return;
+    }
+
+    this._cursorPan = null;
+    this.controls.enabled = true;
+    this.controls.update();
   }
 
   _updateCursorOrbit({ clientX, clientY } = {}) {
@@ -385,16 +521,9 @@ export class Viewport {
       return null;
     }
 
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
+    if (!this._setRaycasterFromClient({ clientX, clientY })) {
       return null;
     }
-
-    this._zoomPointer.set(
-      ((clientX - rect.left) / rect.width) * 2 - 1,
-      -((clientY - rect.top) / rect.height) * 2 + 1,
-    );
-    this._zoomRaycaster.setFromCamera(this._zoomPointer, this.camera);
 
     const hits = this._zoomRaycaster.intersectObjects(this.scene.children, true);
     const nearestHit = hits.find((hit) => hit.object?.visible !== false && hit.object?.isMesh);
@@ -408,6 +537,41 @@ export class Viewport {
     }
 
     return nearestHit.point.clone();
+  }
+
+  _pointAtClientDepth({ clientX, clientY } = {}, distance) {
+    if (!Number.isFinite(distance) || distance <= 0 || !this._setRaycasterFromClient({ clientX, clientY })) {
+      return null;
+    }
+
+    return this._zoomRaycaster.ray.at(distance, new THREE.Vector3());
+  }
+
+  _pointOnPlaneAtClient({ clientX, clientY } = {}, plane) {
+    if (!plane || !this._setRaycasterFromClient({ clientX, clientY })) {
+      return null;
+    }
+
+    const point = new THREE.Vector3();
+    return this._zoomRaycaster.ray.intersectPlane(plane, point) ? point : null;
+  }
+
+  _setRaycasterFromClient({ clientX, clientY } = {}) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return false;
+    }
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return false;
+    }
+
+    this._zoomPointer.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this._zoomRaycaster.setFromCamera(this._zoomPointer, this.camera);
+    return true;
   }
 
   resize() {
@@ -433,6 +597,8 @@ export class Viewport {
     this.resize();
     if (this._cursorOrbit) {
       this._applyCursorOrbitStep();
+    } else if (this._cursorPan) {
+      this._applyCursorPanStep();
     } else {
       this._applySmoothZoomStep();
       this.controls.update();
