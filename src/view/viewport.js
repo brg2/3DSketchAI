@@ -4,6 +4,9 @@ import {
   GROUND_THEMES,
   createGroundThemeGroup,
   normalizeGroundTheme,
+  normalizeElevationVariation,
+  normalizeTerrainDensity,
+  normalizeTerrainSeed,
   normalizeTerrainVariation,
 } from "../environment/ground-theme.js";
 
@@ -17,13 +20,19 @@ export class Viewport {
     this._zoomRaycaster = new THREE.Raycaster();
     this._zoomPointer = new THREE.Vector2();
     this._cursorNavigation = null;
+    this._nativeTouchNavigation = null;
+    this._cursorPanOrbit = null;
     this._cursorOrbit = null;
     this._cursorPan = null;
     this._touchGestureActive = false;
     this.gridHelper = null;
     this.groundThemeGroup = null;
     this.groundTheme = GROUND_THEMES.FOREST;
-    this.terrainVariation = 1;
+    this.elevationVariation = 1;
+    this.terrainVariation = 0.5;
+    this.terrainDensity = 0.5;
+    this.terrainSeed = 0;
+    this.groundEffectsVisible = true;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0xeef3f8);
@@ -41,8 +50,10 @@ export class Viewport {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.panSpeed = 2.75;
-    // OrbitControls wheel zoom is discrete; we apply our own eased zoom.
-    this.controls.enableZoom = false;
+    this.controls.enableZoom = true;
+    this.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+    this.controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
+    // OrbitControls wheel zoom is discrete; we intercept wheel and apply our own eased zoom.
     this._attachSmoothZoomHandlers();
 
     this._setupLights();
@@ -75,13 +86,28 @@ export class Viewport {
     this.gridHelper = new THREE.GridHelper(100, 100, 0x90a4ba, 0xc9d5e1);
     this.scene.add(this.gridHelper);
 
-    this.setGroundTheme({ theme: GROUND_THEMES.FOREST, terrainVariation: 1 });
+    this.setGroundTheme({
+      theme: GROUND_THEMES.FOREST,
+      elevationVariation: 1,
+      terrainVariation: 0.5,
+      terrainDensity: 0.5,
+      terrainSeed: 0,
+    });
     this.setGridVisible(false);
   }
 
-  setGroundTheme({ theme = this.groundTheme, terrainVariation = this.terrainVariation } = {}) {
+  setGroundTheme({
+    theme = this.groundTheme,
+    elevationVariation = this.elevationVariation,
+    terrainVariation = this.terrainVariation,
+    terrainDensity = this.terrainDensity,
+    terrainSeed = this.terrainSeed,
+  } = {}) {
     this.groundTheme = normalizeGroundTheme(theme);
+    this.elevationVariation = normalizeElevationVariation(elevationVariation);
     this.terrainVariation = normalizeTerrainVariation(terrainVariation);
+    this.terrainDensity = normalizeTerrainDensity(terrainDensity);
+    this.terrainSeed = normalizeTerrainSeed(terrainSeed);
 
     if (this.groundThemeGroup) {
       this.scene.remove(this.groundThemeGroup);
@@ -90,16 +116,35 @@ export class Viewport {
 
     this.groundThemeGroup = createGroundThemeGroup({
       theme: this.groundTheme,
+      elevationVariation: this.elevationVariation,
       terrainVariation: this.terrainVariation,
+      terrainDensity: this.terrainDensity,
+      terrainSeed: this.terrainSeed,
     });
+    this.groundThemeGroup.visible = this.groundEffectsVisible;
     this.scene.add(this.groundThemeGroup);
   }
 
   getGroundThemeState() {
     return {
       theme: this.groundTheme,
+      elevationVariation: this.elevationVariation,
       terrainVariation: this.terrainVariation,
+      terrainDensity: this.terrainDensity,
+      terrainSeed: this.terrainSeed,
+      groundEffectsVisible: this.groundEffectsVisible,
     };
+  }
+
+  setGroundEffectsVisible(visible) {
+    this.groundEffectsVisible = Boolean(visible);
+    if (this.groundThemeGroup) {
+      this.groundThemeGroup.visible = this.groundEffectsVisible;
+    }
+  }
+
+  areGroundEffectsVisible() {
+    return this.groundEffectsVisible;
   }
 
   setGridVisible(visible) {
@@ -114,6 +159,10 @@ export class Viewport {
   }
 
   pointOnGroundSurface({ clientX, clientY } = {}) {
+    if (!this.groundEffectsVisible) {
+      return null;
+    }
+
     const rect = this.renderer.domElement.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) {
       return null;
@@ -180,7 +229,10 @@ export class Viewport {
   beginCursorNavigation({
     clientX,
     clientY,
+    pointerId = null,
     orbitMode = false,
+    initialMode = null,
+    initialFocusPoint = null,
     allowShiftOrbit = true,
     baseMode = "pan",
     shiftMode = "orbit",
@@ -189,8 +241,11 @@ export class Viewport {
       return false;
     }
 
-    const normalizedBaseMode = baseMode === "orbit" ? "orbit" : "pan";
-    const normalizedShiftMode = shiftMode === "pan" ? "pan" : "orbit";
+    const normalizedBaseMode = this._normalizeCursorNavigationMode(baseMode);
+    const normalizedShiftMode = this._normalizeCursorNavigationMode(shiftMode);
+    const normalizedInitialMode = initialMode
+      ? this._normalizeCursorNavigationMode(initialMode)
+      : orbitMode ? "orbit" : "pan";
 
     this.cancelCursorNavigation();
     this._cursorNavigation = {
@@ -198,26 +253,43 @@ export class Viewport {
       allowShiftToggle: Boolean(allowShiftOrbit),
       baseMode: normalizedBaseMode,
       shiftMode: normalizedShiftMode,
+      pointerId,
       lastClientX: clientX,
       lastClientY: clientY,
       move: null,
       keydown: null,
       keyup: null,
       end: null,
+      mouseup: null,
     };
 
-    const initialMode = orbitMode ? "orbit" : "pan";
-    if (!this._setCursorNavigationMode(initialMode, { clientX, clientY })) {
+    if (!this._setCursorNavigationMode(normalizedInitialMode, { clientX, clientY, focusPoint: initialFocusPoint })) {
       this._cursorNavigation = null;
       return false;
     }
 
     const move = (event) => {
+      if (this._cursorNavigation?.pointerId != null && event.pointerId !== this._cursorNavigation.pointerId) {
+        return;
+      }
       event.preventDefault();
       this._updateCursorNavigation(event);
     };
-    const end = () => {
+    const end = (event) => {
+      if (this._cursorNavigation?.pointerId != null && event.pointerId !== this._cursorNavigation.pointerId) {
+        return;
+      }
       this._releaseCursorNavigation();
+    };
+    const mouseup = (event) => {
+      if (!this._cursorNavigation) {
+        return;
+      }
+      if (event.buttons === 0) {
+        this._releaseCursorNavigation();
+        return;
+      }
+      this._updateCursorNavigation(event);
     };
     const keydown = (event) => {
       if (event.key === "Shift") {
@@ -234,15 +306,33 @@ export class Viewport {
     this._cursorNavigation.end = end;
     this._cursorNavigation.keydown = keydown;
     this._cursorNavigation.keyup = keyup;
+    this._cursorNavigation.mouseup = mouseup;
 
     window.addEventListener("pointermove", move, { passive: false });
-    window.addEventListener("pointerup", end, { once: true });
-    window.addEventListener("pointercancel", end, { once: true });
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    window.addEventListener("mouseup", mouseup);
     if (this._cursorNavigation.allowShiftToggle) {
       window.addEventListener("keydown", keydown);
       window.addEventListener("keyup", keyup);
     }
     return true;
+  }
+
+  beginCursorPanOrbit({ clientX, clientY, pointerId = null } = {}) {
+    const initialFocusPoint = this._cursorNavigation?.mode === "pan"
+      ? this._currentCursorPanPointAtClient({ clientX, clientY })
+      : this._cursorNavigation?.mode === "orbit" && this._cursorOrbit?.pivot
+        ? this._cursorOrbit.pivot.clone()
+        : null;
+    return this.beginCursorNavigation({
+      clientX,
+      clientY,
+      pointerId,
+      initialMode: "pan-orbit",
+      initialFocusPoint,
+      allowShiftOrbit: false,
+    });
   }
 
   beginCursorOrbit({ clientX, clientY } = {}) {
@@ -270,17 +360,25 @@ export class Viewport {
   }
 
   cancelCursorNavigation() {
-    if (!this._cursorNavigation && !this._cursorOrbit && !this._cursorPan) {
+    if (!this._cursorNavigation && !this._nativeTouchNavigation && !this._cursorPanOrbit && !this._cursorOrbit && !this._cursorPan) {
       return false;
     }
 
     this._removeCursorNavigationListeners();
+    this._removeNativeTouchNavigationListeners();
+    this._removeCursorPanOrbitListeners();
     if (this._cursorOrbit) {
       this._finishCursorOrbitState({ updateControls: false });
     } else if (this._cursorPan) {
       this._syncControlsTargetToCameraForward();
+    } else if (this._nativeTouchNavigation) {
+      this._syncControlsTargetToCameraForward();
+    } else if (this._cursorPanOrbit) {
+      this._syncControlsTargetToCameraForward(this._cursorPanOrbit.startTargetDistance);
     }
     this._cursorNavigation = null;
+    this._nativeTouchNavigation = null;
+    this._cursorPanOrbit = null;
     this._cursorOrbit = null;
     this._cursorPan = null;
     this.controls.enabled = true;
@@ -288,27 +386,406 @@ export class Viewport {
     return true;
   }
 
-  _setCursorNavigationMode(mode, { clientX, clientY } = {}) {
+  beginNativeTouchNavigation(pointerEvents = []) {
+    const events = pointerEvents.filter((event) => event?.pointerType === "touch");
+    if (events.length < 2) {
+      return false;
+    }
+
+    this.cancelCursorNavigation();
+    const positions = new Map();
+    for (const event of events) {
+      positions.set(event.pointerId, this._touchPositionFromEvent(event));
+    }
+
+    const points = [...positions.values()];
+    const startCentroid = this._touchCentroid(points);
+    const startTouchDistance = this._touchDistance(points);
+    const pivot = this._groundPivotFromTouchCentroid(startCentroid);
+    const startOffset = this.camera.position.clone().sub(pivot);
+    if (!pivot || startOffset.lengthSq() < 1e-8 || !Number.isFinite(startTouchDistance) || startTouchDistance <= 1) {
+      return false;
+    }
+
+    const move = (event) => this._handleNativeTouchPointerMove(event);
+    const end = (event) => this._handleNativeTouchPointerEnd(event);
+    this._nativeTouchNavigation = {
+      positions,
+      pivot,
+      startCentroid,
+      startTouchDistance,
+      startPosition: this.camera.position.clone(),
+      startQuaternion: this.camera.quaternion.clone(),
+      targetYaw: 0,
+      targetPitch: 0,
+      targetLogZoom: 0,
+      velocityYaw: 0,
+      velocityPitch: 0,
+      velocityLogZoom: 0,
+      dragging: true,
+      move,
+      end,
+    };
+    this.controls.enabled = false;
+    this._zoomTargetDistance = null;
+    this._zoomFocusPoint = null;
+
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    return true;
+  }
+
+  _removeNativeTouchNavigationListeners() {
+    const navigation = this._nativeTouchNavigation;
+    if (!navigation) {
+      return;
+    }
+    window.removeEventListener("pointermove", navigation.move);
+    window.removeEventListener("pointerup", navigation.end);
+    window.removeEventListener("pointercancel", navigation.end);
+  }
+
+  _removeCursorPanOrbitListeners() {
+    const navigation = this._cursorPanOrbit;
+    if (!navigation) {
+      return;
+    }
+    if (navigation.move) {
+      window.removeEventListener("pointermove", navigation.move);
+    }
+    if (navigation.end) {
+      window.removeEventListener("pointerup", navigation.end);
+      window.removeEventListener("pointercancel", navigation.end);
+    }
+  }
+
+  _currentCursorPanPointAtClient({ clientX, clientY } = {}) {
+    if (!this._cursorPan) {
+      return null;
+    }
+
+    const pointAtCursor = this._pointOnPlaneAtClient({ clientX, clientY }, this._cursorPan.panPlane);
+    if (pointAtCursor) {
+      return pointAtCursor;
+    }
+
+    return this._cursorPan.anchorPoint?.clone?.() ?? null;
+  }
+
+  _startCursorPanOrbitState({ clientX, clientY, focusPoint = null } = {}) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return false;
+    }
+
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const currentDistance = offset.length();
+    if (!Number.isFinite(currentDistance) || currentDistance <= 1e-6) {
+      return false;
+    }
+
+    const inheritedFocusPoint = focusPoint
+      && Number.isFinite(focusPoint.x)
+      && Number.isFinite(focusPoint.y)
+      && Number.isFinite(focusPoint.z)
+      ? focusPoint.clone()
+      : null;
+    const anchorPoint = inheritedFocusPoint
+      ?? this._pickFocusPointAtClient({ clientX, clientY }, currentDistance)
+      ?? this._pointOnHorizontalPlaneAtClient({ clientX, clientY }, this.controls.target.y)
+      ?? this._pointAtClientDepth({ clientX, clientY }, currentDistance);
+    if (!anchorPoint || !Number.isFinite(anchorPoint.y)) {
+      return false;
+    }
+
+    this._cursorOrbit = null;
+    this._cursorPan = null;
+    this._cursorPanOrbit = {
+      startX: clientX,
+      startY: clientY,
+      pivot: anchorPoint.clone(),
+      zoomPivot: anchorPoint.clone(),
+      startPosition: this.camera.position.clone(),
+      startQuaternion: this.camera.quaternion.clone(),
+      startTargetDistance: currentDistance,
+      startPivotDistance: this.camera.position.distanceTo(anchorPoint),
+      currentTargetDistance: currentDistance,
+    };
+    this.controls.enabled = false;
+    this._zoomTargetDistance = null;
+    this._zoomFocusPoint = null;
+    return true;
+  }
+
+  _updateCursorPanOrbit({ clientX, clientY } = {}) {
+    const navigation = this._cursorPanOrbit;
+    if (!navigation || !Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return;
+    }
+
+    const element = this.renderer.domElement;
+    const height = Math.max(element.clientHeight, 1);
+    const rotateSpeed = this.controls.rotateSpeed ?? 1;
+    const dragX = clientX - navigation.startX;
+    const dragY = clientY - navigation.startY;
+    const yaw = (dragX * rotateSpeed * Math.PI * 2) / height;
+    const pitch = (dragY * rotateSpeed * Math.PI * 2) / height;
+    const minDistance = Math.max(0.1, this.controls.minDistance || 0.1);
+    const maxDistance = this.controls.maxDistance || 1e6;
+    const dragDistance = Math.hypot(dragX, dragY);
+    const dollyScale = THREE.MathUtils.clamp(Math.exp((-dragDistance / height) * 2.2), 0.08, 1);
+
+    this._applyCursorOrbitAngles(navigation, yaw, pitch);
+    const orbitDistance = this.camera.position.distanceTo(navigation.zoomPivot);
+    if (!Number.isFinite(orbitDistance) || orbitDistance <= 1e-6) {
+      return;
+    }
+
+    const nextPivotDistance = THREE.MathUtils.clamp(orbitDistance * dollyScale, minDistance, maxDistance);
+    const previousZoomFocusPoint = this._zoomFocusPoint;
+    this._zoomFocusPoint = navigation.zoomPivot;
+    this._applyZoomDistance(
+      orbitDistance,
+      nextPivotDistance,
+      this.camera.position.clone().sub(this.controls.target),
+    );
+    this._zoomFocusPoint = previousZoomFocusPoint;
+    this.camera.updateMatrixWorld();
+    const currentPivotDistance = this.camera.position.distanceTo(navigation.zoomPivot);
+    navigation.currentTargetDistance = Number.isFinite(currentPivotDistance)
+      ? THREE.MathUtils.clamp(currentPivotDistance, minDistance, maxDistance)
+      : nextPivotDistance;
+  }
+
+  _releaseCursorPanOrbit() {
+    if (!this._cursorPanOrbit) {
+      return;
+    }
+
+    const targetDistance = this._cursorPanOrbit.currentTargetDistance ?? this._cursorPanOrbit.startTargetDistance;
+    this._removeCursorPanOrbitListeners();
+    this._cursorPanOrbit = null;
+    this._syncControlsTargetToCameraForward(targetDistance);
+    this.controls.enabled = true;
+    this.controls.update();
+  }
+
+  _handleNativeTouchPointerMove(event) {
+    const navigation = this._nativeTouchNavigation;
+    if (!navigation || !navigation.positions.has(event.pointerId)) {
+      return;
+    }
+
+    event.preventDefault();
+    navigation.positions.set(event.pointerId, this._touchPositionFromEvent(event));
+    this._updateNativeTouchNavigation();
+  }
+
+  _handleNativeTouchPointerEnd(event) {
+    const navigation = this._nativeTouchNavigation;
+    if (!navigation || !navigation.positions.has(event.pointerId)) {
+      return;
+    }
+
+    navigation.positions.delete(event.pointerId);
+    if (navigation.positions.size < 2) {
+      this._removeNativeTouchNavigationListeners();
+      navigation.dragging = false;
+      navigation.positions.clear();
+      if (!this._hasNativeTouchInertia(navigation)) {
+        this._endNativeTouchNavigation();
+      }
+    }
+  }
+
+  _updateNativeTouchNavigation() {
+    const navigation = this._nativeTouchNavigation;
+    if (!navigation || navigation.positions.size < 2) {
+      return;
+    }
+
+    const points = [...navigation.positions.values()];
+    const centroid = this._touchCentroid(points);
+    const touchDistance = this._touchDistance(points);
+    if (!centroid || !Number.isFinite(touchDistance) || touchDistance <= 1) {
+      return;
+    }
+
+    const element = this.renderer.domElement;
+    const height = Math.max(element.clientHeight, 1);
+    const rotateSpeed = this.controls.rotateSpeed ?? 1;
+    const yaw = ((centroid.clientX - navigation.startCentroid.clientX) * rotateSpeed * Math.PI * 2) / height;
+    const pitch = ((centroid.clientY - navigation.startCentroid.clientY) * rotateSpeed * Math.PI * 2) / height;
+    const zoomScale = THREE.MathUtils.clamp(navigation.startTouchDistance / touchDistance, 0.08, 12);
+    const logZoom = Math.log(zoomScale);
+
+    navigation.velocityYaw = yaw - navigation.targetYaw;
+    navigation.velocityPitch = pitch - navigation.targetPitch;
+    navigation.velocityLogZoom = logZoom - navigation.targetLogZoom;
+    navigation.targetYaw = yaw;
+    navigation.targetPitch = pitch;
+    navigation.targetLogZoom = logZoom;
+
+    this._applyNativeTouchTransform(navigation, yaw, pitch, zoomScale);
+  }
+
+  _applyNativeTouchTransform(navigation, yaw, pitch, zoomScale) {
+    const worldUp = this.camera.up.clone().normalize();
+    const yawRotation = new THREE.Quaternion().setFromAxisAngle(worldUp, -yaw);
+    const startRight = new THREE.Vector3(1, 0, 0).applyQuaternion(navigation.startQuaternion).normalize();
+    const pitchAxis = startRight.applyQuaternion(yawRotation).normalize();
+    const pitchRotation = new THREE.Quaternion().setFromAxisAngle(pitchAxis, -pitch);
+    const rotation = pitchRotation.multiply(yawRotation);
+    const startOffset = navigation.startPosition.clone().sub(navigation.pivot).multiplyScalar(zoomScale);
+
+    this.camera.position.copy(navigation.pivot).add(startOffset.applyQuaternion(rotation));
+    this.camera.quaternion.copy(navigation.startQuaternion).premultiply(rotation);
+    this.camera.updateMatrixWorld();
+  }
+
+  _applyNativeTouchNavigationStep() {
+    const navigation = this._nativeTouchNavigation;
+    if (!navigation || navigation.dragging) {
+      return;
+    }
+
+    navigation.targetYaw += navigation.velocityYaw;
+    navigation.targetPitch += navigation.velocityPitch;
+    navigation.targetLogZoom += navigation.velocityLogZoom;
+    navigation.velocityYaw *= 0.88;
+    navigation.velocityPitch *= 0.88;
+    navigation.velocityLogZoom *= 0.88;
+
+    const zoomScale = THREE.MathUtils.clamp(Math.exp(navigation.targetLogZoom), 0.08, 12);
+    this._applyNativeTouchTransform(navigation, navigation.targetYaw, navigation.targetPitch, zoomScale);
+
+    if (!this._hasNativeTouchInertia(navigation)) {
+      this._endNativeTouchNavigation();
+    }
+  }
+
+  _hasNativeTouchInertia(navigation) {
+    return Boolean(
+      navigation
+      && (
+        Math.abs(navigation.velocityYaw) >= 0.0005
+        || Math.abs(navigation.velocityPitch) >= 0.0005
+        || Math.abs(navigation.velocityLogZoom) >= 0.0005
+      ),
+    );
+  }
+
+  _endNativeTouchNavigation() {
+    if (!this._nativeTouchNavigation) {
+      return;
+    }
+
+    this._nativeTouchNavigation = null;
+    this._syncControlsTargetToCameraForward();
+    this.controls.enabled = true;
+    this.controls.update();
+  }
+
+  _touchPositionFromEvent(event) {
+    return {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      pageX: event.pageX,
+      pageY: event.pageY,
+    };
+  }
+
+  _touchCentroid(points) {
+    const validPoints = points.filter((point) => Number.isFinite(point?.clientX) && Number.isFinite(point?.clientY));
+    if (!validPoints.length) {
+      return null;
+    }
+
+    const sum = validPoints.reduce((acc, point) => {
+      acc.clientX += point.clientX;
+      acc.clientY += point.clientY;
+      return acc;
+    }, { clientX: 0, clientY: 0 });
+    return {
+      clientX: sum.clientX / validPoints.length,
+      clientY: sum.clientY / validPoints.length,
+    };
+  }
+
+  _touchDistance(points) {
+    if (!Array.isArray(points) || points.length < 2) {
+      return 0;
+    }
+
+    const [a, b] = points;
+    const dx = b.clientX - a.clientX;
+    const dy = b.clientY - a.clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  _groundPivotFromTouchCentroid(centroid) {
+    if (!centroid) {
+      return this.controls.target.clone();
+    }
+
+    const groundSurfacePoint = this.pointOnGroundSurface(centroid);
+    if (groundSurfacePoint && this._isReasonableTouchPivot(groundSurfacePoint)) {
+      return groundSurfacePoint;
+    }
+
+    const flatGroundPoint = this._pointOnHorizontalPlaneAtClient(centroid, 0);
+    if (flatGroundPoint && this._isReasonableTouchPivot(flatGroundPoint)) {
+      return flatGroundPoint;
+    }
+
+    const fallback = this.controls.target.clone();
+    fallback.y = 0;
+    return fallback;
+  }
+
+  _isReasonableTouchPivot(point) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) {
+      return false;
+    }
+
+    const viewDistance = Math.max(0.1, this.camera.position.distanceTo(this.controls.target));
+    const maxPivotDistance = Math.max(80, viewDistance * 6);
+    return this.camera.position.distanceTo(point) <= maxPivotDistance;
+  }
+
+  _setCursorNavigationMode(mode, { clientX, clientY, focusPoint = null } = {}) {
     const navigation = this._cursorNavigation;
     if (!navigation || navigation.mode === mode) {
       return true;
     }
 
     const previousMode = navigation.mode;
+    const inheritedFocusPoint = mode === "pan-orbit" && previousMode === "pan"
+      ? this._currentCursorPanPointAtClient({ clientX, clientY })
+      : mode === "pan-orbit" && previousMode === "orbit" && this._cursorOrbit?.pivot
+        ? this._cursorOrbit.pivot.clone()
+        : focusPoint;
     if (previousMode === "orbit") {
       this._finishCursorOrbitState({ updateControls: false });
     } else if (previousMode === "pan") {
       this._cursorPan = null;
+    } else if (previousMode === "pan-orbit") {
+      this._cursorPanOrbit = null;
     }
 
     const started = mode === "orbit"
       ? this._startCursorOrbitState({ clientX, clientY })
-      : this._startCursorPanState({ clientX, clientY });
+      : mode === "pan-orbit"
+        ? this._startCursorPanOrbitState({ clientX, clientY, focusPoint: inheritedFocusPoint })
+        : this._startCursorPanState({ clientX, clientY });
     if (!started) {
       if (previousMode === "orbit") {
         this._startCursorOrbitState({ clientX, clientY });
       } else if (previousMode === "pan") {
         this._startCursorPanState({ clientX, clientY });
+      } else if (previousMode === "pan-orbit") {
+        this._startCursorPanOrbitState({ clientX, clientY });
       }
       return false;
     }
@@ -317,7 +794,7 @@ export class Viewport {
     return true;
   }
 
-  _updateCursorNavigation({ clientX, clientY, shiftKey = false } = {}) {
+  _updateCursorNavigation({ clientX, clientY, shiftKey = false, buttons = null } = {}) {
     const navigation = this._cursorNavigation;
     if (!navigation || !Number.isFinite(clientX) || !Number.isFinite(clientY)) {
       return;
@@ -325,7 +802,10 @@ export class Viewport {
 
     navigation.lastClientX = clientX;
     navigation.lastClientY = clientY;
-    if (navigation.allowShiftToggle) {
+    const buttonMode = this._cursorNavigationModeFromMouseButtons({ buttons, shiftKey });
+    if (buttonMode) {
+      this._setCursorNavigationMode(buttonMode, { clientX, clientY });
+    } else if (navigation.allowShiftToggle) {
       const nextMode = shiftKey ? navigation.shiftMode : navigation.baseMode;
       this._setCursorNavigationMode(nextMode, { clientX, clientY });
     }
@@ -334,6 +814,8 @@ export class Viewport {
       this._updateCursorOrbit({ clientX, clientY });
     } else if (navigation.mode === "pan") {
       this._updateCursorPan({ clientX, clientY });
+    } else if (navigation.mode === "pan-orbit") {
+      this._updateCursorPanOrbit({ clientX, clientY });
     }
   }
 
@@ -362,7 +844,35 @@ export class Viewport {
       this._releaseCursorOrbit();
     } else if (navigation.mode === "pan") {
       this._releaseCursorPan();
+    } else if (navigation.mode === "pan-orbit") {
+      this._releaseCursorPanOrbit();
     }
+  }
+
+  _normalizeCursorNavigationMode(mode) {
+    if (mode === "orbit" || mode === "pan-orbit") {
+      return mode;
+    }
+    return "pan";
+  }
+
+  _cursorNavigationModeFromMouseButtons({ buttons, shiftKey = false } = {}) {
+    if (!Number.isInteger(buttons) || buttons <= 0) {
+      return null;
+    }
+
+    const hasLeft = (buttons & 1) !== 0;
+    const hasRight = (buttons & 2) !== 0;
+    if (hasLeft && hasRight) {
+      return "pan-orbit";
+    }
+    if (hasLeft) {
+      return shiftKey ? "orbit" : "pan";
+    }
+    if (hasRight) {
+      return shiftKey ? "pan" : "orbit";
+    }
+    return null;
   }
 
   _removeCursorNavigationListeners() {
@@ -377,6 +887,9 @@ export class Viewport {
     if (navigation.end) {
       window.removeEventListener("pointerup", navigation.end);
       window.removeEventListener("pointercancel", navigation.end);
+    }
+    if (navigation.mouseup) {
+      window.removeEventListener("mouseup", navigation.mouseup);
     }
     if (navigation.allowShiftToggle) {
       if (navigation.keydown) {
@@ -702,9 +1215,10 @@ export class Viewport {
       "wheel",
       (event) => {
         event.preventDefault();
+        event.stopImmediatePropagation();
         this._queueSmoothZoom(event);
       },
-      { passive: false },
+      { passive: false, capture: true },
     );
   }
 
@@ -862,7 +1376,9 @@ export class Viewport {
 
   frame() {
     this.resize();
-    if (this._cursorOrbit) {
+    if (this._nativeTouchNavigation) {
+      this._applyNativeTouchNavigationStep();
+    } else if (this._cursorOrbit) {
       this._applyCursorOrbitStep();
     } else if (this._cursorPan) {
       this._applyCursorPanStep();

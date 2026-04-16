@@ -16,7 +16,14 @@ import { AppSessionStore } from "../persistence/app-session-store.js";
 import { ModelScriptHistoryStore } from "../persistence/model-script-history-store.js";
 import { createGroupingOperation, createPrimitiveOperation, mapToolGestureToOperation } from "../operation/operation-mapper.js";
 import { OPERATION_TYPES, SELECTION_MODES } from "../operation/operation-types.js";
-import { GROUND_THEMES, normalizeGroundTheme, normalizeTerrainVariation } from "../environment/ground-theme.js";
+import {
+  GROUND_THEMES,
+  normalizeGroundTheme,
+  normalizeElevationVariation,
+  normalizeTerrainDensity,
+  normalizeTerrainSeed,
+  normalizeTerrainVariation,
+} from "../environment/ground-theme.js";
 
 const TOOL_CONFIG = [
   { id: "select", label: "Select", icon: "cursor" },
@@ -27,8 +34,22 @@ const TOOL_CONFIG = [
 ];
 
 const DEFAULT_GROUND_THEME = GROUND_THEMES.FOREST;
-const DEFAULT_TERRAIN_VARIATION = 1;
+const DEFAULT_ELEVATION_VARIATION = 1;
+const DEFAULT_TERRAIN_VARIATION = 0.5;
+const DEFAULT_TERRAIN_DENSITY = 0.5;
+const DEFAULT_TERRAIN_SEED = 0;
 const DEFAULT_MODEL_NAME = "Untitled";
+const TOUCH_PICK_OFFSETS = Object.freeze([
+  [0, 0],
+  [0, -14],
+  [14, 0],
+  [0, 14],
+  [-14, 0],
+  [10, -10],
+  [10, 10],
+  [-10, 10],
+  [-10, -10],
+]);
 
 const STATIC_BUTTON_ICONS = Object.freeze({
   undo: "undo",
@@ -61,10 +82,16 @@ export class SketchApp {
     exportMenu,
     panelTabButtons,
     gridToggleButton,
+    groundEffectsToggleButton,
     devConsoleToggleButton,
+    groundRegenerateButton,
     groundThemeSelect,
+    elevationVariationInput,
+    elevationVariationValue,
     terrainVariationInput,
     terrainVariationValue,
+    terrainDensityInput,
+    terrainDensityValue,
     sidebarElement,
     sidebarScrollElement,
     toolGrid,
@@ -83,10 +110,16 @@ export class SketchApp {
     this.exportMenu = exportMenu;
     this.panelTabButtons = Array.isArray(panelTabButtons) ? panelTabButtons : [];
     this.gridToggleButton = gridToggleButton;
+    this.groundEffectsToggleButton = groundEffectsToggleButton;
     this.devConsoleToggleButton = devConsoleToggleButton;
+    this.groundRegenerateButton = groundRegenerateButton;
     this.groundThemeSelect = groundThemeSelect;
+    this.elevationVariationInput = elevationVariationInput;
+    this.elevationVariationValue = elevationVariationValue;
     this.terrainVariationInput = terrainVariationInput;
     this.terrainVariationValue = terrainVariationValue;
+    this.terrainDensityInput = terrainDensityInput;
+    this.terrainDensityValue = terrainDensityValue;
     this.sidebarElement = sidebarElement;
     this.sidebarScrollElement = sidebarScrollElement;
     this.codeCopyResetTimer = null;
@@ -114,6 +147,13 @@ export class SketchApp {
     this.tools = new ToolStateMachine();
     this.hoveredObjectId = null;
     this.hoveredHit = null;
+    this.activeTouchPointers = new Map();
+    this.activeTouchMode = null;
+    this.activeTouchToolPointerId = null;
+    this.suppressMouseInteractionUntil = 0;
+    this.touchDebugEnabled = new URLSearchParams(window.location.search).has("touchDebug")
+      || window.localStorage?.getItem?.("3dsai.touchDebug") === "1";
+    this.touchDebugElement = null;
 
     this.objectCounter = 1;
 
@@ -206,18 +246,41 @@ export class SketchApp {
 
   _attachInputHandlers() {
     this.canvas.addEventListener("pointerdown", async (event) => {
+      if (event.pointerType === "touch") {
+        if (this._beginTouchNavigation(event)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+        return;
+      }
+
+      if (this._shouldSuppressPointerInteraction(event)) {
+        return;
+      }
+
+      if ((event.buttons & 3) === 3) {
+        this._cancelActiveToolInteraction();
+        this.viewport.beginCursorPanOrbit({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          pointerId: event.pointerId,
+        });
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+
       if (event.button === 2) {
-        if (this.viewport.beginCursorNavigation({
+        this.viewport.beginCursorNavigation({
           clientX: event.clientX,
           clientY: event.clientY,
           orbitMode: !event.shiftKey,
           allowShiftOrbit: true,
           baseMode: "orbit",
           shiftMode: "pan",
-        })) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-        }
+        });
+        event.preventDefault();
+        event.stopImmediatePropagation();
         return;
       }
 
@@ -243,17 +306,16 @@ export class SketchApp {
       this._scheduleSessionPersist();
 
       if (!selectionResult.selection || !this.tools.canStartDrag()) {
-        if (this.viewport.beginCursorNavigation({
+        this.viewport.beginCursorNavigation({
           clientX: event.clientX,
           clientY: event.clientY,
           orbitMode: event.shiftKey,
           allowShiftOrbit: true,
           baseMode: "pan",
           shiftMode: "orbit",
-        })) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-        }
+        });
+        event.preventDefault();
+        event.stopImmediatePropagation();
         return;
       }
 
@@ -262,38 +324,30 @@ export class SketchApp {
         return;
       }
 
-      this.tools.startDrag({
-        pointerDown: { x: event.clientX, y: event.clientY },
-        selection: selectionResult.selection,
-        context: this._buildDragContext(event, selectionResult, { shiftKey: event.shiftKey }),
-      });
-      this.viewport.controls.enabled = false;
-
-      const op = mapToolGestureToOperation({
-        tool: this.tools.activeTool,
-        targetId: selectedObjectId,
-        selection: selectionResult.selection,
-        gesture: { dx: 0, dy: 0 },
-      });
-
-      this.runtimeController.beginManipulation({
-        type: op.type,
-        targetId: op.targetId,
-        selection: op.selection,
-        params: op.params,
-      });
+      this._startToolDrag(event, selectionResult);
       event.preventDefault();
       event.stopImmediatePropagation();
       this._renderOverlay();
     }, { capture: true });
 
     this.canvas.addEventListener("pointermove", (event) => {
+      if (event.pointerType === "touch") {
+        if (this._handleTouchPointerMove(event)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+        return;
+      }
+
+      if (this._shouldSuppressPointerInteraction(event)) {
+        return;
+      }
+
       if (event.buttons && (event.buttons & 1) === 0) {
         return;
       }
 
-      const drag = this.tools.updateDrag({ x: event.clientX, y: event.clientY });
-      if (!drag) {
+      if (!this.tools.dragState) {
         const hover = this.selectionPipeline.hover({
           clientX: event.clientX,
           clientY: event.clientY,
@@ -305,42 +359,69 @@ export class SketchApp {
         this._renderOverlay();
         return;
       }
-      const gesture = this._buildGestureFromDrag(event, drag);
-
-      const op = mapToolGestureToOperation({
-        tool: this.tools.activeTool,
-        targetId: drag.selection.objectId,
-        selection: drag.selection,
-        gesture,
-      });
-      this.runtimeController.updateManipulation(op.params);
-      this._renderOverlay();
+      this._updateToolDrag(event);
     });
 
+    window.addEventListener("pointermove", (event) => {
+      if (event.pointerType !== "touch" || !this.activeTouchPointers.has(event.pointerId)) {
+        return;
+      }
+
+      this.activeTouchPointers.set(event.pointerId, this._touchPointerSnapshot(event));
+      if (this._handleTouchPointerMove(event)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }, { capture: true, passive: false });
+
     this.canvas.addEventListener("pointerleave", () => {
-      this.hoveredObjectId = null;
-      this.hoveredHit = null;
-      this._applySelectionHighlights();
-      this._renderOverlay();
+      this._clearHoverState();
     });
 
     this.canvas.addEventListener("contextmenu", (event) => {
       event.preventDefault();
     }, { capture: true });
 
-    window.addEventListener("pointerup", async () => {
-      if (!this.tools.dragState) {
+    window.addEventListener("pointerup", async (event) => {
+      if (event.pointerType === "touch") {
+        await this._endTouchNavigation(event);
         return;
       }
 
-      this.tools.endDrag();
-      this.viewport.controls.enabled = true;
-      const result = await this.runtimeController.commitManipulation();
-      await this._recordModelHistory(result?.canonicalCode, "Manipulation");
-      this._applySelectionHighlights();
-      this._renderOverlay();
-      this._scheduleSessionPersist();
+      if (this._shouldSuppressPointerInteraction(event)) {
+        this._cancelActiveToolInteraction();
+        return;
+      }
+
+      await this._commitToolDrag();
     });
+
+    window.addEventListener("pointercancel", (event) => {
+      if (event.pointerType === "touch") {
+        this._cancelTouchNavigation(event);
+      }
+    });
+
+    this.canvas.addEventListener("touchmove", (event) => {
+      if (this._handleNativeTouchMove(event)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }, { capture: true, passive: false });
+
+    this.canvas.addEventListener("touchend", (event) => {
+      if (this._handleNativeTouchEnd(event)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }, { capture: true, passive: false });
+
+    this.canvas.addEventListener("touchcancel", (event) => {
+      if (this._handleNativeTouchCancel(event)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }, { capture: true, passive: false });
 
     window.addEventListener("keydown", (event) => {
       if (this._isEditableEventTarget(event.target)) {
@@ -868,6 +949,100 @@ export class SketchApp {
     };
   }
 
+  _startToolDrag(event, selectionResult) {
+    const selectedObjectId = selectionResult?.selection?.objectId;
+    if (!selectedObjectId) {
+      this._debugTouch("tool start blocked", { reason: "missing object id" });
+      return false;
+    }
+
+    const context = this._buildDragContext(event, selectionResult, { shiftKey: event.shiftKey });
+    this.tools.startDrag({
+      pointerDown: { x: event.clientX, y: event.clientY },
+      selection: selectionResult.selection,
+      context,
+    });
+    this.viewport.controls.enabled = false;
+
+    const beginToolManipulation = () => {
+      const op = mapToolGestureToOperation({
+        tool: this.tools.activeTool,
+        targetId: selectedObjectId,
+        selection: selectionResult.selection,
+        gesture: { dx: 0, dy: 0 },
+      });
+
+      return this.runtimeController.beginManipulation({
+        type: op.type,
+        targetId: op.targetId,
+        selection: op.selection,
+        params: op.params,
+      });
+    };
+
+    try {
+      beginToolManipulation();
+    } catch (error) {
+      if (error?.message === "Another manipulation session is already active") {
+        this.runtimeController.cancelManipulation();
+        try {
+          beginToolManipulation();
+        } catch (retryError) {
+          this.tools.clearDrag();
+          this.viewport.controls.enabled = true;
+          this._debugTouch("tool start failed", { reason: retryError?.message ?? String(retryError) });
+          return false;
+        }
+      } else {
+        this.tools.clearDrag();
+        this.viewport.controls.enabled = true;
+        this.runtimeController.cancelManipulation();
+        this._debugTouch("tool start failed", { reason: error?.message ?? String(error) });
+        return false;
+      }
+    }
+
+    this._debugTouch("tool start ok", {
+      tool: this.tools.activeTool,
+      target: selectedObjectId,
+      mode: context?.mode ?? null,
+    });
+    return true;
+  }
+
+  _updateToolDrag(event) {
+    const drag = this.tools.updateDrag({ x: event.clientX, y: event.clientY });
+    if (!drag) {
+      return false;
+    }
+
+    const gesture = this._buildGestureFromDrag(event, drag);
+    const op = mapToolGestureToOperation({
+      tool: this.tools.activeTool,
+      targetId: drag.selection.objectId,
+      selection: drag.selection,
+      gesture,
+    });
+    this.runtimeController.updateManipulation(op.params);
+    this._renderOverlay();
+    return true;
+  }
+
+  async _commitToolDrag() {
+    if (!this.tools.dragState) {
+      return false;
+    }
+
+    this.tools.endDrag();
+    this.viewport.controls.enabled = true;
+    const result = await this.runtimeController.commitManipulation();
+    await this._recordModelHistory(result?.canonicalCode, "Manipulation");
+    this._applySelectionHighlights();
+    this._renderOverlay();
+    this._scheduleSessionPersist();
+    return true;
+  }
+
   _buildGestureFromDrag(event, drag) {
     const gesture = { dx: drag.dx, dy: drag.dy, shiftKey: event.shiftKey };
 
@@ -1381,6 +1556,340 @@ export class SketchApp {
     }
   }
 
+  _beginTouchNavigation(event) {
+    this._debugTouch("down", {
+      id: event.pointerId,
+      primary: event.isPrimary,
+      active: this.activeTouchPointers.size,
+      tool: this.tools.activeTool,
+      drag: Boolean(this.tools.dragState),
+    });
+
+    if (event.isPrimary !== false && this.activeTouchPointers.size > 0) {
+      this._cancelActiveToolInteraction();
+      this._resetTouchNavigationState();
+      this._debugTouch("reset stale touch state");
+    }
+
+    this.activeTouchPointers.set(event.pointerId, this._touchPointerSnapshot(event));
+    this._markTouchInteraction();
+
+    if (this.activeTouchPointers.size === 1) {
+      this.viewport.cancelCursorOrbit();
+      this.viewport.cancelCursorPan();
+
+      const selectionResult = this._pickTouchSelection(event);
+      this._debugTouch("pick", {
+        hit: Boolean(selectionResult?.hit),
+        selection: selectionResult?.selection?.objectId ?? null,
+        mode: selectionResult?.selection?.mode ?? null,
+        canDrag: this.tools.canStartDrag(),
+      });
+      this.hoveredObjectId = selectionResult?.selection?.objectId ?? null;
+      this.hoveredHit = selectionResult?.hit ?? null;
+
+      this._applySelectionHighlights();
+      this._renderOverlay();
+      this._scheduleSessionPersist();
+
+      if (selectionResult.selection && this.tools.canStartDrag() && this._startToolDrag(event, selectionResult)) {
+        this.activeTouchMode = "tool";
+        this.activeTouchToolPointerId = event.pointerId;
+        this._captureTouchPointer(event);
+        this._debugTouch("started tool", { id: event.pointerId, target: selectionResult.selection.objectId });
+        return true;
+      }
+
+      const startedPan = this.viewport.beginCursorNavigation({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        pointerId: event.pointerId,
+        orbitMode: false,
+        allowShiftOrbit: false,
+        baseMode: "pan",
+        shiftMode: "orbit",
+      });
+      this.activeTouchMode = startedPan ? "pan" : null;
+      this._captureTouchPointer(event);
+      this._debugTouch("started pan", { id: event.pointerId, ok: startedPan });
+      return true;
+    }
+
+    this.activeTouchMode = "native";
+    this.activeTouchToolPointerId = null;
+    this._cancelActiveToolInteraction();
+    this._clearHoverState();
+    this.viewport.beginNativeTouchNavigation([...this.activeTouchPointers.values()]);
+    this._debugTouch("started native multitouch", { count: this.activeTouchPointers.size });
+    return true;
+  }
+
+  async _endTouchNavigation(event) {
+    const endedToolPointer = this.activeTouchMode === "tool" && event.pointerId === this.activeTouchToolPointerId;
+    this.activeTouchPointers.delete(event.pointerId);
+    this._markTouchInteraction();
+    if (endedToolPointer) {
+      await this._commitToolDrag();
+      this._debugTouch("committed tool", { id: event.pointerId });
+    }
+    if (this.activeTouchPointers.size === 0) {
+      this.activeTouchMode = null;
+      this.activeTouchToolPointerId = null;
+    }
+    this._clearHoverState();
+    this._debugTouch("up", { id: event.pointerId, remaining: this.activeTouchPointers.size });
+  }
+
+  _cancelTouchNavigation(event) {
+    const canceledToolPointer = this.activeTouchMode === "tool" && event.pointerId === this.activeTouchToolPointerId;
+    this.activeTouchPointers.delete(event.pointerId);
+    this._markTouchInteraction();
+    if (canceledToolPointer) {
+      this._cancelActiveToolInteraction();
+    }
+    if (this.activeTouchPointers.size === 0) {
+      this.activeTouchMode = null;
+      this.activeTouchToolPointerId = null;
+    }
+    this._clearHoverState();
+    this._debugTouch("cancel", { id: event.pointerId, tool: canceledToolPointer, remaining: this.activeTouchPointers.size });
+  }
+
+  _touchPointerSnapshot(event) {
+    return {
+      pointerId: event.pointerId,
+      pointerType: "touch",
+      clientX: event.clientX,
+      clientY: event.clientY,
+      pageX: event.pageX,
+      pageY: event.pageY,
+    };
+  }
+
+  _captureTouchPointer(event) {
+    try {
+      event.currentTarget?.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Some mobile browsers reject pointer capture for touch identifiers; window-level
+      // touch move/up listeners still keep the interaction alive.
+    }
+  }
+
+  _pickTouchSelection(event) {
+    const selectableMeshes = this.representationStore.getSelectableMeshes();
+    const pickAt = ([offsetX, offsetY]) => this.selectionPipeline.pick({
+      clientX: event.clientX + offsetX,
+      clientY: event.clientY + offsetY,
+      selectableMeshes,
+      multiSelect: false,
+    });
+
+    if (!this.tools.canStartDrag()) {
+      return pickAt([0, 0]);
+    }
+
+    let fallback = null;
+    for (const offset of TOUCH_PICK_OFFSETS) {
+      const result = pickAt(offset);
+      fallback ??= result;
+      if (result.selection) {
+        return result;
+      }
+    }
+
+    return fallback ?? { hit: null, selection: null };
+  }
+
+  _handleTouchPointerMove(event) {
+    if (event.pointerType !== "touch") {
+      return false;
+    }
+
+    if (this.activeTouchPointers.has(event.pointerId)) {
+      this.activeTouchPointers.set(event.pointerId, this._touchPointerSnapshot(event));
+    }
+    this._markTouchInteraction();
+
+    if (
+      this.activeTouchMode === "tool"
+      && event.pointerId === this.activeTouchToolPointerId
+      && this.activeTouchPointers.size === 1
+      && this.tools.dragState
+    ) {
+      this._updateToolDrag(event);
+      this._debugTouch("move tool", { id: event.pointerId, x: Math.round(event.clientX), y: Math.round(event.clientY) });
+      return true;
+    }
+
+    if (this.activeTouchPointers.size > 1) {
+      this._clearHoverState();
+    }
+
+    return false;
+  }
+
+  _handleNativeTouchMove(event) {
+    if (this.activeTouchMode !== "tool" || !this.tools.dragState || this.activeTouchPointers.size !== 1) {
+      return false;
+    }
+
+    const touch = this._activeNativeTouch(event.touches);
+    if (!touch) {
+      return false;
+    }
+
+    this._debugTouch("native move", { x: Math.round(touch.clientX), y: Math.round(touch.clientY) });
+    return this._handleTouchPointerMove(this._eventFromNativeTouch(touch));
+  }
+
+  _handleNativeTouchEnd(event) {
+    if (this.activeTouchMode !== "tool" || this.activeTouchPointers.size !== 1 || event.touches.length > 0) {
+      return false;
+    }
+
+    const pointerId = this.activeTouchToolPointerId;
+    const endedTouch = this._activeNativeTouch(event.changedTouches) ?? event.changedTouches?.[0] ?? null;
+    const endEvent = this._eventFromNativeTouch(endedTouch, { pointerId });
+    void this._endTouchNavigation(endEvent);
+    return true;
+  }
+
+  _handleNativeTouchCancel(event) {
+    if (this.activeTouchMode !== "tool" || this.activeTouchPointers.size !== 1) {
+      return false;
+    }
+
+    const pointerId = this.activeTouchToolPointerId;
+    const canceledTouch = this._activeNativeTouch(event.changedTouches) ?? event.changedTouches?.[0] ?? null;
+    this._cancelTouchNavigation(this._eventFromNativeTouch(canceledTouch, { pointerId }));
+    return true;
+  }
+
+  _activeNativeTouch(touchList) {
+    if (!touchList || touchList.length === 0) {
+      return null;
+    }
+
+    if (touchList.length === 1) {
+      return touchList[0];
+    }
+
+    const activePointer = this.activeTouchPointers.get(this.activeTouchToolPointerId);
+    if (!activePointer) {
+      return touchList[0];
+    }
+
+    let bestTouch = touchList[0];
+    let bestDistanceSq = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < touchList.length; i += 1) {
+      const touch = touchList[i];
+      const dx = touch.clientX - activePointer.clientX;
+      const dy = touch.clientY - activePointer.clientY;
+      const distanceSq = dx * dx + dy * dy;
+      if (distanceSq < bestDistanceSq) {
+        bestDistanceSq = distanceSq;
+        bestTouch = touch;
+      }
+    }
+    return bestTouch;
+  }
+
+  _eventFromNativeTouch(touch, { pointerId = this.activeTouchToolPointerId } = {}) {
+    const fallback = this.activeTouchPointers.get(pointerId) ?? {
+      clientX: 0,
+      clientY: 0,
+      pageX: 0,
+      pageY: 0,
+    };
+    return {
+      pointerId,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: touch?.clientX ?? fallback.clientX,
+      clientY: touch?.clientY ?? fallback.clientY,
+      pageX: touch?.pageX ?? fallback.pageX,
+      pageY: touch?.pageY ?? fallback.pageY,
+    };
+  }
+
+  _markTouchInteraction() {
+    this.suppressMouseInteractionUntil = performance.now() + 700;
+  }
+
+  _shouldSuppressPointerInteraction(event) {
+    if (this.activeTouchPointers.size > 0) {
+      return true;
+    }
+
+    if (event.pointerType === "mouse" || !event.pointerType) {
+      return performance.now() < this.suppressMouseInteractionUntil;
+    }
+
+    return false;
+  }
+
+  _resetTouchNavigationState() {
+    this.activeTouchPointers.clear();
+    this.activeTouchMode = null;
+    this.activeTouchToolPointerId = null;
+    this.viewport.cancelCursorNavigation?.();
+  }
+
+  _debugTouch(message, details = null) {
+    if (!this.touchDebugEnabled) {
+      return;
+    }
+
+    if (!this.touchDebugElement) {
+      const element = document.createElement("div");
+      element.style.position = "fixed";
+      element.style.left = "8px";
+      element.style.right = "8px";
+      element.style.bottom = "8px";
+      element.style.zIndex = "10000";
+      element.style.padding = "8px";
+      element.style.border = "1px solid rgba(0,0,0,0.25)";
+      element.style.borderRadius = "6px";
+      element.style.background = "rgba(255,255,255,0.94)";
+      element.style.color = "#102030";
+      element.style.font = "12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace";
+      element.style.pointerEvents = "none";
+      element.style.whiteSpace = "pre-wrap";
+      document.body.appendChild(element);
+      this.touchDebugElement = element;
+    }
+
+    const suffix = details ? ` ${JSON.stringify(details)}` : "";
+    const previous = this.touchDebugElement.textContent.split("\n").slice(-7);
+    previous.push(`${message}${suffix}`);
+    this.touchDebugElement.textContent = previous.join("\n");
+  }
+
+  _cancelActiveToolInteraction() {
+    if (!this.tools.dragState) {
+      this.viewport.controls.enabled = true;
+      return;
+    }
+
+    this.tools.clearDrag();
+    this.runtimeController.cancelManipulation();
+    this.viewport.controls.enabled = true;
+    this.activeTouchToolPointerId = null;
+    this._applySelectionHighlights();
+    this._renderOverlay();
+  }
+
+  _clearHoverState() {
+    if (!this.hoveredObjectId && !this.hoveredHit) {
+      return;
+    }
+
+    this.hoveredObjectId = null;
+    this.hoveredHit = null;
+    this._applySelectionHighlights();
+    this._renderOverlay();
+  }
+
   _syncHistoryButtons() {
     const undoButton = this.actionButtons.get("undo");
     if (undoButton) {
@@ -1442,9 +1951,23 @@ export class SketchApp {
       });
     }
 
+    if (this.groundEffectsToggleButton) {
+      this.groundEffectsToggleButton.addEventListener("click", () => {
+        this._setGroundEffectsVisible(!this.viewport.areGroundEffectsVisible());
+        void this._persistSessionState();
+      });
+    }
+
     if (this.devConsoleToggleButton) {
       this.devConsoleToggleButton.addEventListener("click", () => {
         this._setDevConsoleVisible(!this.devConsoleVisible);
+        void this._persistSessionState();
+      });
+    }
+
+    if (this.groundRegenerateButton) {
+      this.groundRegenerateButton.addEventListener("click", () => {
+        this._regenerateGroundTheme();
         void this._persistSessionState();
       });
     }
@@ -1453,8 +1976,24 @@ export class SketchApp {
       this.groundThemeSelect.addEventListener("change", () => {
         this._setGroundTheme({
           theme: this.groundThemeSelect.value,
+          elevationVariation: this.elevationVariationInput?.value,
           terrainVariation: this.terrainVariationInput?.value,
+          terrainDensity: this.terrainDensityInput?.value,
         });
+        void this._persistSessionState();
+      });
+    }
+
+    if (this.elevationVariationInput) {
+      this.elevationVariationInput.addEventListener("input", () => {
+        this._setGroundTheme({
+          theme: this.groundThemeSelect?.value,
+          elevationVariation: this.elevationVariationInput.value,
+          terrainVariation: this.terrainVariationInput?.value,
+          terrainDensity: this.terrainDensityInput?.value,
+        });
+      });
+      this.elevationVariationInput.addEventListener("change", () => {
         void this._persistSessionState();
       });
     }
@@ -1463,10 +2002,26 @@ export class SketchApp {
       this.terrainVariationInput.addEventListener("input", () => {
         this._setGroundTheme({
           theme: this.groundThemeSelect?.value,
+          elevationVariation: this.elevationVariationInput?.value,
           terrainVariation: this.terrainVariationInput.value,
+          terrainDensity: this.terrainDensityInput?.value,
         });
       });
       this.terrainVariationInput.addEventListener("change", () => {
+        void this._persistSessionState();
+      });
+    }
+
+    if (this.terrainDensityInput) {
+      this.terrainDensityInput.addEventListener("input", () => {
+        this._setGroundTheme({
+          theme: this.groundThemeSelect?.value,
+          elevationVariation: this.elevationVariationInput?.value,
+          terrainVariation: this.terrainVariationInput?.value,
+          terrainDensity: this.terrainDensityInput.value,
+        });
+      });
+      this.terrainDensityInput.addEventListener("change", () => {
         void this._persistSessionState();
       });
     }
@@ -1480,7 +2035,14 @@ export class SketchApp {
     this._setPanelPage("script");
     this._setDevConsoleVisible(false);
     this._setGridVisible(false);
-    this._setGroundTheme({ theme: DEFAULT_GROUND_THEME, terrainVariation: DEFAULT_TERRAIN_VARIATION });
+    this._setGroundEffectsVisible(true);
+    this._setGroundTheme({
+      theme: DEFAULT_GROUND_THEME,
+      elevationVariation: DEFAULT_ELEVATION_VARIATION,
+      terrainVariation: DEFAULT_TERRAIN_VARIATION,
+      terrainDensity: DEFAULT_TERRAIN_DENSITY,
+      terrainSeed: DEFAULT_TERRAIN_SEED,
+    });
   }
 
   _attachSidebarScrollHandlers() {
@@ -1577,6 +2139,16 @@ export class SketchApp {
     }
   }
 
+  _setGroundEffectsVisible(visible) {
+    const isVisible = Boolean(visible);
+    this.viewport.setGroundEffectsVisible(isVisible);
+    if (this.groundEffectsToggleButton) {
+      this.groundEffectsToggleButton.textContent = `Ground: ${isVisible ? "On" : "Off"}`;
+      this.groundEffectsToggleButton.setAttribute("aria-pressed", String(isVisible));
+      this.groundEffectsToggleButton.classList.toggle("active", isVisible);
+    }
+  }
+
   _setDevConsoleVisible(visible) {
     const isVisible = Boolean(visible);
     this.devConsoleVisible = isVisible;
@@ -1592,23 +2164,60 @@ export class SketchApp {
     }
   }
 
-  _setGroundTheme({ theme = DEFAULT_GROUND_THEME, terrainVariation = DEFAULT_TERRAIN_VARIATION } = {}) {
+  _setGroundTheme({
+    theme = DEFAULT_GROUND_THEME,
+    elevationVariation = DEFAULT_ELEVATION_VARIATION,
+    terrainVariation = DEFAULT_TERRAIN_VARIATION,
+    terrainDensity = DEFAULT_TERRAIN_DENSITY,
+    terrainSeed,
+  } = {}) {
     const normalizedTheme = normalizeGroundTheme(theme);
-    const normalizedVariation = normalizeTerrainVariation(terrainVariation);
+    const normalizedElevationVariation = normalizeElevationVariation(elevationVariation);
+    const normalizedTerrainVariation = normalizeTerrainVariation(terrainVariation);
+    const normalizedDensity = normalizeTerrainDensity(terrainDensity);
+    const currentTerrainSeed = this.viewport?.getGroundThemeState?.().terrainSeed ?? DEFAULT_TERRAIN_SEED;
+    const normalizedSeed = normalizeTerrainSeed(terrainSeed ?? currentTerrainSeed);
     this.viewport.setGroundTheme({
       theme: normalizedTheme,
-      terrainVariation: normalizedVariation,
+      elevationVariation: normalizedElevationVariation,
+      terrainVariation: normalizedTerrainVariation,
+      terrainDensity: normalizedDensity,
+      terrainSeed: normalizedSeed,
     });
 
     if (this.groundThemeSelect) {
       this.groundThemeSelect.value = normalizedTheme;
     }
+    if (this.elevationVariationInput) {
+      this.elevationVariationInput.value = String(normalizedElevationVariation);
+    }
+    if (this.elevationVariationValue) {
+      this.elevationVariationValue.textContent = `${Math.round(normalizedElevationVariation * 100)}%`;
+    }
     if (this.terrainVariationInput) {
-      this.terrainVariationInput.value = String(normalizedVariation);
+      this.terrainVariationInput.value = String(normalizedTerrainVariation);
     }
     if (this.terrainVariationValue) {
-      this.terrainVariationValue.textContent = `${Math.round(normalizedVariation * 100)}%`;
+      this.terrainVariationValue.textContent = `${Math.round(normalizedTerrainVariation * 100)}%`;
     }
+    if (this.terrainDensityInput) {
+      this.terrainDensityInput.value = String(normalizedDensity);
+    }
+    if (this.terrainDensityValue) {
+      this.terrainDensityValue.textContent = `${Math.round(normalizedDensity * 100)}%`;
+    }
+  }
+
+  _regenerateGroundTheme() {
+    const state = this.viewport.getGroundThemeState();
+    let nextSeed = generateTerrainSeed();
+    if (nextSeed === state.terrainSeed) {
+      nextSeed += 1;
+    }
+    this._setGroundTheme({
+      ...state,
+      terrainSeed: nextSeed,
+    });
   }
 
   _setActiveTool(tool, { render = true } = {}) {
@@ -1695,9 +2304,9 @@ export class SketchApp {
       this._setDevConsoleVisible(Boolean(state?.ui?.devConsoleVisible));
       this._setModelName(state?.ui?.modelName ?? DEFAULT_MODEL_NAME);
       this._setGridVisible(Boolean(state?.scene?.gridVisible));
-      this._setGroundTheme(
-        state?.scene?.groundTheme ?? { theme: DEFAULT_GROUND_THEME, terrainVariation: DEFAULT_TERRAIN_VARIATION },
-      );
+      this._setGroundEffectsVisible(state?.scene?.groundTheme?.groundEffectsVisible !== false);
+      const savedGroundTheme = state?.scene?.groundTheme;
+      this._setGroundTheme(savedGroundTheme ? migrateGroundThemeState(savedGroundTheme) : defaultGroundThemeState());
 
       const selectable = new Set(
         this.representationStore.getSelectableMeshes().map((mesh) => mesh.userData.objectId).filter(Boolean),
@@ -1923,6 +2532,30 @@ function disposeExportGroup(group) {
       object.material.dispose?.();
     }
   });
+}
+
+function generateTerrainSeed() {
+  return Math.floor(Math.random() * 1_000_000_000) + 1;
+}
+
+function defaultGroundThemeState() {
+  return {
+    theme: DEFAULT_GROUND_THEME,
+    elevationVariation: DEFAULT_ELEVATION_VARIATION,
+    terrainVariation: DEFAULT_TERRAIN_VARIATION,
+    terrainDensity: DEFAULT_TERRAIN_DENSITY,
+    terrainSeed: DEFAULT_TERRAIN_SEED,
+  };
+}
+
+function migrateGroundThemeState(state) {
+  const legacyElevationVariation = state.elevationVariation ?? state.terrainVariation ?? DEFAULT_ELEVATION_VARIATION;
+  const terrainVariation = state.elevationVariation == null ? DEFAULT_TERRAIN_VARIATION : state.terrainVariation;
+  return {
+    ...state,
+    elevationVariation: legacyElevationVariation,
+    terrainVariation,
+  };
 }
 
 function iconSvg(name) {

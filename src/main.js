@@ -15,10 +15,16 @@ const exportToggleButton = document.getElementById("export-toggle");
 const exportMenu = document.getElementById("export-menu");
 const panelTabButtons = Array.from(document.querySelectorAll("[data-panel-page]"));
 const gridToggleButton = document.getElementById("grid-toggle");
+const groundEffectsToggleButton = document.getElementById("ground-effects-toggle");
 const devConsoleToggleButton = document.getElementById("dev-console-toggle");
+const groundRegenerateButton = document.getElementById("ground-regenerate");
 const groundThemeSelect = document.getElementById("ground-theme");
+const elevationVariationInput = document.getElementById("elevation-variation");
+const elevationVariationValue = document.getElementById("elevation-variation-value");
 const terrainVariationInput = document.getElementById("terrain-variation");
 const terrainVariationValue = document.getElementById("terrain-variation-value");
+const terrainDensityInput = document.getElementById("terrain-density");
+const terrainDensityValue = document.getElementById("terrain-density-value");
 const sidebarElement = document.querySelector(".sidebar");
 const sidebarScrollElement = document.querySelector(".sidebar-scroll-content");
 const toolGrid = document.getElementById("tool-grid");
@@ -38,10 +44,16 @@ if (
   !exportToggleButton ||
   !exportMenu ||
   !gridToggleButton ||
+  !groundEffectsToggleButton ||
   !devConsoleToggleButton ||
+  !groundRegenerateButton ||
   !groundThemeSelect ||
+  !elevationVariationInput ||
+  !elevationVariationValue ||
   !terrainVariationInput ||
   !terrainVariationValue ||
+  !terrainDensityInput ||
+  !terrainDensityValue ||
   !sidebarElement ||
   !sidebarScrollElement ||
   panelTabButtons.length === 0 ||
@@ -66,13 +78,31 @@ const app = new SketchApp({
   exportMenu,
   panelTabButtons,
   gridToggleButton,
+  groundEffectsToggleButton,
   devConsoleToggleButton,
+  groundRegenerateButton,
   groundThemeSelect,
+  elevationVariationInput,
+  elevationVariationValue,
   terrainVariationInput,
   terrainVariationValue,
+  terrainDensityInput,
+  terrainDensityValue,
   sidebarElement,
   sidebarScrollElement,
   toolGrid,
 });
 
-app.start();
+app.start()
+  .then(() => {
+    requestAnimationFrame(() => {
+      document.body.classList.remove("app-loading");
+    });
+  })
+  .catch((error) => {
+    console.error("Failed to start app", error);
+    const loadingStatus = document.querySelector("[data-loading-status]");
+    if (loadingStatus) {
+      loadingStatus.textContent = "Unable to load";
+    }
+  });

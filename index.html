@@ -6,7 +6,11 @@
     <title>3D Sketch AI</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
-  <body>
+  <body class="app-loading">
+    <div id="app-loader" class="app-loader" role="status" aria-live="polite" aria-label="Loading 3D Sketch AI">
+      <div class="app-loader-spinner" aria-hidden="true"></div>
+      <div class="app-loader-status" data-loading-status>Loading</div>
+    </div>
     <div id="app-shell">
       <header class="topbar">
         <div class="brand">
@@ -175,6 +179,7 @@
           <h2>Settings</h2>
           <div class="settings-list">
             <button id="grid-toggle" class="settings-btn" type="button" aria-pressed="false">Ground Grid: Off</button>
+            <button id="ground-effects-toggle" class="settings-btn" type="button" aria-pressed="true">Ground: On</button>
             <button id="dev-console-toggle" class="settings-btn" type="button" aria-pressed="false">Dev Console: Off</button>
             <label class="settings-field" for="ground-theme">
               <span>Ground Theme</span>
@@ -187,11 +192,22 @@
                 <option value="city">City</option>
               </select>
             </label>
+            <label class="settings-field" for="elevation-variation">
+              <span>Elevation Variation</span>
+              <input id="elevation-variation" type="range" min="0" max="1" step="0.01" value="1" />
+              <output id="elevation-variation-value" for="elevation-variation">100%</output>
+            </label>
             <label class="settings-field" for="terrain-variation">
               <span>Terrain Variation</span>
-              <input id="terrain-variation" type="range" min="0" max="1" step="0.01" value="1" />
-              <output id="terrain-variation-value" for="terrain-variation">100%</output>
+              <input id="terrain-variation" type="range" min="0" max="1" step="0.01" value="0.5" />
+              <output id="terrain-variation-value" for="terrain-variation">50%</output>
             </label>
+            <label class="settings-field" for="terrain-density">
+              <span>Terrain Density</span>
+              <input id="terrain-density" type="range" min="0" max="1" step="0.01" value="0.5" />
+              <output id="terrain-density-value" for="terrain-density">50%</output>
+            </label>
+            <button id="ground-regenerate" class="settings-btn" type="button">Regenerate Ground</button>
           </div>
         </div>
       </section>
