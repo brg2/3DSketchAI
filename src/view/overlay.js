@@ -3,7 +3,16 @@ export class Overlay {
     this.element = element;
   }
 
+  setVisible(visible) {
+    this.element.hidden = !visible;
+    if (!visible) {
+      this.element.innerHTML = "";
+    }
+  }
+
   render({ tool, selectionMode, selectedIds, hoveredId, previewing, exactBackend, operationCount }) {
+    this.setVisible(true);
+
     const selectedText = selectedIds.length > 0 ? selectedIds.join(", ") : "none";
     const hoveredText = hoveredId ?? "none";
 

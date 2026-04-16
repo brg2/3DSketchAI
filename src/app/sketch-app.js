@@ -51,6 +51,7 @@ export class SketchApp {
     codeCompressButton,
     panelTabButtons,
     gridToggleButton,
+    devConsoleToggleButton,
     groundThemeSelect,
     terrainVariationInput,
     terrainVariationValue,
@@ -64,12 +65,14 @@ export class SketchApp {
     this.codeCompressButton = codeCompressButton;
     this.panelTabButtons = Array.isArray(panelTabButtons) ? panelTabButtons : [];
     this.gridToggleButton = gridToggleButton;
+    this.devConsoleToggleButton = devConsoleToggleButton;
     this.groundThemeSelect = groundThemeSelect;
     this.terrainVariationInput = terrainVariationInput;
     this.terrainVariationValue = terrainVariationValue;
     this.codeCopyResetTimer = null;
     this.codeCollapsed = false;
     this.panelPage = "script";
+    this.devConsoleVisible = false;
     this.appSessionStore = new AppSessionStore();
     this.modelHistoryStore = new ModelScriptHistoryStore();
     this.modelHistory = new ModelScriptHistory();
@@ -500,6 +503,11 @@ export class SketchApp {
   }
 
   _renderOverlay() {
+    if (!this.devConsoleVisible) {
+      this.overlay.setVisible(false);
+      return;
+    }
+
     const snapshot = this.runtimeController.getSnapshot();
     this.overlay.render({
       tool: this.tools.activeTool,
@@ -1156,6 +1164,13 @@ export class SketchApp {
       });
     }
 
+    if (this.devConsoleToggleButton) {
+      this.devConsoleToggleButton.addEventListener("click", () => {
+        this._setDevConsoleVisible(!this.devConsoleVisible);
+        void this._persistSessionState();
+      });
+    }
+
     if (this.groundThemeSelect) {
       this.groundThemeSelect.addEventListener("change", () => {
         this._setGroundTheme({
@@ -1185,6 +1200,7 @@ export class SketchApp {
 
     this._setCodePanelCollapsed(false);
     this._setPanelPage("script");
+    this._setDevConsoleVisible(false);
     this._setGridVisible(false);
     this._setGroundTheme({ theme: DEFAULT_GROUND_THEME, terrainVariation: DEFAULT_TERRAIN_VARIATION });
   }
@@ -1220,6 +1236,21 @@ export class SketchApp {
       this.gridToggleButton.textContent = `Ground Grid: ${isVisible ? "On" : "Off"}`;
       this.gridToggleButton.setAttribute("aria-pressed", String(isVisible));
       this.gridToggleButton.classList.toggle("active", isVisible);
+    }
+  }
+
+  _setDevConsoleVisible(visible) {
+    const isVisible = Boolean(visible);
+    this.devConsoleVisible = isVisible;
+    if (this.devConsoleToggleButton) {
+      this.devConsoleToggleButton.textContent = `Dev Console: ${isVisible ? "On" : "Off"}`;
+      this.devConsoleToggleButton.setAttribute("aria-pressed", String(isVisible));
+      this.devConsoleToggleButton.classList.toggle("active", isVisible);
+    }
+    if (isVisible) {
+      this._renderOverlay();
+    } else {
+      this.overlay.setVisible(false);
     }
   }
 
@@ -1292,6 +1323,7 @@ export class SketchApp {
         selectionMode: this.selectionPipeline.selectionMode,
         codeCollapsed: this.codeCollapsed,
         panelPage: this.panelPage,
+        devConsoleVisible: this.devConsoleVisible,
       },
       selection: {
         selectedObjectIds: [...this.selectionPipeline.selectedObjectIds],
@@ -1321,6 +1353,7 @@ export class SketchApp {
       this._setSelectionMode(state?.ui?.selectionMode ?? SELECTION_MODES.OBJECT, { render: false });
       this._setCodePanelCollapsed(Boolean(state?.ui?.codeCollapsed));
       this._setPanelPage(state?.ui?.panelPage ?? "script");
+      this._setDevConsoleVisible(Boolean(state?.ui?.devConsoleVisible));
       this._setGridVisible(Boolean(state?.scene?.gridVisible));
       this._setGroundTheme(
         state?.scene?.groundTheme ?? { theme: DEFAULT_GROUND_THEME, terrainVariation: DEFAULT_TERRAIN_VARIATION },

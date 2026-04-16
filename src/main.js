@@ -9,6 +9,7 @@ const codeCopyButton = document.getElementById("code-copy");
 const codeCompressButton = document.getElementById("code-compress");
 const panelTabButtons = Array.from(document.querySelectorAll("[data-panel-page]"));
 const gridToggleButton = document.getElementById("grid-toggle");
+const devConsoleToggleButton = document.getElementById("dev-console-toggle");
 const groundThemeSelect = document.getElementById("ground-theme");
 const terrainVariationInput = document.getElementById("terrain-variation");
 const terrainVariationValue = document.getElementById("terrain-variation-value");
@@ -23,6 +24,7 @@ if (
   !codeCopyButton ||
   !codeCompressButton ||
   !gridToggleButton ||
+  !devConsoleToggleButton ||
   !groundThemeSelect ||
   !terrainVariationInput ||
   !terrainVariationValue ||
@@ -42,6 +44,7 @@ const app = new SketchApp({
   codeCompressButton,
   panelTabButtons,
   gridToggleButton,
+  devConsoleToggleButton,
   groundThemeSelect,
   terrainVariationInput,
   terrainVariationValue,
