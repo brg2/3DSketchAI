@@ -26,7 +26,7 @@ If a modeling pattern is not directly exposed by Replicad, the callable helper b
 | Pan | Left-click drag |
 | Orbit | Right-click drag |
 | Zoom | Scroll wheel |
-| Shift + right-click drag | Switch orbit ↔ pan |
+| Switch orbit ↔ pan | Shift + right-click drag |
 
 ### Mobile (multi-touch)
 
