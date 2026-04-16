@@ -444,6 +444,15 @@ export class SketchApp {
       return;
     }
 
+    this.docNameElement.addEventListener("focus", () => {
+      this._selectDocumentNameText();
+    });
+    this.docNameElement.addEventListener("pointerup", (event) => {
+      if (document.activeElement === this.docNameElement) {
+        event.preventDefault();
+        this._selectDocumentNameText();
+      }
+    });
     this.docNameElement.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -458,6 +467,22 @@ export class SketchApp {
       this._setModelName(this.modelName);
       void this._persistSessionState();
     });
+  }
+
+  _selectDocumentNameText() {
+    if (!this.docNameElement) {
+      return;
+    }
+
+    const selection = window.getSelection();
+    if (!selection) {
+      return;
+    }
+
+    const range = document.createRange();
+    range.selectNodeContents(this.docNameElement);
+    selection.removeAllRanges();
+    selection.addRange(range);
   }
 
   _attachModelFileHandlers() {
