@@ -7,6 +7,12 @@ const codePanel = document.getElementById("code-panel");
 const codeToggle = document.getElementById("code-toggle");
 const codeCopyButton = document.getElementById("code-copy");
 const codeCompressButton = document.getElementById("code-compress");
+const docNameElement = document.getElementById("doc-name");
+const modelOpenButton = document.getElementById("model-open");
+const modelOpenInput = document.getElementById("model-open-input");
+const modelSaveButton = document.getElementById("model-save");
+const exportToggleButton = document.getElementById("export-toggle");
+const exportMenu = document.getElementById("export-menu");
 const panelTabButtons = Array.from(document.querySelectorAll("[data-panel-page]"));
 const gridToggleButton = document.getElementById("grid-toggle");
 const devConsoleToggleButton = document.getElementById("dev-console-toggle");
@@ -25,6 +31,12 @@ if (
   !codeToggle ||
   !codeCopyButton ||
   !codeCompressButton ||
+  !docNameElement ||
+  !modelOpenButton ||
+  !modelOpenInput ||
+  !modelSaveButton ||
+  !exportToggleButton ||
+  !exportMenu ||
   !gridToggleButton ||
   !devConsoleToggleButton ||
   !groundThemeSelect ||
@@ -46,6 +58,12 @@ const app = new SketchApp({
   codeToggle,
   codeCopyButton,
   codeCompressButton,
+  docNameElement,
+  modelOpenButton,
+  modelOpenInput,
+  modelSaveButton,
+  exportToggleButton,
+  exportMenu,
   panelTabButtons,
   gridToggleButton,
   devConsoleToggleButton,

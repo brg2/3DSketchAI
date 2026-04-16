@@ -53,7 +53,7 @@ body.code-collapsed #app-shell {
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .brand h1 {
@@ -63,9 +63,50 @@ body.code-collapsed #app-shell {
   color: #245d8f;
 }
 
+.github-brand-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: #24292f;
+  text-decoration: none;
+  flex: 0 0 auto;
+}
+
+.github-brand-link:hover,
+.github-brand-link:focus-visible {
+  background: #f0f4f8;
+  outline: none;
+}
+
+.github-brand-link .btn-icon {
+  color: currentColor;
+}
+
 .doc-name {
+  display: inline-flex;
+  align-items: center;
+  min-width: 72px;
+  max-width: 220px;
+  min-height: 28px;
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   font-size: 0.86rem;
   color: var(--muted);
+  outline: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-name:hover,
+.doc-name:focus {
+  border-color: var(--line-strong);
+  background: #f9fcff;
+  color: var(--text);
 }
 
 .actions {
@@ -286,8 +327,41 @@ button.active {
   display: none;
 }
 
-.github-link .btn-icon {
-  color: #24292f;
+.export-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.export-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 12;
+  min-width: 160px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(20, 35, 50, 0.16);
+}
+
+.export-menu[hidden] {
+  display: none;
+}
+
+.export-menu button {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  padding: 7px 9px;
+  border-color: transparent;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.export-menu button:hover {
+  border-color: transparent;
+  background: var(--accent-soft);
 }
 
 #overlay {

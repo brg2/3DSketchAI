@@ -1,4 +1,7 @@
 import * as THREE from "three";
+import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
+import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
+import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
 import { Viewport } from "../view/viewport.js";
 import { Overlay } from "../view/overlay.js";
 import { SelectionPipeline } from "../interaction/selection-pipeline.js";
@@ -24,11 +27,13 @@ const TOOL_CONFIG = [
 
 const DEFAULT_GROUND_THEME = GROUND_THEMES.FOREST;
 const DEFAULT_TERRAIN_VARIATION = 1;
+const DEFAULT_MODEL_NAME = "Untitled";
 
 const STATIC_BUTTON_ICONS = Object.freeze({
   undo: "undo",
   redo: "redo",
   reset: "plus",
+  export: "export",
   primitive: "cube",
   zoomExtents: "zoomExtents",
   group: "group",
@@ -47,6 +52,12 @@ export class SketchApp {
     codeToggle,
     codeCopyButton,
     codeCompressButton,
+    docNameElement,
+    modelOpenButton,
+    modelOpenInput,
+    modelSaveButton,
+    exportToggleButton,
+    exportMenu,
     panelTabButtons,
     gridToggleButton,
     devConsoleToggleButton,
@@ -63,6 +74,12 @@ export class SketchApp {
     this.codeToggle = codeToggle;
     this.codeCopyButton = codeCopyButton;
     this.codeCompressButton = codeCompressButton;
+    this.docNameElement = docNameElement;
+    this.modelOpenButton = modelOpenButton;
+    this.modelOpenInput = modelOpenInput;
+    this.modelSaveButton = modelSaveButton;
+    this.exportToggleButton = exportToggleButton;
+    this.exportMenu = exportMenu;
     this.panelTabButtons = Array.isArray(panelTabButtons) ? panelTabButtons : [];
     this.gridToggleButton = gridToggleButton;
     this.devConsoleToggleButton = devConsoleToggleButton;
@@ -75,6 +92,8 @@ export class SketchApp {
     this.codeCollapsed = false;
     this.panelPage = "script";
     this.devConsoleVisible = false;
+    this.modelName = DEFAULT_MODEL_NAME;
+    this.exportMenuOpen = false;
     this.appSessionStore = new AppSessionStore();
     this.modelHistoryStore = new ModelScriptHistoryStore();
     this.modelHistory = new ModelScriptHistory();
@@ -369,6 +388,7 @@ export class SketchApp {
           this.hoveredObjectId = null;
           this.hoveredHit = null;
           this.objectCounter = 1;
+          this._setModelName(DEFAULT_MODEL_NAME);
           this._setPanelPage("script");
           this._setGridVisible(false);
           const result = await this.runtimeController.ensureDefaultModel();
@@ -413,6 +433,82 @@ export class SketchApp {
         }
       });
     }
+
+    this._attachDocumentNameHandlers();
+    this._attachModelFileHandlers();
+    this._attachExportHandlers();
+  }
+
+  _attachDocumentNameHandlers() {
+    if (!this.docNameElement) {
+      return;
+    }
+
+    this.docNameElement.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        this.docNameElement.blur();
+      }
+    });
+    this.docNameElement.addEventListener("input", () => {
+      this.modelName = this._normalizeModelName(this.docNameElement.textContent);
+      this._scheduleSessionPersist();
+    });
+    this.docNameElement.addEventListener("blur", () => {
+      this._setModelName(this.modelName);
+      void this._persistSessionState();
+    });
+  }
+
+  _attachModelFileHandlers() {
+    this.modelSaveButton?.addEventListener("click", () => {
+      this._saveModelScriptToFile();
+    });
+    this.modelOpenButton?.addEventListener("click", () => {
+      this.modelOpenInput?.click();
+    });
+    this.modelOpenInput?.addEventListener("change", () => {
+      const file = this.modelOpenInput.files?.[0] ?? null;
+      this.modelOpenInput.value = "";
+      if (file) {
+        void this._openModelScriptFile(file);
+      }
+    });
+  }
+
+  _attachExportHandlers() {
+    if (!this.exportToggleButton || !this.exportMenu) {
+      return;
+    }
+
+    this.exportToggleButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this._setExportMenuOpen(!this.exportMenuOpen);
+    });
+    this.exportMenu.addEventListener("click", (event) => {
+      const button = event.target instanceof Element ? event.target.closest("[data-export-format]") : null;
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+      this._setExportMenuOpen(false);
+      void this._exportModel(button.dataset.exportFormat);
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!this.exportMenuOpen) {
+        return;
+      }
+      const target = event.target;
+      if (target instanceof Node && (this.exportMenu.contains(target) || this.exportToggleButton.contains(target))) {
+        return;
+      }
+      this._setExportMenuOpen(false);
+    });
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && this.exportMenuOpen) {
+        this._setExportMenuOpen(false);
+        this.exportToggleButton.focus();
+      }
+    });
   }
 
   async createPrimitive() {
@@ -467,6 +563,161 @@ export class SketchApp {
     const result = await this.runtimeController.commitOperation(operation);
     await this._recordModelHistory(result?.canonicalCode, "Component");
     this._scheduleSessionPersist();
+  }
+
+  _setExportMenuOpen(open) {
+    this.exportMenuOpen = Boolean(open);
+    if (!this.exportMenu || !this.exportToggleButton) {
+      return;
+    }
+
+    this.exportMenu.hidden = !this.exportMenuOpen;
+    this.exportToggleButton.setAttribute("aria-expanded", String(this.exportMenuOpen));
+  }
+
+  _saveModelScriptToFile() {
+    this._downloadTextFile(this._modelFileName("ts"), this.codeElement?.textContent ?? "", "text/typescript;charset=utf-8");
+  }
+
+  async _openModelScriptFile(file) {
+    if (!file || typeof file.text !== "function") {
+      return;
+    }
+
+    try {
+      const scriptText = await file.text();
+      await this.runtimeController.reloadFromCanonicalCode(scriptText, { cleanSlate: true });
+      const canonicalCode = await this.runtimeController.persistCanonicalModel();
+      this.modelHistory.reset(canonicalCode, { label: "Open" });
+      await this._persistModelHistory();
+      this.objectCounter = 1;
+      this._syncObjectCounterFromOperations(this.runtimeController.canonicalModel.getOperations());
+      this.selectionPipeline.selectedObjectIds = [];
+      this.hoveredObjectId = null;
+      this.hoveredHit = null;
+      this._setModelName(this._modelNameFromFileName(file.name));
+      this._setPanelPage("script");
+      this._applySelectionHighlights();
+      this._renderOverlay();
+      await this._persistSessionState();
+    } catch (error) {
+      console.warn("Failed to open model script", error);
+    }
+  }
+
+  async _exportModel(format) {
+    const normalizedFormat = format === "glb" || format === "obj" || format === "stl" ? format : null;
+    if (!normalizedFormat) {
+      return;
+    }
+
+    try {
+      const exportGroup = this._createModelExportGroup();
+      if (!exportGroup) {
+        return;
+      }
+
+      try {
+        if (normalizedFormat === "obj") {
+          const objText = new OBJExporter().parse(exportGroup);
+          this._downloadTextFile(this._modelFileName("obj"), objText, "model/obj;charset=utf-8");
+          return;
+        }
+
+        if (normalizedFormat === "stl") {
+          const stlText = new STLExporter().parse(exportGroup, { binary: false });
+          this._downloadTextFile(this._modelFileName("stl"), stlText, "model/stl;charset=utf-8");
+          return;
+        }
+
+        const glb = await this._exportGlb(exportGroup);
+        this._downloadBlob(this._modelFileName("glb"), new Blob([glb], { type: "model/gltf-binary" }));
+      } finally {
+        disposeExportGroup(exportGroup);
+      }
+    } catch (error) {
+      console.warn("Failed to export model", error);
+    }
+  }
+
+  _createModelExportGroup() {
+    const meshes = this.representationStore.getSelectableMeshes().filter((mesh) => mesh.visible !== false);
+    if (meshes.length === 0) {
+      return null;
+    }
+
+    const group = new THREE.Group();
+    group.name = this._safeModelFileStem();
+    for (const mesh of meshes) {
+      mesh.updateWorldMatrix(true, false);
+      const clone = new THREE.Mesh(mesh.geometry.clone(), cloneMaterialForExport(mesh.material));
+      clone.name = mesh.userData.objectId || mesh.name || "model_part";
+      clone.castShadow = false;
+      clone.receiveShadow = false;
+      mesh.matrixWorld.decompose(clone.position, clone.quaternion, clone.scale);
+      group.add(clone);
+    }
+    return group;
+  }
+
+  _exportGlb(exportGroup) {
+    return new Promise((resolve, reject) => {
+      new GLTFExporter().parse(
+        exportGroup,
+        (result) => resolve(result),
+        (error) => reject(error),
+        { binary: true, onlyVisible: true, trs: true },
+      );
+    });
+  }
+
+  _downloadTextFile(filename, contents, type) {
+    const blob = new Blob([contents], { type });
+    this._downloadBlob(filename, blob);
+  }
+
+  _downloadBlob(filename, blob) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  _modelFileName(extension) {
+    return `${this._safeModelFileStem()}.${extension}`;
+  }
+
+  _safeModelFileStem() {
+    const normalizedName = this._normalizeModelName(this.modelName);
+    return normalizedName
+      .trim()
+      .replace(/[^\w.-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "untitled";
+  }
+
+  _modelNameFromFileName(filename) {
+    const baseName = String(filename ?? "").replace(/\.[^.]+$/, "");
+    return this._normalizeModelName(baseName);
+  }
+
+  _setModelName(name) {
+    this.modelName = this._normalizeModelName(name);
+    if (this.docNameElement && this.docNameElement.textContent !== this.modelName) {
+      this.docNameElement.textContent = this.modelName;
+    }
+  }
+
+  _normalizeModelName(name) {
+    const normalized = String(name ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return normalized || DEFAULT_MODEL_NAME;
   }
 
   _applySelectionHighlights() {
@@ -1372,6 +1623,7 @@ export class SketchApp {
         codeCollapsed: this.codeCollapsed,
         panelPage: this.panelPage,
         devConsoleVisible: this.devConsoleVisible,
+        modelName: this.modelName,
       },
       selection: {
         selectedObjectIds: [...this.selectionPipeline.selectedObjectIds],
@@ -1402,6 +1654,7 @@ export class SketchApp {
       this._setCodePanelCollapsed(Boolean(state?.ui?.codeCollapsed));
       this._setPanelPage(state?.ui?.panelPage ?? "script");
       this._setDevConsoleVisible(Boolean(state?.ui?.devConsoleVisible));
+      this._setModelName(state?.ui?.modelName ?? DEFAULT_MODEL_NAME);
       this._setGridVisible(Boolean(state?.scene?.gridVisible));
       this._setGroundTheme(
         state?.scene?.groundTheme ?? { theme: DEFAULT_GROUND_THEME, terrainVariation: DEFAULT_TERRAIN_VARIATION },
@@ -1611,6 +1864,28 @@ export class SketchApp {
   }
 }
 
+function cloneMaterialForExport(material) {
+  if (Array.isArray(material)) {
+    return material.map((entry) => entry.clone());
+  }
+  return material?.clone?.() ?? new THREE.MeshStandardMaterial({ color: 0x7aa2f7 });
+}
+
+function disposeExportGroup(group) {
+  group.traverse((object) => {
+    if (object.geometry) {
+      object.geometry.dispose();
+    }
+    if (Array.isArray(object.material)) {
+      for (const material of object.material) {
+        material.dispose?.();
+      }
+    } else if (object.material) {
+      object.material.dispose?.();
+    }
+  });
+}
+
 function iconSvg(name) {
   const svg = (body) =>
     `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
@@ -1636,6 +1911,8 @@ function iconSvg(name) {
       return svg('<path d="M12 5v14"/><path d="M5 12h14"/>');
     case "reset":
       return svg('<path d="M4 12a8 8 0 111.9 5.2"/><path d="M4 4v5h5"/>');
+    case "export":
+      return svg('<path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M5 15v4h14v-4"/>');
     case "cube":
       return svg('<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 3v18"/><path d="M4 7.5l8 4.5 8-4.5"/>');
     case "zoomExtents":

@@ -10,12 +10,8 @@
     <div id="app-shell">
       <header class="topbar">
         <div class="brand">
-          <h1>3D Sketch AI</h1>
-          <span class="doc-name">Untitled</span>
-        </div>
-        <div class="actions">
           <a
-            class="icon-btn github-link"
+            class="github-brand-link"
             href="https://github.com/brg2/3DSketchAI"
             target="_blank"
             rel="noopener noreferrer"
@@ -29,8 +25,69 @@
                 />
               </svg>
             </span>
-            <span class="btn-label">GitHub</span>
           </a>
+          <h1>3D Sketch AI</h1>
+          <span id="doc-name" class="doc-name" contenteditable="true" role="textbox" aria-label="Model Name" spellcheck="false">Untitled</span>
+        </div>
+        <div class="actions">
+          <button
+            id="model-open"
+            class="icon-btn"
+            type="button"
+            aria-label="Open Model Script"
+            title="Open Model Script"
+          >
+            <span class="btn-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 6h6l2 2h8v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" />
+                <path d="M12 17v-7" />
+                <path d="M8.5 13.5L12 10l3.5 3.5" />
+              </svg>
+            </span>
+            <span class="btn-label">Open</span>
+          </button>
+          <input id="model-open-input" type="file" accept=".ts,text/typescript,text/plain" hidden />
+          <button
+            id="model-save"
+            class="icon-btn"
+            type="button"
+            aria-label="Save Model Script"
+            title="Save Model Script"
+          >
+            <span class="btn-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5 4h12l2 2v14H5z" />
+                <path d="M8 4v6h8V4" />
+                <path d="M8 16h8" />
+              </svg>
+            </span>
+            <span class="btn-label">Save</span>
+          </button>
+          <div class="export-menu-wrap">
+            <button
+              id="export-toggle"
+              class="icon-btn export-toggle"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-label="Export Model"
+              title="Export Model"
+            >
+              <span class="btn-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3v12" />
+                  <path d="M7 8l5-5 5 5" />
+                  <path d="M5 15v4h14v-4" />
+                </svg>
+              </span>
+              <span class="btn-label">Export</span>
+            </button>
+            <div id="export-menu" class="export-menu" role="menu" hidden>
+              <button type="button" data-export-format="glb" role="menuitem">GLB (.glb)</button>
+              <button type="button" data-export-format="obj" role="menuitem">OBJ (.obj)</button>
+              <button type="button" data-export-format="stl" role="menuitem">STL (.stl)</button>
+            </div>
+          </div>
           <button data-action="undo">Undo</button>
           <button data-action="redo">Redo</button>
           <button data-action="reset">New</button>
