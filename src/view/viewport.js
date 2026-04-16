@@ -671,7 +671,7 @@ export class Viewport {
     const pivot = this.controls.target.clone();
     const offset = this.camera.position.clone().sub(pivot);
 
-    const worldUp = new THREE.Vector3(0, 1, 0);
+    const worldUp = this.camera.up.clone().normalize();
     const yawQ = new THREE.Quaternion().setFromAxisAngle(worldUp, yawAngle);
 
     const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize();
