@@ -138,6 +138,16 @@ export class SketchApp {
     this._attachCodePanelHandlers();
     this._attachSidebarScrollHandlers();
 
+    this.canvas.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (event.pointerType === "touch" && !event.isPrimary) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      },
+      true,
+    );
     this.touchGestureHandler = new TouchGestureHandler({ viewport: this.viewport });
     this.touchGestureHandler.attach(this.canvas);
   }
