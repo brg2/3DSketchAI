@@ -6,6 +6,7 @@ import { Viewport } from "../view/viewport.js";
 import { Overlay } from "../view/overlay.js";
 import { SelectionPipeline } from "../interaction/selection-pipeline.js";
 import { ToolStateMachine } from "../interaction/tool-state-machine.js";
+import { TouchGestureHandler } from "../interaction/touch-gesture-handler.js";
 import { RuntimeController } from "./runtime-controller.js";
 import { RepresentationStore } from "../representation/representation-store.js";
 import { CanonicalModel } from "../modeling/canonical-model.js";
@@ -136,6 +137,19 @@ export class SketchApp {
     this._attachUiHandlers();
     this._attachCodePanelHandlers();
     this._attachSidebarScrollHandlers();
+
+    this.canvas.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (event.pointerType === "touch" && !event.isPrimary) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      },
+      true,
+    );
+    this.touchGestureHandler = new TouchGestureHandler({ viewport: this.viewport });
+    this.touchGestureHandler.attach(this.canvas);
   }
 
   async start() {
