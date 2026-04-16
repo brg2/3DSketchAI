@@ -173,16 +173,15 @@ export class SketchApp {
 
   _attachInputHandlers() {
     this.canvas.addEventListener("pointerdown", async (event) => {
-      if (event.button === 2 && event.shiftKey) {
-        if (this.viewport.beginCursorOrbit({ clientX: event.clientX, clientY: event.clientY })) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-        }
-        return;
-      }
-
       if (event.button === 2) {
-        if (this.viewport.beginCursorPan({ clientX: event.clientX, clientY: event.clientY })) {
+        if (this.viewport.beginCursorNavigation({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          orbitMode: !event.shiftKey,
+          allowShiftOrbit: true,
+          baseMode: "orbit",
+          shiftMode: "pan",
+        })) {
           event.preventDefault();
           event.stopImmediatePropagation();
         }
@@ -211,7 +210,14 @@ export class SketchApp {
       this._scheduleSessionPersist();
 
       if (!selectionResult.selection || !this.tools.canStartDrag()) {
-        if (this.viewport.beginCursorOrbit({ clientX: event.clientX, clientY: event.clientY, button: event.button })) {
+        if (this.viewport.beginCursorNavigation({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          orbitMode: event.shiftKey,
+          allowShiftOrbit: true,
+          baseMode: "pan",
+          shiftMode: "orbit",
+        })) {
           event.preventDefault();
           event.stopImmediatePropagation();
         }

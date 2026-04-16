@@ -16,6 +16,7 @@ export class Viewport {
     this._zoomFocusPoint = null;
     this._zoomRaycaster = new THREE.Raycaster();
     this._zoomPointer = new THREE.Vector2();
+    this._cursorNavigation = null;
     this._cursorOrbit = null;
     this._cursorPan = null;
     this.gridHelper = null;
@@ -175,12 +176,221 @@ export class Viewport {
     return true;
   }
 
-  beginCursorOrbit({ clientX, clientY } = {}) {
+  beginCursorNavigation({
+    clientX,
+    clientY,
+    orbitMode = false,
+    allowShiftOrbit = true,
+    baseMode = "pan",
+    shiftMode = "orbit",
+  } = {}) {
     if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
       return false;
     }
 
-    this.cancelCursorPan();
+    const normalizedBaseMode = baseMode === "orbit" ? "orbit" : "pan";
+    const normalizedShiftMode = shiftMode === "pan" ? "pan" : "orbit";
+
+    this.cancelCursorNavigation();
+    this._cursorNavigation = {
+      mode: null,
+      allowShiftToggle: Boolean(allowShiftOrbit),
+      baseMode: normalizedBaseMode,
+      shiftMode: normalizedShiftMode,
+      lastClientX: clientX,
+      lastClientY: clientY,
+      move: null,
+      keydown: null,
+      keyup: null,
+      end: null,
+    };
+
+    const initialMode = orbitMode ? "orbit" : "pan";
+    if (!this._setCursorNavigationMode(initialMode, { clientX, clientY })) {
+      this._cursorNavigation = null;
+      return false;
+    }
+
+    const move = (event) => {
+      event.preventDefault();
+      this._updateCursorNavigation(event);
+    };
+    const end = () => {
+      this._releaseCursorNavigation();
+    };
+    const keydown = (event) => {
+      if (event.key === "Shift") {
+        this._syncCursorNavigationMode(event.shiftKey);
+      }
+    };
+    const keyup = (event) => {
+      if (event.key === "Shift") {
+        this._syncCursorNavigationMode(event.shiftKey);
+      }
+    };
+
+    this._cursorNavigation.move = move;
+    this._cursorNavigation.end = end;
+    this._cursorNavigation.keydown = keydown;
+    this._cursorNavigation.keyup = keyup;
+
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
+    if (this._cursorNavigation.allowShiftToggle) {
+      window.addEventListener("keydown", keydown);
+      window.addEventListener("keyup", keyup);
+    }
+    return true;
+  }
+
+  beginCursorOrbit({ clientX, clientY } = {}) {
+    return this.beginCursorNavigation({ clientX, clientY, orbitMode: true, allowShiftOrbit: false });
+  }
+
+  cancelCursorOrbit() {
+    if (!this._cursorOrbit) {
+      return false;
+    }
+
+    return this.cancelCursorNavigation();
+  }
+
+  beginCursorPan({ clientX, clientY } = {}) {
+    return this.beginCursorNavigation({ clientX, clientY, orbitMode: false, allowShiftOrbit: false });
+  }
+
+  cancelCursorPan() {
+    if (!this._cursorPan) {
+      return false;
+    }
+
+    return this.cancelCursorNavigation();
+  }
+
+  cancelCursorNavigation() {
+    if (!this._cursorNavigation && !this._cursorOrbit && !this._cursorPan) {
+      return false;
+    }
+
+    this._removeCursorNavigationListeners();
+    if (this._cursorOrbit) {
+      this._finishCursorOrbitState({ updateControls: false });
+    } else if (this._cursorPan) {
+      this._syncControlsTargetToCameraForward();
+    }
+    this._cursorNavigation = null;
+    this._cursorOrbit = null;
+    this._cursorPan = null;
+    this.controls.enabled = true;
+    this.controls.update();
+    return true;
+  }
+
+  _setCursorNavigationMode(mode, { clientX, clientY } = {}) {
+    const navigation = this._cursorNavigation;
+    if (!navigation || navigation.mode === mode) {
+      return true;
+    }
+
+    const previousMode = navigation.mode;
+    if (previousMode === "orbit") {
+      this._finishCursorOrbitState({ updateControls: false });
+    } else if (previousMode === "pan") {
+      this._cursorPan = null;
+    }
+
+    const started = mode === "orbit"
+      ? this._startCursorOrbitState({ clientX, clientY })
+      : this._startCursorPanState({ clientX, clientY });
+    if (!started) {
+      if (previousMode === "orbit") {
+        this._startCursorOrbitState({ clientX, clientY });
+      } else if (previousMode === "pan") {
+        this._startCursorPanState({ clientX, clientY });
+      }
+      return false;
+    }
+
+    navigation.mode = mode;
+    return true;
+  }
+
+  _updateCursorNavigation({ clientX, clientY, shiftKey = false } = {}) {
+    const navigation = this._cursorNavigation;
+    if (!navigation || !Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return;
+    }
+
+    navigation.lastClientX = clientX;
+    navigation.lastClientY = clientY;
+    if (navigation.allowShiftToggle) {
+      const nextMode = shiftKey ? navigation.shiftMode : navigation.baseMode;
+      this._setCursorNavigationMode(nextMode, { clientX, clientY });
+    }
+
+    if (navigation.mode === "orbit") {
+      this._updateCursorOrbit({ clientX, clientY });
+    } else if (navigation.mode === "pan") {
+      this._updateCursorPan({ clientX, clientY });
+    }
+  }
+
+  _syncCursorNavigationMode(shiftKey = false) {
+    const navigation = this._cursorNavigation;
+    if (!navigation?.allowShiftToggle) {
+      return;
+    }
+
+    const nextMode = shiftKey ? navigation.shiftMode : navigation.baseMode;
+    this._setCursorNavigationMode(nextMode, {
+      clientX: navigation.lastClientX,
+      clientY: navigation.lastClientY,
+    });
+  }
+
+  _releaseCursorNavigation() {
+    const navigation = this._cursorNavigation;
+    if (!navigation) {
+      return;
+    }
+
+    this._removeCursorNavigationListeners();
+    this._cursorNavigation = null;
+    if (navigation.mode === "orbit") {
+      this._releaseCursorOrbit();
+    } else if (navigation.mode === "pan") {
+      this._releaseCursorPan();
+    }
+  }
+
+  _removeCursorNavigationListeners() {
+    const navigation = this._cursorNavigation;
+    if (!navigation) {
+      return;
+    }
+
+    if (navigation.move) {
+      window.removeEventListener("pointermove", navigation.move);
+    }
+    if (navigation.end) {
+      window.removeEventListener("pointerup", navigation.end);
+      window.removeEventListener("pointercancel", navigation.end);
+    }
+    if (navigation.allowShiftToggle) {
+      if (navigation.keydown) {
+        window.removeEventListener("keydown", navigation.keydown);
+      }
+      if (navigation.keyup) {
+        window.removeEventListener("keyup", navigation.keyup);
+      }
+    }
+  }
+
+  _startCursorOrbitState({ clientX, clientY } = {}) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return false;
+    }
 
     const offset = this.camera.position.clone().sub(this.controls.target);
     const currentDistance = offset.length();
@@ -193,6 +403,7 @@ export class Viewport {
       return false;
     }
 
+    this._cursorPan = null;
     this._cursorOrbit = {
       pivot: focusPoint,
       startX: clientX,
@@ -211,37 +422,13 @@ export class Viewport {
     this.controls.enabled = false;
     this._zoomTargetDistance = null;
     this._zoomFocusPoint = null;
-
-    const move = (event) => this._updateCursorOrbit(event);
-    const end = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", end);
-      window.removeEventListener("pointercancel", end);
-      this._releaseCursorOrbit();
-    };
-
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", end, { once: true });
-    window.addEventListener("pointercancel", end, { once: true });
     return true;
   }
 
-  cancelCursorOrbit() {
-    if (!this._cursorOrbit) {
-      return false;
-    }
-
-    this._endCursorOrbit();
-    return true;
-  }
-
-  beginCursorPan({ clientX, clientY } = {}) {
+  _startCursorPanState({ clientX, clientY } = {}) {
     if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
       return false;
     }
-
-    this.cancelCursorOrbit();
-    this.cancelCursorPan();
 
     const offset = this.camera.position.clone().sub(this.controls.target);
     const currentDistance = offset.length();
@@ -250,20 +437,17 @@ export class Viewport {
     }
 
     const anchorPoint = this._pickFocusPointAtClient({ clientX, clientY }, currentDistance)
+      ?? this._pointOnHorizontalPlaneAtClient({ clientX, clientY }, this.controls.target.y)
       ?? this._pointAtClientDepth({ clientX, clientY }, currentDistance);
-    if (!anchorPoint) {
+    if (!anchorPoint || !Number.isFinite(anchorPoint.y)) {
       return false;
     }
 
-    const forward = new THREE.Vector3();
-    this.camera.getWorldDirection(forward);
-    if (forward.lengthSq() < 1e-8) {
-      return false;
-    }
-
-    const panPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(forward.normalize(), anchorPoint);
+    const panPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -anchorPoint.y);
+    const planeAnchor = this._pointOnPlaneAtClient({ clientX, clientY }, panPlane) ?? anchorPoint;
+    this._cursorOrbit = null;
     this._cursorPan = {
-      anchorPoint,
+      anchorPoint: planeAnchor,
       panPlane,
       velocity: new THREE.Vector3(),
       dragging: true,
@@ -271,21 +455,6 @@ export class Viewport {
     this.controls.enabled = false;
     this._zoomTargetDistance = null;
     this._zoomFocusPoint = null;
-
-    const move = (event) => {
-      event.preventDefault();
-      this._updateCursorPan(event);
-    };
-    const end = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", end);
-      window.removeEventListener("pointercancel", end);
-      this._releaseCursorPan();
-    };
-
-    window.addEventListener("pointermove", move, { passive: false });
-    window.addEventListener("pointerup", end, { once: true });
-    window.addEventListener("pointercancel", end, { once: true });
     return true;
   }
 
@@ -309,16 +478,6 @@ export class Viewport {
     this.controls.target.add(delta);
     pan.velocity.copy(delta);
     this.camera.updateMatrixWorld();
-    this.controls.update();
-  }
-
-  cancelCursorPan() {
-    if (!this._cursorPan) {
-      return false;
-    }
-
-    this._endCursorPan();
-    return true;
   }
 
   _releaseCursorPan() {
@@ -341,7 +500,6 @@ export class Viewport {
     this.camera.position.add(pan.velocity);
     this.controls.target.add(pan.velocity);
     this.camera.updateMatrixWorld();
-    this.controls.update();
 
     pan.velocity.multiplyScalar(0.88);
     if (pan.velocity.lengthSq() < 1e-8) {
@@ -355,6 +513,7 @@ export class Viewport {
     }
 
     this._cursorPan = null;
+    this._syncControlsTargetToCameraForward();
     this.controls.enabled = true;
     this.controls.update();
   }
@@ -427,15 +586,32 @@ export class Viewport {
   }
 
   _endCursorOrbit() {
+    this._finishCursorOrbitState({ updateControls: false });
+    this.controls.enabled = true;
+    this.controls.update();
+  }
+
+  _finishCursorOrbitState({ updateControls = true } = {}) {
     const orbit = this._cursorOrbit;
     this._cursorOrbit = null;
 
+    this._syncControlsTargetToCameraForward(orbit?.startTargetDistance);
+    if (updateControls) {
+      this.controls.update();
+    }
+  }
+
+  _syncControlsTargetToCameraForward(distance = null) {
     const forward = new THREE.Vector3();
     this.camera.getWorldDirection(forward);
-    const distance = orbit?.startTargetDistance ?? this.camera.position.distanceTo(this.controls.target);
-    this.controls.target.copy(this.camera.position).add(forward.multiplyScalar(Math.max(distance, 0.1)));
-    this.controls.enabled = true;
-    this.controls.update();
+    if (forward.lengthSq() < 1e-8) {
+      return;
+    }
+
+    const targetDistance = Number.isFinite(distance)
+      ? distance
+      : this.camera.position.distanceTo(this.controls.target);
+    this.controls.target.copy(this.camera.position).add(forward.multiplyScalar(Math.max(targetDistance, 0.1)));
   }
 
   _attachSmoothZoomHandlers() {
@@ -554,6 +730,14 @@ export class Viewport {
 
     const point = new THREE.Vector3();
     return this._zoomRaycaster.ray.intersectPlane(plane, point) ? point : null;
+  }
+
+  _pointOnHorizontalPlaneAtClient({ clientX, clientY } = {}, y = 0) {
+    const planeY = Number.isFinite(y) ? y : 0;
+    return this._pointOnPlaneAtClient(
+      { clientX, clientY },
+      new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY),
+    );
   }
 
   _setRaycasterFromClient({ clientX, clientY } = {}) {
