@@ -28,9 +28,7 @@ const DEFAULT_TERRAIN_VARIATION = 1;
 const STATIC_BUTTON_ICONS = Object.freeze({
   undo: "undo",
   redo: "redo",
-  save: "save",
-  load: "load",
-  reset: "reset",
+  reset: "plus",
   primitive: "cube",
   zoomExtents: "zoomExtents",
   group: "group",
@@ -55,6 +53,8 @@ export class SketchApp {
     groundThemeSelect,
     terrainVariationInput,
     terrainVariationValue,
+    sidebarElement,
+    sidebarScrollElement,
     toolGrid,
   }) {
     this.canvas = canvas;
@@ -69,6 +69,8 @@ export class SketchApp {
     this.groundThemeSelect = groundThemeSelect;
     this.terrainVariationInput = terrainVariationInput;
     this.terrainVariationValue = terrainVariationValue;
+    this.sidebarElement = sidebarElement;
+    this.sidebarScrollElement = sidebarScrollElement;
     this.codeCopyResetTimer = null;
     this.codeCollapsed = false;
     this.panelPage = "script";
@@ -114,6 +116,7 @@ export class SketchApp {
     this._attachInputHandlers();
     this._attachUiHandlers();
     this._attachCodePanelHandlers();
+    this._attachSidebarScrollHandlers();
   }
 
   async start() {
@@ -352,27 +355,6 @@ export class SketchApp {
           return;
         }
 
-        if (action === "save") {
-          await this.runtimeController.persistCanonicalModel();
-          await this._persistSessionState();
-          this._renderOverlay();
-          return;
-        }
-
-        if (action === "load") {
-          const loadedOperations = await this.runtimeController.loadCanonicalModelFromStorage({
-            reload: true,
-            cleanSlate: true,
-          });
-          this._syncObjectCounterFromOperations(loadedOperations);
-          this._applySessionState(await this._loadSessionState());
-          await this._recordModelHistory(this.runtimeController.getSnapshot().canonicalCode, "Load");
-          this._applySelectionHighlights();
-          this._renderOverlay();
-          this._scheduleSessionPersist();
-          return;
-        }
-
         if (action === "reset") {
           await this.runtimeController.clearCanonicalModel();
           await this.appSessionStore.clear().catch(() => {});
@@ -385,7 +367,7 @@ export class SketchApp {
           this._setGridVisible(false);
           const result = await this.runtimeController.ensureDefaultModel();
           this.modelHistory.reset(result?.canonicalCode ?? this.runtimeController.getSnapshot().canonicalCode, {
-            label: "Reset",
+            label: "New",
           });
           await this._persistModelHistory();
           this.objectCounter = 2;
@@ -1205,12 +1187,72 @@ export class SketchApp {
     this._setGroundTheme({ theme: DEFAULT_GROUND_THEME, terrainVariation: DEFAULT_TERRAIN_VARIATION });
   }
 
+  _attachSidebarScrollHandlers() {
+    if (!this.sidebarElement || !this.sidebarScrollElement) {
+      return;
+    }
+
+    this.sidebarScrollElement.addEventListener("scroll", () => this._syncSidebarScrollAffordance(), { passive: true });
+    this.sidebarElement.addEventListener("click", (event) => this._handleSidebarScrollAffordanceClick(event));
+    window.addEventListener("resize", () => this._syncSidebarScrollAffordance());
+    this._syncSidebarScrollAffordance();
+  }
+
+  _handleSidebarScrollAffordanceClick(event) {
+    const control = event.target?.closest?.("[data-sidebar-scroll]");
+    if (!control) {
+      return;
+    }
+
+    const direction = Number(control.dataset.sidebarScroll);
+    if (!Number.isFinite(direction) || direction === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    this._scrollSidebarByPage(Math.sign(direction));
+  }
+
+  _scrollSidebarByPage(direction) {
+    if (!this.sidebarScrollElement) {
+      return;
+    }
+
+    const pageDistance = Math.max(32, this.sidebarScrollElement.clientHeight - 32);
+    this.sidebarScrollElement.scrollBy({
+      top: direction * pageDistance,
+      behavior: "smooth",
+    });
+  }
+
+  _syncSidebarScrollAffordance() {
+    if (!this.sidebarElement || !this.sidebarScrollElement) {
+      return;
+    }
+
+    const maxScrollTop = Math.max(0, this.sidebarScrollElement.scrollHeight - this.sidebarScrollElement.clientHeight);
+    const hasOverflow = maxScrollTop > 1;
+    const canScrollUp = hasOverflow && this.sidebarScrollElement.scrollTop > 1;
+    const canScrollDown = hasOverflow && this.sidebarScrollElement.scrollTop < maxScrollTop - 1;
+
+    this.sidebarElement.classList.toggle("can-scroll-up", canScrollUp);
+    this.sidebarElement.classList.toggle("can-scroll-down", canScrollDown);
+  }
+
   _setCodePanelCollapsed(collapsed) {
     this.codeCollapsed = collapsed;
     document.body.classList.toggle("code-collapsed", collapsed);
+    const label = collapsed ? "Show Side Panel" : "Hide Side Panel";
+    this._setButtonIcon(this.codeToggle, "menu", label);
     this.codeToggle.setAttribute("aria-expanded", String(!collapsed));
-    this.codeToggle.textContent = collapsed ? "Panel ▸" : "Panel ◂";
-    this.codeToggle.title = collapsed ? "Show Side Panel" : "Hide Side Panel";
+    this._scheduleSidebarScrollAffordanceSync();
+  }
+
+  _scheduleSidebarScrollAffordanceSync() {
+    this._syncSidebarScrollAffordance();
+
+    requestAnimationFrame(() => this._syncSidebarScrollAffordance());
+    window.setTimeout(() => this._syncSidebarScrollAffordance(), 220);
   }
 
   _setPanelPage(page) {
@@ -1559,6 +1601,7 @@ export class SketchApp {
       <span class="btn-label">${label}</span>
     `;
     button.title = label;
+    button.setAttribute("aria-label", label);
   }
 }
 
@@ -1578,13 +1621,13 @@ function iconSvg(name) {
     case "pushPull":
       return svg('<rect x="4" y="13" width="16" height="7"/><path d="M12 4v10"/><path d="M9 7l3-3 3 3"/>');
     case "undo":
-      return svg('<path d="M9 7H4v5"/><path d="M4 12a7 7 0 101.9-4.8L4 9"/>');
+      return svg('<path d="M9 7l-5 5 5 5"/><path d="M20 18v-2a4 4 0 00-4-4H4"/>');
     case "redo":
-      return svg('<path d="M15 7h5v5"/><path d="M20 12a7 7 0 11-1.9-4.8L20 9"/>');
-    case "save":
-      return svg('<path d="M5 4h12l2 2v14H5z"/><path d="M8 4v6h8V4"/><path d="M9 16h6"/>');
-    case "load":
-      return svg('<path d="M3 19h18"/><path d="M12 4v10"/><path d="M8 10l4 4 4-4"/>');
+      return svg('<path d="M15 7l5 5-5 5"/><path d="M4 18v-2a4 4 0 014-4h12"/>');
+    case "menu":
+      return svg('<path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/>');
+    case "plus":
+      return svg('<path d="M12 5v14"/><path d="M5 12h14"/>');
     case "reset":
       return svg('<path d="M4 12a8 8 0 111.9 5.2"/><path d="M4 4v5h5"/>');
     case "cube":

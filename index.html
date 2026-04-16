@@ -33,38 +33,54 @@
           </a>
           <button data-action="undo">Undo</button>
           <button data-action="redo">Redo</button>
-          <button data-action="save">Save</button>
-          <button data-action="load">Load</button>
-          <button data-action="reset">Reset</button>
+          <button data-action="reset">New</button>
+          <button
+            id="code-toggle"
+            class="icon-btn code-toggle"
+            type="button"
+            aria-expanded="true"
+            aria-label="Hide Side Panel"
+            title="Hide Side Panel"
+          >
+            <span class="btn-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+                <path d="M4 7h16" />
+                <path d="M4 12h16" />
+                <path d="M4 17h16" />
+              </svg>
+            </span>
+            <span class="btn-label">Hide Side Panel</span>
+          </button>
         </div>
       </header>
 
       <aside class="sidebar">
-        <h2>Tools</h2>
-        <div class="tool-grid" id="tool-grid"></div>
+        <button class="sidebar-scroll-control sidebar-scroll-up" type="button" data-sidebar-scroll="-1" aria-label="Scroll toolbar up"></button>
+        <div class="sidebar-scroll-content">
+          <h2>Tools</h2>
+          <div class="tool-grid" id="tool-grid"></div>
 
-        <h2>Selection</h2>
-        <div class="selection-grid">
-          <button data-selection-mode="object">Object</button>
-          <button data-selection-mode="face">Face</button>
-          <button data-selection-mode="edge">Edge</button>
-        </div>
+          <h2>Selection</h2>
+          <div class="selection-grid">
+            <button data-selection-mode="object">Object</button>
+            <button data-selection-mode="face">Face</button>
+            <button data-selection-mode="edge">Edge</button>
+          </div>
 
-        <h2>Scene</h2>
-        <div class="scene-ops">
-          <button data-action="primitive">Primitive</button>
-          <button data-action="zoomExtents">Zoom Extents</button>
-          <button data-action="group">Group</button>
-          <button data-action="component">Component</button>
+          <h2>Scene</h2>
+          <div class="scene-ops">
+            <button data-action="primitive">Primitive</button>
+            <button data-action="zoomExtents">Zoom Extents</button>
+            <button data-action="group">Group</button>
+            <button data-action="component">Component</button>
+          </div>
         </div>
+        <button class="sidebar-scroll-control sidebar-scroll-down" type="button" data-sidebar-scroll="1" aria-label="Scroll toolbar down"></button>
       </aside>
 
       <main class="viewport-wrap">
         <canvas id="viewport"></canvas>
         <div id="overlay"></div>
-        <button id="code-toggle" class="code-toggle" type="button" aria-expanded="true" title="Hide Side Panel">
-          Panel ◂
-        </button>
       </main>
 
       <section class="code-panel" id="code-panel">

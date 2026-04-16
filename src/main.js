@@ -13,6 +13,8 @@ const devConsoleToggleButton = document.getElementById("dev-console-toggle");
 const groundThemeSelect = document.getElementById("ground-theme");
 const terrainVariationInput = document.getElementById("terrain-variation");
 const terrainVariationValue = document.getElementById("terrain-variation-value");
+const sidebarElement = document.querySelector(".sidebar");
+const sidebarScrollElement = document.querySelector(".sidebar-scroll-content");
 const toolGrid = document.getElementById("tool-grid");
 
 if (
@@ -28,6 +30,8 @@ if (
   !groundThemeSelect ||
   !terrainVariationInput ||
   !terrainVariationValue ||
+  !sidebarElement ||
+  !sidebarScrollElement ||
   panelTabButtons.length === 0 ||
   !toolGrid
 ) {
@@ -48,6 +52,8 @@ const app = new SketchApp({
   groundThemeSelect,
   terrainVariationInput,
   terrainVariationValue,
+  sidebarElement,
+  sidebarScrollElement,
   toolGrid,
 });
 
