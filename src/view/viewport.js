@@ -19,6 +19,7 @@ export class Viewport {
     this._cursorNavigation = null;
     this._cursorOrbit = null;
     this._cursorPan = null;
+    this._touchGestureActive = false;
     this.gridHelper = null;
     this.groundThemeGroup = null;
     this.groundTheme = GROUND_THEMES.FOREST;
@@ -614,6 +615,88 @@ export class Viewport {
     this.controls.target.copy(this.camera.position).add(forward.multiplyScalar(Math.max(targetDistance, 0.1)));
   }
 
+  // --- Touch gesture API (multi-touch pinch + orbit) ---
+
+  beginTouchGesture() {
+    this.cancelCursorNavigation();
+    this.controls.enabled = false;
+    this._zoomTargetDistance = null;
+    this._zoomFocusPoint = null;
+    this._touchGestureActive = true;
+  }
+
+  applyTouchPinchScale({ scale, clientX, clientY } = {}) {
+    if (!this._touchGestureActive || !Number.isFinite(scale) || scale <= 0) {
+      return;
+    }
+
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const currentDistance = offset.length();
+    if (!Number.isFinite(currentDistance) || currentDistance <= 1e-6) {
+      return;
+    }
+
+    const minDistance = Math.max(0.1, this.controls.minDistance || 0.1);
+    const maxDistance = this.controls.maxDistance || 1e6;
+    const newDistance = THREE.MathUtils.clamp(currentDistance / scale, minDistance, maxDistance);
+
+    const focusPoint = (Number.isFinite(clientX) && Number.isFinite(clientY))
+      ? this._pickFocusPointAtClient({ clientX, clientY }, currentDistance)
+      : null;
+
+    if (focusPoint) {
+      const distScale = newDistance / currentDistance;
+      this.camera.position.sub(focusPoint).multiplyScalar(distScale).add(focusPoint);
+      this.controls.target.sub(focusPoint).multiplyScalar(distScale).add(focusPoint);
+    } else {
+      offset.setLength(newDistance);
+      this.camera.position.copy(this.controls.target).add(offset);
+    }
+    this.camera.updateMatrixWorld();
+  }
+
+  applyTouchOrbitDelta({ dx, dy } = {}) {
+    if (!this._touchGestureActive || !Number.isFinite(dx) || !Number.isFinite(dy)) {
+      return;
+    }
+
+    const element = this.renderer.domElement;
+    const height = Math.max(element.clientHeight, 1);
+    // Tuned for touch responsiveness: 1.5× matches finger travel to camera rotation.
+    const rotateSpeed = 1.5;
+
+    const yawAngle = -(dx * rotateSpeed * Math.PI) / height;
+    const pitchAngle = -(dy * rotateSpeed * Math.PI) / height;
+
+    const pivot = this.controls.target.clone();
+    const offset = this.camera.position.clone().sub(pivot);
+
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const yawQ = new THREE.Quaternion().setFromAxisAngle(worldUp, yawAngle);
+
+    const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize();
+    const pitchQ = new THREE.Quaternion().setFromAxisAngle(right, pitchAngle);
+
+    const combinedQ = pitchQ.premultiply(yawQ);
+
+    offset.applyQuaternion(combinedQ);
+    this.camera.position.copy(pivot).add(offset);
+    this.camera.quaternion.premultiply(combinedQ);
+    this.camera.updateMatrixWorld();
+  }
+
+  endTouchGesture() {
+    if (!this._touchGestureActive) {
+      return;
+    }
+    this._touchGestureActive = false;
+    this._syncControlsTargetToCameraForward();
+    this.controls.enabled = true;
+    this.controls.update();
+  }
+
+  // --- End touch gesture API ---
+
   _attachSmoothZoomHandlers() {
     this.renderer.domElement.addEventListener(
       "wheel",
@@ -783,6 +866,8 @@ export class Viewport {
       this._applyCursorOrbitStep();
     } else if (this._cursorPan) {
       this._applyCursorPanStep();
+    } else if (this._touchGestureActive) {
+      // Touch gesture drives camera directly; skip smooth zoom step and controls update
     } else {
       this._applySmoothZoomStep();
       this.controls.update();
