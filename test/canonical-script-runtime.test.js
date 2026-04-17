@@ -267,7 +267,7 @@ test("runtime creates a default cube when no model script exists", async () => {
   assert.equal(runtime.getSnapshot().representation.exactSceneState.obj_1.primitive, "box");
 });
 
-test("runtime starts with state replay when exact kernel execution is unavailable", async () => {
+test("runtime starts with explicit state replay test executor", async () => {
   const scriptModel = new CanonicalModel();
   scriptModel.appendCommittedOperation(
     createPrimitiveOperation({
@@ -278,13 +278,18 @@ test("runtime starts with state replay when exact kernel execution is unavailabl
     }),
   );
   const scriptStore = new InMemoryModelScriptStore(scriptModel.toTypeScriptModule());
-  const modelExecutor = new ModelExecutor({
+  const stateReplayExecutor = new ModelExecutor({
     adapter: {
       async execute() {
         throw new Error("Replicad/OpenCascade exact execution is not implemented for 1 operation(s); refusing to use fallback geometry.");
       },
     },
   });
+  const modelExecutor = {
+    async executeCanonicalModel(input) {
+      return stateReplayExecutor.executeStateReplay(input);
+    },
+  };
   const runtime = new RuntimeController({
     canonicalModel: new CanonicalModel(),
     modelExecutor,
@@ -495,11 +500,13 @@ test("runtime can compress again after appending push-pull to an already compres
 
   const { canonicalCode, operationCount } = await runtime.compressCanonicalModel();
 
-  assert.equal(operationCount, 3);
-  assert.match(canonicalCode, /obj_1 = obj_1\.scale\(\[1, 1, 4\.489\]\);/);
-  assert.match(canonicalCode, /obj_1 = obj_1\.translate\(\[0, 0, -0\.744\]\);/);
+  assert.equal(operationCount, 4);
+  assert.match(canonicalCode, /let obj_1 = sai\.makeBox\(r,/);
+  assert.match(canonicalCode, /sai\.pushPullFace\(r, obj_1,/);
+  assert.match(canonicalCode, /"distance":1/);
+  assert.match(canonicalCode, /return obj_1\.toShape\(\);/);
   assert.equal(canonicalCode.match(/\.scale\(/g)?.length, 1);
-  assert.equal(canonicalCode.match(/\.translate\(/g)?.length, 1);
+  assert.equal(canonicalCode.match(/\.translate\(/g)?.length ?? 0, 0);
   assertNoBehaviorComments(canonicalCode);
 });
 

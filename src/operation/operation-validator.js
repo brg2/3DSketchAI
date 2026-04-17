@@ -38,11 +38,16 @@ export function validateOperation(operation) {
       break;
     case OPERATION_TYPES.MOVE:
       assertVector3(params.delta, "params.delta");
+      if (params.subshapeMove !== undefined && params.subshapeMove !== null) {
+        assertSubshapeMove(params.subshapeMove);
+      }
       break;
     case OPERATION_TYPES.ROTATE:
       assertVector3(params.deltaEuler, "params.deltaEuler");
       break;
-
+    case OPERATION_TYPES.SCALE:
+      assertVector3(params.scaleFactor, "params.scaleFactor");
+      break;
     case OPERATION_TYPES.PUSH_PULL:
       assertNumber(params.distance, "params.distance");
       assertVector3(params.axis, "params.axis");

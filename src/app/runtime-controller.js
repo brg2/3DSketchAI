@@ -222,13 +222,17 @@ function compressAdjacentTransforms(operations) {
 
 function isCompressibleTransform(operation) {
   if (operation?.type === "move" && !operation.params?.subshapeMove) return true;
+  if (operation?.type === "scale") return true;
   if (operation?.type === "push_pull") return true;
   return false;
 }
 
 function canContinueRun(run, operation) {
-  if (run.type !== operation.type) return false;
   if (run.targetId !== operation.targetId) return false;
+  if (run.type === "transform") {
+    return operation.type === "move" || operation.type === "scale";
+  }
+  if (run.type !== operation.type) return false;
   if (operation.type === "push_pull") {
     const p = operation.params;
     return (
@@ -269,10 +273,12 @@ function createTransformRun(operation) {
     };
   }
   return {
-    type: "move",
+    type: "transform",
     targetId: operation.targetId,
     selection: structuredClone(operation.selection ?? null),
+    scaleFactor: { x: 1, y: 1, z: 1 },
     delta: { x: 0, y: 0, z: 0 },
+    hasScale: false,
     hasMove: false,
     operationCount: 0,
   };
@@ -289,6 +295,13 @@ function addToTransformRun(run, operation) {
     run.delta.y = roundMillimeters(run.delta.y + operation.params.delta.y);
     run.delta.z = roundMillimeters(run.delta.z + operation.params.delta.z);
     run.hasMove = true;
+    return;
+  }
+  if (operation.type === "scale") {
+    run.scaleFactor.x = roundMillimeters(run.scaleFactor.x * effectiveScaleFactor(operation.params.scaleFactor.x));
+    run.scaleFactor.y = roundMillimeters(run.scaleFactor.y * effectiveScaleFactor(operation.params.scaleFactor.y));
+    run.scaleFactor.z = roundMillimeters(run.scaleFactor.z * effectiveScaleFactor(operation.params.scaleFactor.z));
+    run.hasScale = true;
   }
 }
 function flushTransformRun(compressed, run) {
@@ -314,6 +327,15 @@ function flushTransformRun(compressed, run) {
     return;
   }
 
+  if (run.hasScale && !isIdentityScale(run.scaleFactor)) {
+    compressed.push({
+      type: "scale",
+      targetId: run.targetId,
+      selection: run.selection,
+      params: { scaleFactor: { ...run.scaleFactor } },
+    });
+  }
+
   if (run.hasMove && !isZeroDelta(run.delta)) {
     compressed.push({
       type: "move",
@@ -326,6 +348,14 @@ function flushTransformRun(compressed, run) {
 
 function isZeroDelta(delta) {
   return delta.x === 0 && delta.y === 0 && delta.z === 0;
+}
+
+function isIdentityScale(scale) {
+  return scale.x === 1 && scale.y === 1 && scale.z === 1;
+}
+
+function effectiveScaleFactor(value) {
+  return Math.max(0.1, Number.isFinite(value) ? value : 1);
 }
 
 function roundMillimeters(value) {

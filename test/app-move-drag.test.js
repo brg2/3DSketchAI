@@ -66,3 +66,35 @@ test("vertex move drag uses a screen-space plane so the vertex tracks the cursor
   assert.deepEqual(gesture.worldDelta, { x: 1, y: 0.5, z: 0.25 });
   assert.equal(pointCalls.length, 2);
 });
+
+test("tool drag commit samples the release pointer before committing", async () => {
+  const app = Object.create(SketchApp.prototype);
+  const calls = [];
+
+  app.tools = {
+    dragState: {},
+    endDrag() {
+      calls.push("end");
+    },
+  };
+  app.viewport = { controls: { enabled: false } };
+  app.runtimeController = {
+    async commitManipulation() {
+      calls.push("commit");
+      return { canonicalCode: "export const main = () => null;" };
+    },
+  };
+  app._updateToolDrag = (event) => {
+    calls.push(`update:${event.clientX},${event.clientY}`);
+    return true;
+  };
+  app._recordModelHistory = async () => {};
+  app._applySelectionHighlights = () => {};
+  app._renderOverlay = () => {};
+  app._scheduleSessionPersist = () => {};
+
+  const committed = await app._commitToolDrag({ clientX: 240, clientY: 180 });
+
+  assert.equal(committed, true);
+  assert.deepEqual(calls, ["update:240,180", "end", "commit"]);
+});

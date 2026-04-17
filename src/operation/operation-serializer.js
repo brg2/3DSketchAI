@@ -23,6 +23,18 @@ export function serializeCanonicalModelModule(operations) {
   const objectOrder = [];
   const objectVars = new Map();
   const objectState = new Map();
+  const editableTargets = new Set(
+    normalizedOperations
+      .filter((operation) => operation.type === "push_pull" || operation.params?.subshapeMove)
+      .map((operation) => operation.targetId)
+      .filter(Boolean),
+  );
+  const mutableEditableTargets = new Set(
+    normalizedOperations
+      .filter((operation) => operation.type === "scale" && editableTargets.has(operation.targetId))
+      .map((operation) => operation.targetId)
+      .filter(Boolean),
+  );
 
   const getVarName = (objectId) => {
     if (!objectVars.has(objectId)) {
@@ -42,6 +54,7 @@ export function serializeCanonicalModelModule(operations) {
           position: { ...position },
           scale: { ...size },
           rotation: { x: 0, y: 0, z: 0 },
+          editable: primitive === "box" && editableTargets.has(objectId),
           faceTilts: [],
           faceExtrudes: [],
           faceExtensions: [],
@@ -54,6 +67,19 @@ export function serializeCanonicalModelModule(operations) {
           bodyLines.push(
             `  let ${varName} = r.makeCylinder(${_formatNumber(Math.max(0.1, size.x) / 2)}, ${_formatNumber(Math.max(0.1, size.z))}, ${_vec3Literal(position)}, [0, 0, 1]);`,
           );
+        } else if (editableTargets.has(objectId)) {
+          const c1 = {
+            x: position.x - size.x / 2,
+            y: position.y - size.y / 2,
+            z: position.z - size.z / 2,
+          };
+          const c2 = {
+            x: position.x + size.x / 2,
+            y: position.y + size.y / 2,
+            z: position.z + size.z / 2,
+          };
+          const declaration = mutableEditableTargets.has(objectId) ? "let" : "const";
+          bodyLines.push(`  ${declaration} ${varName} = sai.makeBox(r, ${_vec3Literal(c1)}, ${_vec3Literal(c2)});`);
         } else {
           const c1 = {
             x: position.x - size.x / 2,
@@ -72,8 +98,20 @@ export function serializeCanonicalModelModule(operations) {
       case "move": {
         const varName = getVarName(operation.targetId);
         const state = objectState.get(operation.targetId);
-
-        bodyLines.push(`  ${varName} = ${varName}.translate(${_vec3Literal(operation.params.delta)});`);
+        if (operation.params.subshapeMove && state?.primitive === "box") {
+          const move = operation.params.subshapeMove;
+          if (move.mode === "vertex") {
+            bodyLines.push(`  sai.moveBoxVertex(r, ${varName}, ${JSON.stringify(move.vertex)}, ${_vec3Literal(operation.params.delta)});`);
+          } else {
+            bodyLines.push(`  sai.moveBoxSubshape(r, ${varName}, ${JSON.stringify(move)});`);
+          }
+          break;
+        }
+        if (state?.editable) {
+          bodyLines.push(`  sai.translateObject(r, ${varName}, ${_vec3Literal(operation.params.delta)});`);
+        } else {
+          bodyLines.push(`  ${varName} = ${varName}.translate(${_vec3Literal(operation.params.delta)});`);
+        }
         if (state) {
           state.position.x += operation.params.delta.x;
           state.position.y += operation.params.delta.y;
@@ -84,7 +122,12 @@ export function serializeCanonicalModelModule(operations) {
       case "rotate": {
         const varName = getVarName(operation.targetId);
         if (operation.selection?.mode === "face" && operation.params.faceTilt) {
-          // Note: makeTaperedBox and direct face tilting has been removed.
+          const state = objectState.get(operation.targetId);
+          const faceTilts = Array.isArray(operation.params.faceTilts) ? operation.params.faceTilts : [operation.params.faceTilt];
+          if (state?.primitive === "box") {
+            state.faceTilts.push(...faceTilts.map((tilt) => structuredClone(tilt)));
+            bodyLines.push(`  ${varName} = sai.makeTaperedBox(r, ${_boxConfigLiteral(state)});`);
+          }
           break;
         }
         const origin = { x: 0, y: 0, z: 0 };
@@ -94,6 +137,19 @@ export function serializeCanonicalModelModule(operations) {
           state.rotation.x += operation.params.deltaEuler.x;
           state.rotation.y += operation.params.deltaEuler.y;
           state.rotation.z += operation.params.deltaEuler.z;
+        }
+        break;
+      }
+
+      case "scale": {
+        const varName = getVarName(operation.targetId);
+        const scale = operation.params.scaleFactor;
+        bodyLines.push(`  ${varName} = ${varName}.scale([${_formatNumber(scale.x)}, ${_formatNumber(scale.y)}, ${_formatNumber(scale.z)}]);`);
+        const state = objectState.get(operation.targetId);
+        if (state) {
+          state.scale.x *= Math.max(0.1, scale.x);
+          state.scale.y *= Math.max(0.1, scale.y);
+          state.scale.z *= Math.max(0.1, scale.z);
         }
         break;
       }
@@ -108,7 +164,7 @@ export function serializeCanonicalModelModule(operations) {
           } else {
             state.faceExtrudes.push(faceOperation);
           }
-          bodyLines.push(`  ${varName} = sai.pushPullFace(r, ${varName}, ${JSON.stringify(faceOperation)});`);
+          bodyLines.push(`  sai.pushPullFace(r, ${varName}, ${JSON.stringify(faceOperation)});`);
           break;
         }
         throw new Error("push_pull requires a solid modeling implementation for non-box targets");
@@ -121,7 +177,10 @@ export function serializeCanonicalModelModule(operations) {
     }
   }
 
-  const resultForObject = (objectId) => objectVars.get(objectId);
+  const resultForObject = (objectId) => {
+    const varName = objectVars.get(objectId);
+    return objectState.get(objectId)?.editable ? `${varName}.toShape()` : varName;
+  };
   const resultExpr = objectOrder.length === 0 ? "null" : objectOrder.length === 1 ? resultForObject(objectOrder[0]) : `r.makeCompound([${objectOrder.map((id) => resultForObject(id)).join(", ")}])`;
 
   return [
@@ -144,13 +203,18 @@ export function parseOperationsFromCanonicalModelCode(code) {
   candidates.push(..._parseDirectCreatePrimitiveCylinder(code));
   candidates.push(..._parseDirectTranslate(code));
   candidates.push(..._parseDirectTranslateObject(code));
+  candidates.push(..._parseDirectMoveBoxSubshape(code));
+  candidates.push(..._parseDirectMoveBoxVertex(code));
   candidates.push(..._parseDirectRotate(code));
+  candidates.push(..._parseDirectTaperedBox(code));
   candidates.push(..._parseDirectPushPullFace(code));
+  candidates.push(..._parseDirectScale(code));
   candidates.push(..._parseCreatePrimitiveBox(code));
   candidates.push(..._parseCreatePrimitiveSphere(code));
   candidates.push(..._parseCreatePrimitiveCylinder(code));
   candidates.push(..._parseMove(code));
   candidates.push(..._parseRotate(code));
+  candidates.push(..._parseScale(code));
 
   candidates.sort((a, b) => a.index - b.index);
 
@@ -391,6 +455,65 @@ function _parseDirectTranslateObject(code) {
   });
 }
 
+function _parseDirectMoveBoxSubshape(code) {
+  const regex = /sai\.moveBoxSubshape\(\s*r\s*,\s*([A-Za-z_$][\w$]*)\s*,\s*(\{[^\n]*?\})\s*\);/g;
+  return _collectMatches(code, regex, (match) => {
+    const targetId = match[1];
+    const move = _safeJsonParse(match[2]);
+    if (!targetId || !move?.delta) return null;
+    const mode = ["face", "edge", "vertex"].includes(move.mode) ? move.mode : "face";
+    return {
+      type: "move",
+      targetId,
+      selection: {
+        mode,
+        objectId: targetId,
+        objectIds: [targetId],
+        faceIndex: move.faceIndex ?? null,
+        faceNormalWorld: move.faceNormalWorld ?? null,
+        edge: mode === "edge" ? move.edge ?? null : null,
+        vertex: mode === "vertex" ? move.vertex ?? null : null,
+      },
+      params: {
+        delta: move.delta,
+        subshapeMove: move,
+      },
+    };
+  });
+}
+
+function _parseDirectMoveBoxVertex(code) {
+  const regex = /sai\.moveBoxVertex\(\s*r\s*,\s*([A-Za-z_$][\w$]*)\s*,\s*(\{[^\n]*?\})\s*,\s*(\[[^\n]*?\])\s*\);/g;
+  return _collectMatches(code, regex, (match) => {
+    const targetId = match[1];
+    const vertex = _safeJsonParse(match[2]);
+    const delta = _toVec3FromArray(_safeJsonParse(match[3]));
+    if (!targetId || !vertex || !delta) return null;
+    const subshapeMove = {
+      mode: "vertex",
+      vertex,
+      delta,
+    };
+    return {
+      type: "move",
+      targetId,
+      selection: {
+        mode: "vertex",
+        objectId: targetId,
+        objectIds: [targetId],
+        faceIndex: null,
+        faceNormalWorld: null,
+        edge: null,
+        vertex,
+      },
+      params: {
+        delta,
+        subshapeMove,
+      },
+    };
+  });
+}
+
 function _parseDirectRotate(code) {
   const regex = /([A-Za-z_$][\w$]*)\s*=\s*\1\.rotate\(\s*([-\d.eE+]+)\s*,\s*(\[[\s\S]*?\])\s*,\s*(\[[\s\S]*?\])\s*\);/g;
   return _collectMatches(code, regex, (match) => {
@@ -399,6 +522,49 @@ function _parseDirectRotate(code) {
     if (!targetId || y === null) return null;
     return { type: "rotate", targetId, selection: null, params: { deltaEuler: { x: 0, y, z: 0 } } };
   });
+}
+
+function _parseDirectTaperedBox(code) {
+  const regex = /([A-Za-z_$][\w$]*)\s*=\s*sai\.makeTaperedBox\(\s*r\s*,\s*(\{[^\n]*\})\s*\);/g;
+  const latestByTarget = new Map();
+  for (const match of code.matchAll(regex)) {
+    const targetId = match[1];
+    const config = _safeJsonParse(match[2]);
+    if (!targetId || !config) {
+      continue;
+    }
+    latestByTarget.set(targetId, { index: match.index ?? 0, targetId, config });
+  }
+
+  const candidates = [];
+  for (const { index, targetId, config } of latestByTarget.values()) {
+    const faceTilts = Array.isArray(config.faceTilts)
+      ? config.faceTilts.filter((tilt) => tilt && typeof tilt === "object")
+      : [];
+    const faceTilt = faceTilts.at(-1);
+    if (faceTilt) {
+      candidates.push({
+        index,
+        operation: {
+          type: "rotate",
+          targetId,
+          selection: {
+            mode: "face",
+            objectId: targetId,
+            objectIds: [targetId],
+            faceIndex: faceTilt.faceIndex ?? null,
+            faceNormalWorld: faceTilt.faceNormalWorld ?? null,
+          },
+          params: {
+            deltaEuler: { x: 0, y: 0, z: 0 },
+            faceTilt,
+            faceTilts,
+          },
+        },
+      });
+    }
+  }
+  return candidates;
 }
 
 
@@ -427,6 +593,16 @@ function _parseDirectPushPullFace(code) {
         mode: operation.mode === "extend" ? "extend" : "move",
       },
     };
+  });
+}
+
+function _parseDirectScale(code) {
+  const regex = /([A-Za-z_$][\w$]*)\s*=\s*\1\.scale\(\s*(\[[\s\S]*?\])\s*\);/g;
+  return _collectMatches(code, regex, (match) => {
+    const targetId = match[1];
+    const scale = _toVec3FromArray(_safeJsonParse(match[2]));
+    if (!targetId || !scale) return null;
+    return { type: "scale", targetId, selection: null, params: { scaleFactor: scale } };
   });
 }
 
@@ -552,6 +728,25 @@ function _parseRotate(code) {
       targetId,
       selection: null,
       params: { deltaEuler: { x: 0, y, z: 0 } },
+    };
+  });
+}
+
+function _parseScale(code) {
+  const regex =
+    /if\s*\(shapes\[\s*"([^"]+)"\s*\]\)\s*shapes\[\s*"\1"\s*\]\s*=\s*shapes\[\s*"\1"\s*\]\.scale\(\s*(\[[\s\S]*?\])\s*\);/g;
+  return _collectMatches(code, regex, (match) => {
+    const targetId = match[1];
+    const scale = _toVec3FromArray(_safeJsonParse(match[2]));
+    if (!targetId || !scale) {
+      return null;
+    }
+
+    return {
+      type: "scale",
+      targetId,
+      selection: null,
+      params: { scaleFactor: scale },
     };
   });
 }

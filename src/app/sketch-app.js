@@ -393,7 +393,7 @@ export class SketchApp {
         return;
       }
 
-      await this._commitToolDrag();
+      await this._commitToolDrag(event);
     });
 
     window.addEventListener("pointercancel", (event) => {
@@ -1051,11 +1051,14 @@ export class SketchApp {
     return true;
   }
 
-  async _commitToolDrag() {
+  async _commitToolDrag(event = null) {
     if (!this.tools.dragState) {
       return false;
     }
 
+    if (event) {
+      this._updateToolDrag(event);
+    }
     this.tools.endDrag();
     this.viewport.controls.enabled = true;
     const result = await this.runtimeController.commitManipulation();

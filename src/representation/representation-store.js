@@ -328,14 +328,34 @@ export class RepresentationStore {
       return;
     }
 
-    const { type, targetId } = this.previewOperation;
+    const { type, targetId, params } = this.previewOperation;
     const mesh = targetId ? this.meshById.get(targetId) : null;
     const exactState = targetId ? this.exactSceneState[targetId] : null;
-    if (!mesh || !exactState || type !== "push_pull") {
+    if (!mesh || !exactState) {
       return;
     }
 
     const previewState = structuredClone(exactState);
+    if (type === "move" && !params?.subshapeMove) {
+      previewState.position.x += params.delta.x;
+      previewState.position.y += params.delta.y;
+      previewState.position.z += params.delta.z;
+      applyTransform(mesh, previewState);
+      return;
+    }
+
+    if (type === "scale") {
+      previewState.scale.x *= Math.max(0.1, params.scaleFactor.x);
+      previewState.scale.y *= Math.max(0.1, params.scaleFactor.y);
+      previewState.scale.z *= Math.max(0.1, params.scaleFactor.z);
+      applyTransform(mesh, previewState);
+      return;
+    }
+
+    if (type !== "push_pull") {
+      return;
+    }
+
     if (previewState.primitive === "brep_mesh") {
       const meshData = previewPushPullMeshData(previewState.meshData, this.previewOperation);
       if (!meshData) {
