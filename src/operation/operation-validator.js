@@ -38,6 +38,9 @@ export function validateOperation(operation) {
       break;
     case OPERATION_TYPES.MOVE:
       assertVector3(params.delta, "params.delta");
+      if (params.subshapeMove !== undefined && params.subshapeMove !== null) {
+        assertSubshapeMove(params.subshapeMove);
+      }
       break;
     case OPERATION_TYPES.ROTATE:
       assertVector3(params.deltaEuler, "params.deltaEuler");
@@ -76,4 +79,38 @@ export function validateOperation(operation) {
   }
 
   return operation;
+}
+
+function assertSubshapeMove(value) {
+  if (!value || typeof value !== "object") {
+    throw new Error("params.subshapeMove must be an object");
+  }
+  if (!["face", "edge", "vertex"].includes(value.mode)) {
+    throw new Error("params.subshapeMove.mode must be face|edge|vertex");
+  }
+  assertVector3(value.delta, "params.subshapeMove.delta");
+
+  if (value.mode === "face") {
+    if (value.faceIndex !== undefined && value.faceIndex !== null) {
+      assertNumber(value.faceIndex, "params.subshapeMove.faceIndex");
+    }
+    if (value.faceAxis !== undefined && !["x", "y", "z"].includes(value.faceAxis)) {
+      throw new Error("params.subshapeMove.faceAxis must be x|y|z");
+    }
+    if (value.faceSign !== undefined) {
+      assertNumber(value.faceSign, "params.subshapeMove.faceSign");
+    }
+    return;
+  }
+
+  if (value.mode === "edge") {
+    if (!value.edge || typeof value.edge !== "object") {
+      throw new Error("params.subshapeMove.edge must be an object");
+    }
+    assertVector3(value.edge.a, "params.subshapeMove.edge.a");
+    assertVector3(value.edge.b, "params.subshapeMove.edge.b");
+    return;
+  }
+
+  assertVector3(value.vertex, "params.subshapeMove.vertex");
 }

@@ -13,7 +13,7 @@ export class RuntimeController {
     this.modelScriptStore = modelScriptStore || new ModelScriptStore();
     this.onCanonicalCodeChanged = onCanonicalCodeChanged || (() => {});
     this._activeSession = null;
-    this._lastExactBackend = "fallback";
+    this._lastExactBackend = "not-run";
   }
 
   initialize({ scene, seedSceneState }) {
@@ -61,7 +61,7 @@ export class RuntimeController {
     const canonicalCode = this.canonicalModel.toTypeScriptModule();
     this.onCanonicalCodeChanged(canonicalCode);
 
-    const exactRepresentation = await this.modelExecutor.executeCanonicalModel({
+    const exactRepresentation = await this._executeModelForDisplay({
       operations: this.canonicalModel.getOperations(),
       sceneState: this.representationStore.getExactSceneState(),
     });
@@ -81,7 +81,7 @@ export class RuntimeController {
     this.cancelManipulation();
     this.canonicalModel.fromTypeScriptModule(code);
     const sceneState = cleanSlate ? {} : this.representationStore.getExactSceneState();
-    const exactRepresentation = await this.modelExecutor.executeCanonicalModel({
+    const exactRepresentation = await this._executeModelForDisplay({
       operations: this.canonicalModel.getOperations(),
       sceneState,
     });
@@ -105,7 +105,7 @@ export class RuntimeController {
     this.canonicalModel.replaceCommittedOperations(compressedOperations);
     const canonicalCode = this.canonicalModel.toTypeScriptModule();
 
-    const exactRepresentation = await this.modelExecutor.executeCanonicalModel({
+    const exactRepresentation = await this._executeModelForDisplay({
       operations: this.canonicalModel.getOperations(),
       sceneState: {},
     });
@@ -176,6 +176,27 @@ export class RuntimeController {
     }
     return this._activeSession;
   }
+
+  async _executeModelForDisplay(input) {
+    try {
+      return await this.modelExecutor.executeCanonicalModel(input);
+    } catch (error) {
+      if (!isExactExecutionUnavailable(error) || typeof this.modelExecutor.executeStateReplay !== "function") {
+        throw error;
+      }
+      const replay = await this.modelExecutor.executeStateReplay(input);
+      return {
+        ...replay,
+        exactBackend: "state-replay:no-exact-kernel",
+        exactUnavailable: true,
+        exactError: error.message,
+      };
+    }
+  }
+}
+
+function isExactExecutionUnavailable(error) {
+  return error instanceof Error && /exact execution is not implemented/i.test(error.message);
 }
 
 function createDefaultBoxOperation() {
@@ -221,7 +242,7 @@ function compressAdjacentTransforms(operations) {
 
 function isCompressibleTransform(operation) {
   return (
-    operation?.type === "move" ||
+    (operation?.type === "move" && !operation.params?.subshapeMove) ||
     operation?.type === "scale" ||
     (operation?.type === "push_pull" && operation.params.mode !== "extend" && isAxisAligned(operation.params.axis))
   );

@@ -63,6 +63,7 @@ const STATIC_BUTTON_ICONS = Object.freeze({
   object: "cube",
   face: "face",
   edge: "edge",
+  vertex: "vertex",
 });
 
 export class SketchApp {
@@ -921,6 +922,27 @@ export class SketchApp {
       };
     }
 
+    if (selectionResult?.selection?.mode === SELECTION_MODES.VERTEX && !shiftKey) {
+      const vertexWorld = selectionResult.selection.vertex?.world;
+      const anchor = vertexWorld
+        ? new THREE.Vector3(vertexWorld.x ?? 0, vertexWorld.y ?? 0, vertexWorld.z ?? 0)
+        : hit.point.clone();
+      const movePlane = this._screenMovePlaneFromPoint(anchor);
+      const startPoint =
+        this.selectionPipeline.pointOnPlane({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          plane: movePlane,
+        }) ?? anchor.clone();
+
+      return {
+        mode: "move",
+        projector: "screen",
+        movePlane,
+        startPoint,
+      };
+    }
+
     if (shiftKey) {
       const axis = new THREE.Vector3(0, 1, 0);
 
@@ -932,6 +954,7 @@ export class SketchApp {
         axis,
         origin,
         movePlane,
+        projector: "surface",
         baseWorldDelta: new THREE.Vector3(0, 0, 0),
         startDy: event.clientY,
       };
@@ -944,6 +967,7 @@ export class SketchApp {
 
     return {
       mode: "move",
+      projector: "surface",
       movePlane,
       startPoint,
     };
@@ -1089,7 +1113,7 @@ export class SketchApp {
     if (wantsAxisLock && drag.context?.mode !== "move-axis") {
       const axis = new THREE.Vector3(0, 1, 0);
       const movePlane = drag.context?.movePlane ?? new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-      const currentPoint = this._moveSurfacePointFromEvent(event, movePlane);
+      const currentPoint = this._movePointFromEvent(event, { ...drag.context, movePlane });
       const startPoint = drag.context?.startPoint?.clone?.() ?? currentPoint?.clone?.() ?? drag.context?.origin?.clone?.() ?? new THREE.Vector3();
       const origin = startPoint.clone();
       const currentFreeDelta = drag.context?.baseWorldDelta?.clone?.() ?? new THREE.Vector3();
@@ -1101,6 +1125,7 @@ export class SketchApp {
         axis,
         origin,
         movePlane,
+        projector: drag.context?.projector ?? "surface",
         startPoint,
         baseWorldDelta: currentFreeDelta,
         startDy: event.clientY,
@@ -1110,12 +1135,14 @@ export class SketchApp {
       }
     } else if (!wantsAxisLock && drag.context?.mode === "move-axis") {
       const movePlane = drag.context.movePlane ?? new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-      const currentPoint = this._moveSurfacePointFromEvent(event, movePlane);
+      const projector = drag.context.projector ?? "surface";
+      const currentPoint = this._movePointFromEvent(event, { ...drag.context, movePlane, projector });
       const dyFromToggle = event.clientY - (drag.context.startDy ?? event.clientY);
       const baseWorldDelta = drag.context.baseWorldDelta?.clone?.() ?? new THREE.Vector3();
       baseWorldDelta.y += Math.round((-dyFromToggle * 0.02) * 1000) / 1000;
       drag.context = {
         mode: "move",
+        projector,
         movePlane,
         startPoint: currentPoint ?? drag.context.startPoint?.clone?.() ?? drag.context.origin?.clone?.() ?? new THREE.Vector3(),
         baseWorldDelta,
@@ -1143,7 +1170,7 @@ export class SketchApp {
       return gesture;
     }
 
-    const currentPoint = this._moveSurfacePointFromEvent(event, movePlane);
+    const currentPoint = this._movePointFromEvent(event, drag.context);
     if (!currentPoint) {
       return gesture;
     }
@@ -1172,6 +1199,29 @@ export class SketchApp {
         plane: fallbackPlane,
       })
     );
+  }
+
+  _movePointFromEvent(event, context) {
+    const movePlane = context?.movePlane;
+    if (!movePlane) {
+      return null;
+    }
+    if (context?.projector === "screen") {
+      return this.selectionPipeline.pointOnPlane({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        plane: movePlane,
+      });
+    }
+    return this._moveSurfacePointFromEvent(event, movePlane);
+  }
+
+  _screenMovePlaneFromPoint(point) {
+    const normal = this.viewport.camera.getWorldDirection(new THREE.Vector3()).normalize();
+    if (normal.lengthSq() < 1e-8) {
+      normal.set(0, 0, -1);
+    }
+    return new THREE.Plane().setFromNormalAndCoplanarPoint(normal, point);
   }
 
   _axisDistanceFromPointer(event, origin, axis) {
@@ -1218,15 +1268,30 @@ export class SketchApp {
     this.preselectionEdgeOverlay.renderOrder = 41;
     this.preselectionEdgeOverlay.frustumCulled = false;
     this.viewport.scene.add(this.preselectionEdgeOverlay);
+
+    this.preselectionVertexOverlay = new THREE.Points(
+      new THREE.BufferGeometry(),
+      new THREE.PointsMaterial({
+        color: 0x7dc8ff,
+        size: 12,
+        sizeAttenuation: false,
+        depthTest: false,
+      }),
+    );
+    this.preselectionVertexOverlay.visible = false;
+    this.preselectionVertexOverlay.renderOrder = 42;
+    this.preselectionVertexOverlay.frustumCulled = false;
+    this.viewport.scene.add(this.preselectionVertexOverlay);
   }
 
   _updatePreselectionOverlays() {
-    if (!this.preselectionFaceOverlay || !this.preselectionEdgeOverlay) {
+    if (!this.preselectionFaceOverlay || !this.preselectionEdgeOverlay || !this.preselectionVertexOverlay) {
       return;
     }
 
     this.preselectionFaceOverlay.visible = false;
     this.preselectionEdgeOverlay.visible = false;
+    this.preselectionVertexOverlay.visible = false;
 
     if (!this.hoveredHit || this.tools.dragState) {
       return;
@@ -1251,6 +1316,16 @@ export class SketchApp {
       const [a, b] = edge;
       this._setOverlayGeometry(this.preselectionEdgeOverlay, [a, b]);
       this.preselectionEdgeOverlay.visible = true;
+      return;
+    }
+
+    if (mode === SELECTION_MODES.VERTEX) {
+      const vertex = this._vertexFromHit(this.hoveredHit);
+      if (!vertex) {
+        return;
+      }
+      this._setOverlayGeometry(this.preselectionVertexOverlay, [vertex]);
+      this.preselectionVertexOverlay.visible = true;
     }
   }
 
@@ -1429,6 +1504,23 @@ export class SketchApp {
       if (dist < bestDist) {
         bestDist = dist;
         best = [p0, p1];
+      }
+    }
+    return best;
+  }
+
+  _vertexFromHit(hit) {
+    const tri = this._triangleFromHit(hit);
+    if (!tri || !hit?.point) {
+      return null;
+    }
+    let best = tri[0];
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const point of tri) {
+      const dist = point.distanceToSquared(hit.point);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = point;
       }
     }
     return best;
@@ -2597,6 +2689,8 @@ function iconSvg(name) {
       return svg('<polygon points="4,6 20,6 16,18 8,18"/><path d="M8 18l4-6 4 6"/>');
     case "edge":
       return svg('<path d="M4 16l16-8"/><circle cx="4" cy="16" r="2"/><circle cx="20" cy="8" r="2"/>');
+    case "vertex":
+      return svg('<circle cx="12" cy="12" r="4"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/>');
     case "copy":
       return svg('<rect x="9" y="9" width="10" height="11" rx="2"/><rect x="5" y="4" width="10" height="11" rx="2"/>');
     case "compress":

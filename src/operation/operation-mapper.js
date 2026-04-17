@@ -37,9 +37,7 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
         };
 
   const paramsByType = {
-    [OPERATION_TYPES.MOVE]: {
-      delta: moveDelta,
-    },
+    [OPERATION_TYPES.MOVE]: moveParams(selection, moveDelta),
     [OPERATION_TYPES.ROTATE]: rotateParams,
     [OPERATION_TYPES.SCALE]: {
       scaleFactor: {
@@ -64,6 +62,51 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
   };
 
   return validateOperation(operation);
+}
+
+function moveParams(selection, delta) {
+  const params = { delta };
+  const subshapeMove = subshapeMoveParams(selection, delta);
+  if (subshapeMove) {
+    params.subshapeMove = subshapeMove;
+  }
+  return params;
+}
+
+function subshapeMoveParams(selection, delta) {
+  if (!selection || selection.mode === "object") {
+    return null;
+  }
+
+  if (selection.mode === "face") {
+    const identity = faceTiltIdentity(selection.faceNormalWorld ?? { x: 0, y: 0, z: 1 }, false);
+    return {
+      mode: "face",
+      faceIndex: selection.faceIndex ?? null,
+      faceNormalWorld: identity.faceNormalWorld,
+      faceAxis: identity.faceAxis,
+      faceSign: identity.faceSign,
+      delta: { ...delta },
+    };
+  }
+
+  if (selection.mode === "edge" && selection.edge) {
+    return {
+      mode: "edge",
+      edge: structuredClone(selection.edge),
+      delta: { ...delta },
+    };
+  }
+
+  if (selection.mode === "vertex" && selection.vertex) {
+    return {
+      mode: "vertex",
+      vertex: structuredClone(selection.vertex),
+      delta: { ...delta },
+    };
+  }
+
+  return null;
 }
 
 function faceRotateParams({ selection, faceNormalWorld, shiftKey, angle, faceTiltAngles }) {

@@ -1,33 +1,40 @@
 # AGENTS.md
 
-## Purpose
+## Core Principle
 
-The agent system maintains alignment between the codebase and `INTENT.md`.
+This project is intent-driven. `INTENT.md` is the authoritative source for application behavior, architecture, product boundaries, and direction. The codebase is the implementation and must be changed to match intent, never the reverse.
 
-`INTENT.md` is the source of truth for behavior, architecture, and direction.
+Agents must not modify, regenerate, reinterpret, or redefine `INTENT.md`. Treat it as read-only input controlled by external intent-authoring processes.
 
-Agents must interpret intent changes and apply corresponding code changes.
+## Orchestration Workflow
 
-## System Role
+When `INTENT.md` changes:
 
-The system acts as orchestrator and executor.
+1. Diff `INTENT.md` against the base of the current git branch.
+2. Ignore formatting-only changes.
+3. Convert semantic deltas into a structured list: change, affected area, expected outcome.
+4. Derive atomic, scoped engineering tasks mapped to concrete code areas.
+5. Execute tasks with minimal, targeted, reversible changes.
+6. Verify code, architecture, and behavior align with intent.
+7. Commit only after all derived tasks are complete and verification passes.
 
-Workflow:
+Do not create partial commits for an orchestration cycle. The final commit must include the triggering `INTENT.md` change and all required implementation changes. After commit, treat that state as the new baseline.
 
-1. Detect changes in `INTENT.md`
-2. Compute diff against the base of the current git branch
-3. Interpret semantic meaning of the diff
-4. Derive actionable engineering tasks
-5. Execute tasks through specialized agents
-6. Verify resulting code aligns with intent
+## Execution Rules
 
-## Source of Truth
+Agents must use tools to inspect the repo before changing it. For each task:
 
-- `INTENT.md` defines system intent
-- The codebase is an implementation that must align with `INTENT.md`
-- If discrepancies exist, update the codebase to match intent
+- understand the task and relevant intent
+- identify affected files
+- make a brief plan before edits
+- read only necessary code
+- apply focused changes
+- avoid unrelated refactors
+- verify the result
 
-Agents must not preserve conflicting code.
+Agents must not assume codebase behavior without tool use, rewrite broad areas without intent requirement, or introduce speculative features.
+
+If dependencies exist, complete prerequisites first. If blocked, report the issue clearly and avoid unsafe guesses.
 
 ## Canonical Model Script Rule
 
@@ -43,199 +50,68 @@ Agents must not:
 
 Every committed modeling behavior must appear as a direct function or method call. If Replicad does not expose a needed primitive directly, implement the callable pattern in the 3DSAI modeling library outside the user's model script, then emit a direct call to that library from the script.
 
-## Intent File Protection
+## Geometry Editing Override (Replicad / BREP)
 
-`INTENT.md` is read-only for all agents.
+This section overrides any conflicting modeling behavior elsewhere.
 
-Agents must not:
+Geometry must not be modified using transforms. Treat all shapes as immutable BREP solids. Shape-changing operations are allowed only through:
 
-- modify `INTENT.md`
-- generate changes to `INTENT.md`
-- reinterpret or redefine intent
-- change intent to fit existing code
+- extrusion
+- boolean operations: `fuse`, `cut`
 
-`INTENT.md` may only be modified by external intent-authoring processes.
+Forbidden for shape editing:
 
-Agents must treat `INTENT.md` as input only.
+- `scale()`
+- `translate()` when used to resize or simulate face movement
+- `transform()`
+- direct vertex edits
+- direct face movement
 
-## Intent Diffing
+`translate()` and `rotate()` are allowed only for rigid object movement or positioning tool geometry for booleans. They must not change proportions or dimensions.
 
-When `INTENT.md` changes:
+Any operation involving moving a face, resizing one side, extending a feature, or shrinking a feature must use extrusion plus boolean:
 
-- compute diff against the base of the current git branch
-- identify semantic changes
-- ignore formatting-only changes
+```js
+function pushPull(shape, faceIndex, distance) {
+  const face = shape.faces()[faceIndex]
+  const wire = face.outerWire()
+  const tool = wire.extrude(distance)
 
-Transform the diff into a structured list of intent changes.
+  return distance > 0
+    ? shape.fuse(tool)
+    : shape.cut(tool)
+}
+```
 
-Each intent change must state:
+If shape editing is implemented with transform-based resizing, direct vertex movement, or direct face movement, the solution is incorrect.
 
-- what was added, removed, or modified
-- the affected system area
-- the expected outcome
+## Task Quality
 
-## Task Derivation
-
-Derive tasks from interpreted intent changes.
-
-Each task must:
-
-- be atomic and scoped
-- map to a specific codebase area
-- define a concrete implementation change
-- avoid ambiguity
-
-Valid examples:
+Tasks must be atomic, unambiguous, and tied to intent. Valid examples:
 
 - implement push-pull preview system
 - refactor interaction layer for transient operations
 - add operation generation for extrusion
 
-Invalid tasks:
+Invalid examples:
 
-- vague or unclear work
-- large multi-feature efforts
+- vague work
+- broad multi-feature efforts
 - speculative improvements not defined by intent
 
-## Agent Orchestration
-
-The system must spawn agents to execute tasks.
-
-Rules:
-
-- one agent per task or small related task group
-- agents run independently unless dependencies require ordering
-- tasks may run sequentially or in parallel
-
-Orchestrator responsibilities:
-
-- assign tasks
-- track execution
-- ensure completion
-
-## Execution Model
-
-Each agent must:
-
-1. Understand assigned task
-2. Identify relevant code areas
-3. Read only necessary files
-4. Plan change before writing code
-5. Apply minimal focused modifications
-6. Verify alignment with `INTENT.md`
-
-Agents must not:
-
-- rewrite large code areas without intent requirement
-- modify unrelated areas
-- introduce speculative changes
-
-## Tooling Expectations
-
-Agents must use tools to operate on the codebase.
-
-Required capabilities:
-
-- search relevant code
-- open and read files
-- write or modify files
-- inspect project structure
-
-Agents must not assume full codebase knowledge without tool use.
-
-## Planning Requirement
-
-Before making changes, each agent must:
-
-- produce a brief plan
-- identify affected files
-- outline intended modifications
-
-Execution must follow the plan.
-
-## Change Constraints
-
-All changes must be:
-
-- minimal
-- targeted
-- reversible
-
-Large or destructive changes are disallowed unless explicitly required by intent.
-
-## Dependency Handling
-
-If task dependencies exist:
-
-- establish execution order
-- complete prerequisites first
-
-Agents must not execute dependent tasks before prerequisites complete.
-
-## Completion Criteria
-
-A task is complete only when:
+Completion requires:
 
 - code reflects the intent change
-- modification aligns with system architecture
-- no unrelated system areas are affected
-
-## Commit and Baseline Finalization
-
-Git commit is required to finalize an orchestration cycle.
-
-Rules:
-
-- do not create a commit until all derived tasks are complete
-- do not create partial commits for a subset of orchestration tasks
-- include `INTENT.md` intent changes that triggered the cycle in the same commit
-- include all code changes required to satisfy those intent changes in the same commit
-- create the commit only after alignment verification passes
-
-After commit:
-
-- treat the committed state as the new baseline for future intent diffing
-- on a subsequent `INTENT.md` change, start a new orchestration cycle from that new baseline
-- do not re-derive or re-execute previously completed tasks unless new semantic intent changes require it
-
-## Failure Handling
-
-If an agent cannot complete a task, it must:
-
-- report failure clearly
-- describe the blocking issue
-- avoid unsafe or speculative fixes
+- architecture remains aligned
+- unrelated areas are untouched
+- verification passes
 
 ## Loop Prevention
 
-To prevent infinite loops:
+Do not treat agent-generated code changes as intent changes. Do not re-run completed tasks unless `INTENT.md` changes semantically. Avoid repeated edits to the same area without new intent.
 
-- ignore agent-generated code changes as intent re-trigger signals
-- do not re-run tasks unless `INTENT.md` changes semantically
-- avoid repeated edits to the same area without new intent change
+## Scope
 
-## Scope Boundaries
+Agents are responsible for application architecture, interaction systems, and modeling pipeline integration.
 
-Agents are responsible for:
-
-- application architecture
-- interaction systems
-- modeling pipeline integration
-
-Agents are not responsible for:
-
-- modifying `INTENT.md`
-- redefining system intent
-- introducing unrelated features
-
-## System Principle
-
-The system is intent-driven.
-
-Agents translate intent into implementation.
-
-The objective is continuous alignment between:
-
-- intent
-- code
-- behavior
+Agents are not responsible for modifying `INTENT.md`, redefining system intent, or introducing unrelated features.

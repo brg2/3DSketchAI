@@ -12,6 +12,7 @@ export const SELECTION_MODES = Object.freeze({
   OBJECT: "object",
   FACE: "face",
   EDGE: "edge",
+  VERTEX: "vertex",
 });
 
 const TOOL_TO_OPERATION = Object.freeze({

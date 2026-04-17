@@ -10,6 +10,7 @@ function cloneSceneState(sceneState) {
       scale: { ...value.scale },
       faceTilts: Array.isArray(value.faceTilts) ? value.faceTilts.map((tilt) => structuredClone(tilt)) : [],
       faceExtrudes: Array.isArray(value.faceExtrudes) ? value.faceExtrudes.map((extrude) => structuredClone(extrude)) : [],
+      subshapeMoves: Array.isArray(value.subshapeMoves) ? value.subshapeMoves.map((move) => structuredClone(move)) : [],
       faceExtensions: Array.isArray(value.faceExtensions) ? value.faceExtensions.map((extension) => structuredClone(extension)) : [],
       groupId: value.groupId ?? null,
       componentId: value.componentId ?? null,
@@ -19,32 +20,14 @@ function cloneSceneState(sceneState) {
 }
 
 function applyPushPullToState(state, params) {
-  const axis = params.axis ?? { x: 0, y: 0, z: 1 };
-  const distance = params.distance ?? 0;
-  if (state.primitive === "box" && params.mode === "extend") {
+  if (state.primitive !== "box") {
+    throw new Error("push_pull requires a solid modeling implementation for non-box targets");
+  }
+  if (params.mode === "extend") {
     state.faceExtensions = [...(state.faceExtensions ?? []), makeFaceOperation(params)];
     return;
   }
-  if (state.primitive === "box" && !isAxisAligned(axis)) {
-    state.faceExtrudes = [...(state.faceExtrudes ?? []), makeFaceOperation(params)];
-    return;
-  }
-
-  const axisEntries = [
-    ["x", axis.x ?? 0],
-    ["y", axis.y ?? 0],
-    ["z", axis.z ?? 0],
-  ];
-  axisEntries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-
-  const [dominantAxis, dominantComponent] = axisEntries[0];
-  const axisSign = Math.sign(dominantComponent) || 1;
-  const previousScale = state.scale[dominantAxis];
-  const nextScale = Math.max(0.1, previousScale + distance);
-  const appliedDelta = nextScale - previousScale;
-
-  state.scale[dominantAxis] = nextScale;
-  state.position[dominantAxis] += axisSign * (appliedDelta * 0.5);
+  state.faceExtrudes = [...(state.faceExtrudes ?? []), makeFaceOperation(params)];
 }
 
 function makeFaceOperation(params) {
@@ -75,11 +58,6 @@ function dominantAxis(axis) {
   return entries[0][0];
 }
 
-function isAxisAligned(axis) {
-  const normalized = normalizeAxis(axis);
-  return [Math.abs(normalized.x), Math.abs(normalized.y), Math.abs(normalized.z)].filter((value) => value > 1e-4).length <= 1;
-}
-
 function replayOperations({ operations, sceneState, exactBackend }) {
   const nextState = cloneSceneState(sceneState);
 
@@ -89,9 +67,16 @@ function replayOperations({ operations, sceneState, exactBackend }) {
     switch (operation.type) {
       case "move":
         if (target) {
-          target.position.x += operation.params.delta.x;
-          target.position.y += operation.params.delta.y;
-          target.position.z += operation.params.delta.z;
+          if (operation.params.subshapeMove && target.primitive === "box") {
+            target.subshapeMoves = [
+              ...(target.subshapeMoves ?? []),
+              structuredClone(operation.params.subshapeMove),
+            ];
+          } else {
+            target.position.x += operation.params.delta.x;
+            target.position.y += operation.params.delta.y;
+            target.position.z += operation.params.delta.z;
+          }
         }
         break;
       case "rotate":
@@ -130,6 +115,7 @@ function replayOperations({ operations, sceneState, exactBackend }) {
             scale: { ...operation.params.size },
             faceTilts: [],
             faceExtrudes: [],
+            subshapeMoves: [],
             faceExtensions: [],
             groupId: null,
             componentId: null,
@@ -166,17 +152,14 @@ function replayOperations({ operations, sceneState, exactBackend }) {
 
 export class ModelExecutor {
   constructor({ adapter } = {}) {
-    this.adapter =
-      adapter ||
-      new ReplicadOpenCascadeAdapter({
-        fallbackExecutor: async ({ operations, sceneState, exactBackend }) => {
-          await Promise.resolve();
-          return replayOperations({ operations, sceneState, exactBackend });
-        },
-      });
+    this.adapter = adapter || new ReplicadOpenCascadeAdapter();
   }
 
   async executeCanonicalModel({ operations, sceneState }) {
     return this.adapter.execute({ operations, sceneState });
+  }
+
+  async executeStateReplay({ operations, sceneState }) {
+    return replayOperations({ operations, sceneState, exactBackend: "state-replay" });
   }
 }

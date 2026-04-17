@@ -230,3 +230,26 @@ test("native two-finger navigation keeps damped orbit and zoom inertia after rel
     assert.ok(Math.abs(viewport._nativeTouchNavigation.velocityLogZoom) < Math.abs(zoomVelocityAtRelease));
   });
 });
+
+test("touch gesture API keeps damped orbit and zoom inertia after end", () => {
+  const { viewport } = createViewportHarness();
+  viewport.beginTouchGesture();
+  viewport.applyTouchPinchScale({ scale: 1.18, clientX: 400, clientY: 300 });
+  viewport.applyTouchOrbitDelta({ dx: 22, dy: -10 });
+  const positionAtEnd = viewport.camera.position.clone();
+  const dxVelocityAtEnd = viewport._touchGestureInertia.velocityDx;
+  const zoomVelocityAtEnd = viewport._touchGestureInertia.velocityLogScale;
+
+  viewport.endTouchGesture();
+
+  assert.equal(viewport._touchGestureActive, false);
+  assert.notEqual(viewport._touchGestureInertia, null);
+  assert.equal(viewport.controls.enabled, false);
+  viewport._applyTouchGestureInertiaStep();
+
+  assert.ok(Math.abs(dxVelocityAtEnd) > 0.0005);
+  assert.ok(Math.abs(zoomVelocityAtEnd) > 0.0005);
+  assert.ok(viewport.camera.position.distanceTo(positionAtEnd) > 0.0001);
+  assert.ok(Math.abs(viewport._touchGestureInertia.velocityDx) < Math.abs(dxVelocityAtEnd));
+  assert.ok(Math.abs(viewport._touchGestureInertia.velocityLogScale) < Math.abs(zoomVelocityAtEnd));
+});

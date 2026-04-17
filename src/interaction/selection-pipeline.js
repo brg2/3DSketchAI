@@ -9,29 +9,66 @@ function pickFaceEdge(intersection) {
   const { face, object, point } = intersection;
   const geom = object.geometry;
   const position = geom.attributes.position;
-  const a = object.localToWorld(new THREE.Vector3().fromBufferAttribute(position, face.a));
-  const b = object.localToWorld(new THREE.Vector3().fromBufferAttribute(position, face.b));
-  const c = object.localToWorld(new THREE.Vector3().fromBufferAttribute(position, face.c));
+  const localA = new THREE.Vector3().fromBufferAttribute(position, face.a);
+  const localB = new THREE.Vector3().fromBufferAttribute(position, face.b);
+  const localC = new THREE.Vector3().fromBufferAttribute(position, face.c);
+  const a = object.localToWorld(localA.clone());
+  const b = object.localToWorld(localB.clone());
+  const c = object.localToWorld(localC.clone());
 
   const edges = [
-    [a, b],
-    [b, c],
-    [c, a],
+    { world: [a, b], local: [localA, localB] },
+    { world: [b, c], local: [localB, localC] },
+    { world: [c, a], local: [localC, localA] },
   ];
   let best = edges[0];
   let bestDistSq = Number.POSITIVE_INFINITY;
 
-  for (const [p0, p1] of edges) {
+  for (const edge of edges) {
+    const [p0, p1] = edge.world;
     const distSq = distancePointToSegmentSquared(point, p0, p1);
     if (distSq < bestDistSq) {
       bestDistSq = distSq;
-      best = [p0, p1];
+      best = edge;
     }
   }
 
   return {
-    a: { x: best[0].x, y: best[0].y, z: best[0].z },
-    b: { x: best[1].x, y: best[1].y, z: best[1].z },
+    a: vecToObject(best.local[0]),
+    b: vecToObject(best.local[1]),
+    worldA: vecToObject(best.world[0]),
+    worldB: vecToObject(best.world[1]),
+    keys: best.local.map(cornerKeyFromLocalPoint).filter(Boolean),
+  };
+}
+
+function pickFaceVertex(intersection) {
+  if (!intersection?.face || !intersection?.object?.geometry || !intersection?.point) {
+    return null;
+  }
+
+  const { face, object, point } = intersection;
+  const position = object.geometry.attributes.position;
+  const locals = [
+    new THREE.Vector3().fromBufferAttribute(position, face.a),
+    new THREE.Vector3().fromBufferAttribute(position, face.b),
+    new THREE.Vector3().fromBufferAttribute(position, face.c),
+  ];
+  const worlds = locals.map((local) => object.localToWorld(local.clone()));
+  let bestIndex = 0;
+  let bestDistSq = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < worlds.length; index += 1) {
+    const distSq = point.distanceToSquared(worlds[index]);
+    if (distSq < bestDistSq) {
+      bestDistSq = distSq;
+      bestIndex = index;
+    }
+  }
+
+  return {
+    ...vecToObject(locals[bestIndex]),
+    world: vecToObject(worlds[bestIndex]),
+    key: cornerKeyFromLocalPoint(locals[bestIndex]),
   };
 }
 
@@ -59,6 +96,20 @@ function pickFaceNormalWorld(intersection) {
     y: normal.y,
     z: normal.z,
   };
+}
+
+function vecToObject(vector) {
+  return { x: vector.x, y: vector.y, z: vector.z };
+}
+
+function cornerKeyFromLocalPoint(point) {
+  if (!point) {
+    return null;
+  }
+  const sx = point.x >= 0 ? "px" : "nx";
+  const sy = point.y >= 0 ? "py" : "ny";
+  const sz = point.z >= 0 ? "pz" : "nz";
+  return `${sx}_${sy}_${sz}`;
 }
 
 export class SelectionPipeline {
@@ -142,6 +193,7 @@ export class SelectionPipeline {
       faceIndex: hit.faceIndex ?? null,
       faceNormalWorld: pickFaceNormalWorld(hit),
       edge: this.selectionMode === SELECTION_MODES.EDGE ? pickFaceEdge(hit) : null,
+      vertex: this.selectionMode === SELECTION_MODES.VERTEX ? pickFaceVertex(hit) : null,
     };
 
     return { hit, selection };

@@ -2,17 +2,29 @@ const AXES = ["x", "y", "z"];
 
 export function create3dsaiModelingLibrary() {
   return {
+    makeBox,
     makeTaperedBox,
+    moveBoxSubshape,
+    moveBoxVertex,
+    pushPullFace,
+    translateObject,
   };
 }
 
-export function makeTaperedBox(r, { min, max, faceTilts = [], faceExtrudes = [], faceExtensions = [] }) {
+export function makeBox(r, min, max) {
+  return new EditableBox(r, min, max);
+}
+
+export function makeTaperedBox(r, { min, max, faceTilts = [], faceExtrudes = [], subshapeMoves = [], faceExtensions = [] }) {
   const corners = createBoxCorners(min, max);
   for (const tilt of faceTilts) {
     applyCenteredTaper(corners, tilt);
   }
   for (const extrude of faceExtrudes) {
     applyFaceExtrude(corners, extrude);
+  }
+  for (const move of subshapeMoves) {
+    applySubshapeMove(corners, move);
   }
 
   const faces = [
@@ -29,6 +41,180 @@ export function makeTaperedBox(r, { min, max, faceTilts = [], faceExtrudes = [],
   }
 
   return r.makeSolid(faces);
+}
+
+export function moveBoxVertex(r, shape, vertex, delta) {
+  return moveBoxSubshape(r, shape, {
+    mode: "vertex",
+    vertex: normalizeVertex(vertex),
+    delta: normalizeDelta(delta),
+  });
+}
+
+export function moveBoxSubshape(_r, shape, move) {
+  if (!shape || typeof shape.moveSubshape !== "function") {
+    throw new Error("moveBoxSubshape requires a shape created by sai.makeBox");
+  }
+  shape.moveSubshape(move);
+  return shape;
+}
+
+export function pushPullFace(_r, shape, operation) {
+  if (!shape || typeof shape.pushPullFace !== "function") {
+    throw new Error("pushPullFace requires a shape created by sai.makeBox");
+  }
+  shape.pushPullFace(operation);
+  return shape;
+}
+
+export function translateObject(_r, shape, delta) {
+  if (!shape || typeof shape.translateObject !== "function") {
+    throw new Error("translateObject requires a shape created by sai.makeBox");
+  }
+  shape.translateObject(normalizeDelta(delta));
+  return shape;
+}
+
+class EditableBox {
+  constructor(r, min, max) {
+    this.r = r;
+    this.min = [...min];
+    this.max = [...max];
+    this.faceTilts = [];
+    this.faceExtrudes = [];
+    this.subshapeMoves = [];
+    this.faceExtensions = [];
+  }
+
+  moveSubshape(move) {
+    this.subshapeMoves.push(structuredClone(move));
+    return this;
+  }
+
+  pushPullFace(operation) {
+    const faceOperation = normalizeFaceOperation(operation);
+    if (faceOperation.mode === "extend") {
+      this.faceExtensions.push(faceOperation);
+    } else {
+      this.faceExtrudes.push(faceOperation);
+    }
+    return this;
+  }
+
+  translateObject(delta) {
+    const normalized = normalizeDelta(delta);
+    this.min[0] += normalized.x;
+    this.min[1] += normalized.y;
+    this.min[2] += normalized.z;
+    this.max[0] += normalized.x;
+    this.max[1] += normalized.y;
+    this.max[2] += normalized.z;
+    return this;
+  }
+
+  toShape() {
+    if (
+      this.faceTilts.length === 0 &&
+      this.faceExtrudes.length === 0 &&
+      this.subshapeMoves.length === 0 &&
+      this.faceExtensions.length === 0
+    ) {
+      return this.r.makeBox(this.min, this.max);
+    }
+
+    return makeTaperedBox(this.r, {
+      min: this.min,
+      max: this.max,
+      faceTilts: this.faceTilts,
+      faceExtrudes: this.faceExtrudes,
+      subshapeMoves: this.subshapeMoves,
+      faceExtensions: this.faceExtensions,
+    });
+  }
+}
+
+function normalizeFaceOperation(operation) {
+  const axis = normalizeVector(operation?.axis ?? { x: 0, y: 0, z: 1 });
+  const faceAxis = AXES.includes(operation?.faceAxis) ? operation.faceAxis : dominantAxis(axis);
+  return {
+    faceIndex: Number.isInteger(operation?.faceIndex) ? operation.faceIndex : null,
+    axis,
+    distance: operation?.distance ?? 0,
+    faceAxis,
+    faceSign: Math.sign(operation?.faceSign ?? axis[faceAxis] ?? 1) || 1,
+    mode: operation?.mode === "extend" ? "extend" : "move",
+  };
+}
+
+function normalizeVertex(vertex) {
+  if (typeof vertex === "string") {
+    return { ...pointFromCornerKey(vertex), key: vertex };
+  }
+  if (!vertex || typeof vertex !== "object") {
+    return { x: 0, y: 0, z: 0, key: "px_py_pz" };
+  }
+  return structuredClone(vertex);
+}
+
+function pointFromCornerKey(key) {
+  const parts = typeof key === "string" ? key.split("_") : [];
+  return {
+    x: parts[0] === "nx" ? -0.5 : 0.5,
+    y: parts[1] === "ny" ? -0.5 : 0.5,
+    z: parts[2] === "nz" ? -0.5 : 0.5,
+  };
+}
+
+function normalizeDelta(delta) {
+  if (Array.isArray(delta)) {
+    return { x: delta[0] ?? 0, y: delta[1] ?? 0, z: delta[2] ?? 0 };
+  }
+  return { x: delta?.x ?? 0, y: delta?.y ?? 0, z: delta?.z ?? 0 };
+}
+
+function applySubshapeMove(corners, move) {
+  const delta = move?.delta ?? { x: 0, y: 0, z: 0 };
+  const dx = delta.x ?? 0;
+  const dy = delta.y ?? 0;
+  const dz = delta.z ?? 0;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz) || Math.hypot(dx, dy, dz) < 1e-8) {
+    return;
+  }
+
+  const keys = subshapeCornerKeys(corners, move);
+  for (const key of keys) {
+    const corner = corners[key];
+    if (!corner) {
+      continue;
+    }
+    corner[0] += dx;
+    corner[1] += dy;
+    corner[2] += dz;
+  }
+}
+
+function subshapeCornerKeys(corners, move) {
+  if (move?.mode === "face") {
+    const loop = faceLoop(corners, move);
+    return Object.entries(corners)
+      .filter(([, corner]) => loop?.includes(corner))
+      .map(([key]) => key);
+  }
+
+  if (move?.mode === "edge") {
+    const keys = Array.isArray(move.edge?.keys) ? move.edge.keys.filter((key) => corners[key]) : [];
+    if (keys.length > 0) {
+      return keys;
+    }
+    return [cornerKeyFromPoint(move.edge?.a), cornerKeyFromPoint(move.edge?.b)].filter((key) => corners[key]);
+  }
+
+  if (move?.mode === "vertex") {
+    const key = typeof move.vertex?.key === "string" ? move.vertex.key : cornerKeyFromPoint(move.vertex);
+    return corners[key] ? [key] : [];
+  }
+
+  return [];
 }
 
 function applyFaceExtrude(corners, extrude) {
@@ -100,6 +286,16 @@ function normalizeVector(vector) {
   return { x: (vector.x ?? 0) / length, y: (vector.y ?? 0) / length, z: (vector.z ?? 0) / length };
 }
 
+function dominantAxis(axis) {
+  const entries = [
+    ["x", axis.x ?? 0],
+    ["y", axis.y ?? 0],
+    ["z", axis.z ?? 0],
+  ];
+  entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  return entries[0][0];
+}
+
 function createBoxCorners(min, max) {
   return {
     nx_ny_nz: [min[0], min[1], min[2]],
@@ -111,6 +307,16 @@ function createBoxCorners(min, max) {
     px_py_pz: [max[0], max[1], max[2]],
     nx_py_pz: [min[0], max[1], max[2]],
   };
+}
+
+function cornerKeyFromPoint(point) {
+  if (!point) {
+    return null;
+  }
+  const sx = (point.x ?? 0) >= 0 ? "px" : "nx";
+  const sy = (point.y ?? 0) >= 0 ? "py" : "ny";
+  const sz = (point.z ?? 0) >= 0 ? "pz" : "nz";
+  return `${sx}_${sy}_${sz}`;
 }
 
 function applyCenteredTaper(corners, tilt) {

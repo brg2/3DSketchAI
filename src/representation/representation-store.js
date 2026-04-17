@@ -14,6 +14,12 @@ function createGeometryForState(state) {
       geometry = new THREE.BoxGeometry(1, 1, 1);
       applyFaceTiltsToGeometry(geometry, state.faceTilts ?? [], state.rotation ?? { x: 0, y: 0, z: 0 });
       applyFaceExtrudesToGeometry(geometry, state.faceExtrudes ?? [], state.rotation ?? { x: 0, y: 0, z: 0 });
+      applySubshapeMovesToGeometry(
+        geometry,
+        state.subshapeMoves ?? [],
+        state.rotation ?? { x: 0, y: 0, z: 0 },
+        state.scale ?? { x: 1, y: 1, z: 1 },
+      );
       geometry = applyFaceExtensionsToGeometry(geometry, state.faceExtensions ?? [], state.rotation ?? { x: 0, y: 0, z: 0 });
       break;
   }
@@ -45,6 +51,7 @@ function geometrySignature(state) {
     primitive: state.primitive,
     faceTilts: state.faceTilts ?? [],
     faceExtrudes: state.faceExtrudes ?? [],
+    subshapeMoves: state.subshapeMoves ?? [],
     faceExtensions: state.faceExtensions ?? [],
   });
 }
@@ -174,6 +181,81 @@ function applyFaceExtensionsToGeometry(geometry, faceExtensions, rotation) {
     nextGeometry = appendFaceExtension(nextGeometry, extension, rotation);
   }
   return nextGeometry;
+}
+
+function applySubshapeMovesToGeometry(geometry, subshapeMoves, rotation, scale) {
+  if (!Array.isArray(subshapeMoves) || subshapeMoves.length === 0) {
+    return;
+  }
+
+  const position = geometry.attributes.position;
+  const basePoints = [];
+  for (let i = 0; i < position.count; i += 1) {
+    basePoints.push(new THREE.Vector3().fromBufferAttribute(position, i));
+  }
+
+  for (const move of subshapeMoves) {
+    const delta = localDeltaFromWorld(move?.delta ?? { x: 0, y: 0, z: 0 }, rotation, scale);
+    if (delta.lengthSq() < 1e-12) {
+      continue;
+    }
+
+    const indices = vertexIndicesForSubshapeMove(geometry, move, basePoints);
+    for (const index of indices) {
+      const point = new THREE.Vector3().fromBufferAttribute(position, index).add(delta);
+      position.setXYZ(index, point.x, point.y, point.z);
+    }
+  }
+
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+}
+
+function vertexIndicesForSubshapeMove(geometry, move, basePoints) {
+  if (!move || typeof move !== "object") {
+    return new Set();
+  }
+
+  if (move.mode === "face") {
+    const axis = move.faceAxis ?? "z";
+    const sign = Math.sign(move.faceSign ?? 1) || 1;
+    return vertexIndicesForTiltFace(
+      geometry,
+      { faceIndex: move.faceIndex ?? -1 },
+      axis,
+      sign,
+      basePoints,
+    );
+  }
+
+  const targetKeys = new Set();
+  if (move.mode === "edge") {
+    for (const key of move.edge?.keys ?? []) {
+      if (typeof key === "string") {
+        targetKeys.add(key);
+      }
+    }
+    if (targetKeys.size === 0) {
+      targetKeys.add(cornerKeyFromPoint(move.edge?.a));
+      targetKeys.add(cornerKeyFromPoint(move.edge?.b));
+    }
+  } else if (move.mode === "vertex") {
+    if (typeof move.vertex?.key === "string") {
+      targetKeys.add(move.vertex.key);
+    } else {
+      targetKeys.add(cornerKeyFromPoint(move.vertex));
+    }
+  }
+
+  targetKeys.delete(null);
+  targetKeys.delete(undefined);
+  const indices = new Set();
+  for (let i = 0; i < basePoints.length; i += 1) {
+    if (targetKeys.has(cornerKeyFromPoint(basePoints[i]))) {
+      indices.add(i);
+    }
+  }
+  return indices;
 }
 
 function appendFaceExtension(geometry, extension, rotation) {
@@ -306,6 +388,28 @@ function localVectorFromWorld(normal, rotation) {
     new THREE.Euler(rotation.x ?? 0, rotation.y ?? 0, rotation.z ?? 0),
   );
   return vector.normalize().applyQuaternion(quaternion.invert());
+}
+
+function localDeltaFromWorld(delta, rotation, scale) {
+  const vector = new THREE.Vector3(delta.x ?? 0, delta.y ?? 0, delta.z ?? 0);
+  const quaternion = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(rotation.x ?? 0, rotation.y ?? 0, rotation.z ?? 0),
+  );
+  vector.applyQuaternion(quaternion.invert());
+  vector.x /= Math.max(Math.abs(scale.x ?? 1), 1e-6);
+  vector.y /= Math.max(Math.abs(scale.y ?? 1), 1e-6);
+  vector.z /= Math.max(Math.abs(scale.z ?? 1), 1e-6);
+  return vector;
+}
+
+function cornerKeyFromPoint(point) {
+  if (!point) {
+    return null;
+  }
+  const sx = (point.x ?? 0) >= 0 ? "px" : "nx";
+  const sy = (point.y ?? 0) >= 0 ? "py" : "ny";
+  const sz = (point.z ?? 0) >= 0 ? "pz" : "nz";
+  return `${sx}_${sy}_${sz}`;
 }
 
 function dominantAxis(vector) {
@@ -476,9 +580,16 @@ export class RepresentationStore {
 
     const previewState = structuredClone(exactState);
     if (type === "move") {
-      previewState.position.x += params.delta.x;
-      previewState.position.y += params.delta.y;
-      previewState.position.z += params.delta.z;
+      if (params.subshapeMove && previewState.primitive === "box") {
+        previewState.subshapeMoves = [
+          ...(previewState.subshapeMoves ?? []),
+          structuredClone(params.subshapeMove),
+        ];
+      } else {
+        previewState.position.x += params.delta.x;
+        previewState.position.y += params.delta.y;
+        previewState.position.z += params.delta.z;
+      }
     }
 
     if (type === "rotate") {

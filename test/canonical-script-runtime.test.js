@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { RuntimeController } from "../src/app/runtime-controller.js";
 import { CanonicalModel } from "../src/modeling/canonical-model.js";
+import { ModelExecutor } from "../src/modeling/model-executor.js";
 import { createPrimitiveOperation, mapToolGestureToOperation } from "../src/operation/operation-mapper.js";
 import { OPERATION_TYPES } from "../src/operation/operation-types.js";
 import { parseOperationsFromCanonicalModelCode } from "../src/operation/operation-serializer.js";
@@ -78,18 +79,19 @@ test("canonical script serializes push_pull as direct callable geometry code wit
   });
 
   const code = model.toTypeScriptModule();
-  assert.match(code, /r\.makeBox\(/, "Serialized script should emit direct Replicad calls");
-  assert.match(code, /\.scale\(\[4\.74, 1, 1\]\)/, "Push/pull fallback must emit direct callable geometry code");
-  assert.match(code, /\.translate\(\[1\.87, 0, 0\]\)/, "Push/pull must preserve the shifted face center");
+  assert.match(code, /const obj_1 = sai\.makeBox\(r,/, "Push/pull targets should be editable modeling objects");
+  assert.match(code, /sai\.pushPullFace\(r, obj_1,/);
+  assert.match(code, /return obj_1\.toShape\(\);/);
+  assert.doesNotMatch(code, /\.scale\(/, "Push/pull must not lower to scale");
+  assert.doesNotMatch(code, /\.translate\(/, "Push/pull must not lower to translate");
   assertNoBehaviorComments(code);
 
   const parsed = parseOperationsFromCanonicalModelCode(code);
-  assert.equal(parsed.length, 3);
-  assert.equal(parsed[1].type, OPERATION_TYPES.SCALE);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[1].type, OPERATION_TYPES.PUSH_PULL);
   assert.equal(parsed[1].targetId, "obj_1");
-  assert.deepEqual(parsed[1].params.scaleFactor, { x: 4.74, y: 1, z: 1 });
-  assert.equal(parsed[2].type, OPERATION_TYPES.MOVE);
-  assert.deepEqual(parsed[2].params.delta, { x: 1.87, y: 0, z: 0 });
+  assert.deepEqual(parsed[1].params.axis, { x: 1, y: 0, z: 0 });
+  assert.equal(parsed[1].params.distance, 3.74);
 });
 
 test("canonical script serializes tilted face push_pull as direct face extrusion helper call", () => {
@@ -132,8 +134,8 @@ test("canonical script serializes tilted face push_pull as direct face extrusion
   });
 
   const code = model.toTypeScriptModule();
-  assert.match(code, /sai\.makeTaperedBox\(r,/);
-  assert.match(code, /"faceExtrudes":\[/);
+  assert.match(code, /sai\.pushPullFace\(r, obj_1,/);
+  assert.match(code, /"mode":"move"/);
   assert.doesNotMatch(code, /\.scale\(\[1,\s*[\d.]+,\s*1\]\)/, "Tilted face extrusion should not flatten to Y scale");
   assertNoBehaviorComments(code);
 
@@ -168,8 +170,8 @@ test("canonical script serializes shift push_pull as face extension helper call"
   });
 
   const code = model.toTypeScriptModule();
-  assert.match(code, /sai\.makeTaperedBox\(r,/);
-  assert.match(code, /"faceExtensions":\[/);
+  assert.match(code, /sai\.pushPullFace\(r, obj_1,/);
+  assert.match(code, /"mode":"extend"/);
   assert.doesNotMatch(code, /\.scale\(/, "Shift push-pull extension should not serialize as body scale");
   assertNoBehaviorComments(code);
 
@@ -197,7 +199,7 @@ test("runtime loads persisted script on clean slate and persists on commit", asy
     async executeCanonicalModel(input) {
       executeCalls.push(structuredClone(input));
       return {
-        exactBackend: "fallback",
+        exactBackend: "test-double",
         sceneState: structuredClone(input.sceneState),
         operationCount: input.operations.length,
       };
@@ -241,8 +243,15 @@ test("runtime loads persisted script on clean slate and persists on commit", asy
 
 test("runtime creates a default cube when no model script exists", async () => {
   const scriptStore = new InMemoryModelScriptStore();
+  const stateReplayExecutor = new ModelExecutor({ adapter: { async execute() { throw new Error("exact kernel unavailable in test"); } } });
+  const modelExecutor = {
+    async executeCanonicalModel(input) {
+      return stateReplayExecutor.executeStateReplay(input);
+    },
+  };
   const runtime = new RuntimeController({
     canonicalModel: new CanonicalModel(),
+    modelExecutor,
     representationStore: createRepresentationStore({}),
     modelScriptStore: scriptStore,
   });
@@ -258,12 +267,45 @@ test("runtime creates a default cube when no model script exists", async () => {
   assert.equal(runtime.getSnapshot().representation.exactSceneState.obj_1.primitive, "box");
 });
 
+test("runtime starts with state replay when exact kernel execution is unavailable", async () => {
+  const scriptModel = new CanonicalModel();
+  scriptModel.appendCommittedOperation(
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+  );
+  const scriptStore = new InMemoryModelScriptStore(scriptModel.toTypeScriptModule());
+  const modelExecutor = new ModelExecutor({
+    adapter: {
+      async execute() {
+        throw new Error("Replicad/OpenCascade exact execution is not implemented for 1 operation(s); refusing to use fallback geometry.");
+      },
+    },
+  });
+  const runtime = new RuntimeController({
+    canonicalModel: new CanonicalModel(),
+    modelExecutor,
+    representationStore: createRepresentationStore({}),
+    modelScriptStore: scriptStore,
+  });
+  runtime.initialize({ scene: null, seedSceneState: {} });
+
+  const loaded = await runtime.loadCanonicalModelFromStorage({ reload: true, cleanSlate: true });
+
+  assert.equal(loaded.length, 1);
+  assert.equal(runtime.getSnapshot().exactBackend, "state-replay:no-exact-kernel");
+  assert.equal(runtime.getSnapshot().representation.exactSceneState.obj_1.primitive, "box");
+});
+
 test("runtime compresses adjacent translates for the same object into one direct translate call", async () => {
   const scriptStore = new InMemoryModelScriptStore();
   const modelExecutor = {
     async executeCanonicalModel(input) {
       return {
-        exactBackend: "fallback",
+        exactBackend: "test-double",
         sceneState: structuredClone(input.sceneState),
         operationCount: input.operations.length,
       };
@@ -312,7 +354,7 @@ test("runtime compresses adjacent scales for the same object into one direct sca
   const modelExecutor = {
     async executeCanonicalModel(input) {
       return {
-        exactBackend: "fallback",
+        exactBackend: "test-double",
         sceneState: structuredClone(input.sceneState),
         operationCount: input.operations.length,
       };
@@ -357,7 +399,7 @@ test("runtime compresses interleaved scale and translate runs for the same objec
   const modelExecutor = {
     async executeCanonicalModel(input) {
       return {
-        exactBackend: "fallback",
+        exactBackend: "test-double",
         sceneState: structuredClone(input.sceneState),
         operationCount: input.operations.length,
       };
@@ -413,7 +455,7 @@ test("runtime can compress again after appending push-pull to an already compres
   const modelExecutor = {
     async executeCanonicalModel(input) {
       return {
-        exactBackend: "fallback",
+        exactBackend: "test-double",
         sceneState: structuredClone(input.sceneState),
         operationCount: input.operations.length,
       };
@@ -504,6 +546,137 @@ test("face rotate maps to a face tilt and serializes without object rotation", (
   assert.equal(parsed.at(-1).type, OPERATION_TYPES.ROTATE);
   assert.equal(parsed.at(-1).selection.mode, "face");
   assert.equal(parsed.at(-1).params.faceTilt.angle, 0.25);
+});
+
+test("move in face, edge, and vertex modes serializes as box subshape translation", () => {
+  const model = new CanonicalModel();
+  model.appendCommittedOperation(
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+  );
+
+  const faceMove = mapToolGestureToOperation({
+    tool: "move",
+    targetId: "obj_1",
+    selection: {
+      mode: "face",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      faceIndex: 2,
+      faceNormalWorld: { x: 1, y: 0, z: 0 },
+    },
+    gesture: { worldDelta: { x: 0.25, y: 0, z: 0 } },
+  });
+  const edgeMove = mapToolGestureToOperation({
+    tool: "move",
+    targetId: "obj_1",
+    selection: {
+      mode: "edge",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      faceIndex: 2,
+      faceNormalWorld: { x: 1, y: 0, z: 0 },
+      edge: {
+        a: { x: 0.5, y: -0.5, z: -0.5 },
+        b: { x: 0.5, y: 0.5, z: -0.5 },
+        keys: ["px_ny_nz", "px_py_nz"],
+      },
+    },
+    gesture: { worldDelta: { x: 0, y: 0.2, z: 0 } },
+  });
+  const vertexMove = mapToolGestureToOperation({
+    tool: "move",
+    targetId: "obj_1",
+    selection: {
+      mode: "vertex",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      faceIndex: 2,
+      faceNormalWorld: { x: 1, y: 0, z: 0 },
+      vertex: { x: 0.5, y: 0.5, z: -0.5, key: "px_py_nz" },
+    },
+    gesture: { worldDelta: { x: 0, y: 0, z: -0.15 } },
+  });
+
+  model.appendCommittedOperation(faceMove);
+  model.appendCommittedOperation(edgeMove);
+  model.appendCommittedOperation(vertexMove);
+
+  const code = model.toTypeScriptModule();
+  assert.match(code, /sai\.makeBox\(r,/);
+  assert.match(code, /sai\.moveBoxSubshape\(r, obj_1,/);
+  assert.match(code, /sai\.moveBoxVertex\(r, obj_1,/);
+  assert.doesNotMatch(code, /\n  obj_1 = sai\./, "Subshape moves should not redefine the object variable");
+  assert.doesNotMatch(code, /\.translate\(/, "Subshape moves should not serialize as whole-object translations");
+  assertNoBehaviorComments(code);
+
+  const parsed = parseOperationsFromCanonicalModelCode(code).filter((operation) => operation.type === OPERATION_TYPES.MOVE);
+  assert.equal(parsed.length, 3);
+  assert.deepEqual(parsed.map((operation) => operation.selection.mode), ["face", "edge", "vertex"]);
+  assert.equal(parsed[0].params.subshapeMove.faceAxis, "x");
+  assert.deepEqual(parsed[1].params.subshapeMove.edge.keys, ["px_ny_nz", "px_py_nz"]);
+  assert.equal(parsed[2].params.subshapeMove.vertex.key, "px_py_nz");
+});
+
+test("iterative vertex moves serialize as direct vertex helper calls", () => {
+  const model = new CanonicalModel();
+  model.appendCommittedOperation(
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+  );
+
+  model.appendCommittedOperation(
+    mapToolGestureToOperation({
+      tool: "move",
+      targetId: "obj_1",
+      selection: {
+        mode: "vertex",
+        objectId: "obj_1",
+        objectIds: ["obj_1"],
+        vertex: { x: 0.5, y: 0.5, z: 0.5, world: { x: 0.5, y: 1.1, z: 0.5 }, key: "px_py_pz" },
+      },
+      gesture: { worldDelta: { x: 0.073, y: -0.241, z: 0.084 } },
+    }),
+  );
+  model.appendCommittedOperation(
+    mapToolGestureToOperation({
+      tool: "move",
+      targetId: "obj_1",
+      selection: {
+        mode: "vertex",
+        objectId: "obj_1",
+        objectIds: ["obj_1"],
+        vertex: { x: 0.573, y: 0.259, z: 0.584, world: { x: 0.573, y: 0.859, z: 0.584 }, key: "px_py_pz" },
+      },
+      gesture: { worldDelta: { x: -0.048, y: 0.183, z: -0.07 } },
+    }),
+  );
+
+  const code = model.toTypeScriptModule();
+  assert.match(code, /const obj_1 = sai\.makeBox\(r, \[-0\.5, 0\.1, -0\.5\], \[0\.5, 1\.1, 0\.5\]\);/);
+  assert.equal(code.match(/sai\.moveBoxVertex\(r, obj_1,/g)?.length, 2);
+  assert.equal(code.match(/\n  obj_1 = /g)?.length ?? 0, 0);
+  assert.doesNotMatch(code, /sai\.makeTaperedBox\(r,/);
+  assert.match(code, /return obj_1\.toShape\(\);/);
+  assertNoBehaviorComments(code);
+
+  const parsed = parseOperationsFromCanonicalModelCode(code);
+  assert.equal(parsed.length, 3);
+  assert.deepEqual(parsed.map((operation) => operation.type), [
+    OPERATION_TYPES.CREATE_PRIMITIVE,
+    OPERATION_TYPES.MOVE,
+    OPERATION_TYPES.MOVE,
+  ]);
+  assert.equal(parsed[1].params.subshapeMove.vertex.key, "px_py_pz");
+  assert.deepEqual(parsed[2].params.delta, { x: -0.048, y: 0.183, z: -0.07 });
 });
 
 test("face rotate gesture can preserve normal-axis tilt while shifting to alternate axis", () => {

@@ -25,6 +25,7 @@ export class Viewport {
     this._cursorOrbit = null;
     this._cursorPan = null;
     this._touchGestureActive = false;
+    this._touchGestureInertia = null;
     this.gridHelper = null;
     this.groundThemeGroup = null;
     this.groundTheme = GROUND_THEMES.FOREST;
@@ -1136,6 +1137,13 @@ export class Viewport {
     this._zoomTargetDistance = null;
     this._zoomFocusPoint = null;
     this._touchGestureActive = true;
+    this._touchGestureInertia = {
+      velocityDx: 0,
+      velocityDy: 0,
+      velocityLogScale: 0,
+      clientX: null,
+      clientY: null,
+    };
   }
 
   applyTouchPinchScale({ scale, clientX, clientY } = {}) {
@@ -1143,6 +1151,15 @@ export class Viewport {
       return;
     }
 
+    this._applyTouchPinchScale({ scale, clientX, clientY });
+    if (this._touchGestureInertia) {
+      this._touchGestureInertia.velocityLogScale = Math.log(scale);
+      this._touchGestureInertia.clientX = Number.isFinite(clientX) ? clientX : null;
+      this._touchGestureInertia.clientY = Number.isFinite(clientY) ? clientY : null;
+    }
+  }
+
+  _applyTouchPinchScale({ scale, clientX, clientY } = {}) {
     const offset = this.camera.position.clone().sub(this.controls.target);
     const currentDistance = offset.length();
     if (!Number.isFinite(currentDistance) || currentDistance <= 1e-6) {
@@ -1173,6 +1190,14 @@ export class Viewport {
       return;
     }
 
+    this._applyTouchOrbitDelta({ dx, dy });
+    if (this._touchGestureInertia) {
+      this._touchGestureInertia.velocityDx = dx;
+      this._touchGestureInertia.velocityDy = dy;
+    }
+  }
+
+  _applyTouchOrbitDelta({ dx, dy } = {}) {
     const element = this.renderer.domElement;
     const height = Math.max(element.clientHeight, 1);
     // Tuned for touch responsiveness: 1.5× matches finger travel to camera rotation.
@@ -1202,6 +1227,57 @@ export class Viewport {
     if (!this._touchGestureActive) {
       return;
     }
+    this._touchGestureActive = false;
+    if (this._hasTouchGestureInertia(this._touchGestureInertia)) {
+      return;
+    }
+
+    this._endTouchGestureInertia();
+  }
+
+  _applyTouchGestureInertiaStep() {
+    const inertia = this._touchGestureInertia;
+    if (!inertia || this._touchGestureActive) {
+      return;
+    }
+
+    if (!this._hasTouchGestureInertia(inertia)) {
+      this._endTouchGestureInertia();
+      return;
+    }
+
+    if (Math.abs(inertia.velocityLogScale) >= 0.0005) {
+      this._applyTouchPinchScale({
+        scale: Math.exp(inertia.velocityLogScale),
+        clientX: inertia.clientX,
+        clientY: inertia.clientY,
+      });
+    }
+    if (Math.abs(inertia.velocityDx) >= 0.0005 || Math.abs(inertia.velocityDy) >= 0.0005) {
+      this._applyTouchOrbitDelta({
+        dx: inertia.velocityDx,
+        dy: inertia.velocityDy,
+      });
+    }
+
+    inertia.velocityDx *= 0.88;
+    inertia.velocityDy *= 0.88;
+    inertia.velocityLogScale *= 0.88;
+  }
+
+  _hasTouchGestureInertia(inertia) {
+    return Boolean(
+      inertia
+      && (
+        Math.abs(inertia.velocityDx) >= 0.0005
+        || Math.abs(inertia.velocityDy) >= 0.0005
+        || Math.abs(inertia.velocityLogScale) >= 0.0005
+      ),
+    );
+  }
+
+  _endTouchGestureInertia() {
+    this._touchGestureInertia = null;
     this._touchGestureActive = false;
     this._syncControlsTargetToCameraForward();
     this.controls.enabled = true;
@@ -1378,6 +1454,8 @@ export class Viewport {
     this.resize();
     if (this._nativeTouchNavigation) {
       this._applyNativeTouchNavigationStep();
+    } else if (this._touchGestureInertia) {
+      this._applyTouchGestureInertiaStep();
     } else if (this._cursorOrbit) {
       this._applyCursorOrbitStep();
     } else if (this._cursorPan) {
