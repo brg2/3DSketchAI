@@ -1,4 +1,4 @@
-import { basicFaceExtrusion } from "replicad";
+import { basicFaceExtrusion, Vector } from "replicad";
 
 const AXES = ["x", "y", "z"];
 
@@ -108,12 +108,26 @@ export function pushPull(shape, faceSelector, distance) {
 class EditableBox {
   constructor(r, min, max) {
     this.r = r;
+    this.baseMin = [...min];
+    this.baseMax = [...max];
+    this.min = [...min];
+    this.max = [...max];
     this.corners = createBoxCorners(min, max);
     this.extraFaces = [];
+    this.brepOperations = [];
+    this.brepCompatible = true;
   }
 
   translate(delta) {
     const vector = deltaArray(delta);
+    this.brepOperations.push({
+      type: "translate",
+      delta: normalizeDelta(delta),
+    });
+    for (let index = 0; index < 3; index += 1) {
+      this.min[index] += vector[index];
+      this.max[index] += vector[index];
+    }
     for (const corner of Object.values(this.corners)) {
       corner[0] += vector[0];
       corner[1] += vector[1];
@@ -130,6 +144,7 @@ class EditableBox {
   }
 
   scale(scaleFactor) {
+    this.brepCompatible = false;
     const scale = Array.isArray(scaleFactor)
       ? [scaleFactor[0] ?? 1, scaleFactor[1] ?? 1, scaleFactor[2] ?? 1]
       : [scaleFactor?.x ?? 1, scaleFactor?.y ?? 1, scaleFactor?.z ?? 1];
@@ -155,8 +170,15 @@ class EditableBox {
       return this;
     }
 
+    this.brepOperations.push({
+      type: "pushPull",
+      operation: normalizeFaceOperation({ ...operation, axis, distance }),
+      min: [...this.min],
+      max: [...this.max],
+    });
+
     if (operation?.mode === "extend") {
-      this.addFaceExtension(operation);
+      this.addFaceExtension(operation, { recordBrep: false });
       return this;
     }
 
@@ -167,6 +189,7 @@ class EditableBox {
       corner[1] += delta[1];
       corner[2] += delta[2];
     }
+    this.refreshBoundsFromCorners();
     return this;
   }
 
@@ -174,6 +197,17 @@ class EditableBox {
     const vector = deltaArray(operation?.delta);
     if (Math.hypot(vector[0], vector[1], vector[2]) < 1e-8) {
       return this;
+    }
+
+    if (operation?.mode === "face") {
+      this.brepOperations.push({
+        type: "faceMove",
+        operation: structuredClone(operation),
+        min: [...this.min],
+        max: [...this.max],
+      });
+    } else {
+      this.brepCompatible = false;
     }
 
     for (const key of subshapeCornerKeys(this.corners, operation)) {
@@ -185,6 +219,7 @@ class EditableBox {
       corner[1] += vector[1];
       corner[2] += vector[2];
     }
+    this.refreshBoundsFromCorners();
     return this;
   }
 
@@ -196,6 +231,7 @@ class EditableBox {
     if (!AXES.includes(faceAxis) || !AXES.includes(sideAxis) || !Number.isFinite(angle)) {
       return this;
     }
+    this.brepCompatible = false;
 
     const faceIndex = axisIndex(faceAxis);
     const sideIndex = axisIndex(sideAxis);
@@ -213,15 +249,25 @@ class EditableBox {
         ? Math.max(corner[faceIndex], oppositeCoordinate)
         : Math.min(corner[faceIndex], oppositeCoordinate);
     }
+    this.refreshBoundsFromCorners();
     return this;
   }
 
-  addFaceExtension(operation) {
+  addFaceExtension(operation, { recordBrep = true } = {}) {
     const axis = normalizeVector(operation?.axis ?? axisFromFaceIdentity(operation));
     const distance = operation?.distance ?? 0;
     const loop = faceLoop(this.corners, operation, axis);
     if (!loop || !Number.isFinite(distance) || Math.abs(distance) < 1e-8) {
       return this;
+    }
+
+    if (recordBrep) {
+      this.brepOperations.push({
+        type: "pushPull",
+        operation: normalizeFaceOperation({ ...operation, axis, distance, mode: "extend" }),
+        min: [...this.min],
+        max: [...this.max],
+      });
     }
 
     const delta = [axis.x * distance, axis.y * distance, axis.z * distance];
@@ -231,10 +277,52 @@ class EditableBox {
       const next = (index + 1) % loop.length;
       this.extraFaces.push([loop[index], loop[next], outer[next], outer[index]]);
     }
+    this.refreshBoundsFromCorners();
     return this;
   }
 
   toShape() {
+    const brepShape = this.toBrepShape();
+    if (brepShape) {
+      return brepShape;
+    }
+
+    return this.toLegacyPolygonShape();
+  }
+
+  toBrepShape() {
+    if (!this.brepCompatible || this.brepOperations.length === 0 || !canUseBrepKernel(this.r)) {
+      return null;
+    }
+
+    let shape = this.r.makeBox(this.baseMin, this.baseMax);
+    if (!shape || typeof shape.fuse !== "function" || typeof shape.cut !== "function") {
+      return null;
+    }
+
+    for (const entry of this.brepOperations) {
+      if (entry.type === "translate") {
+        if (typeof shape.translate !== "function") {
+          return null;
+        }
+        shape = shape.translate(entry.delta);
+      } else if (entry.type === "pushPull") {
+        shape = pushPullFaceOnShape(this.r, shape, entry.operation);
+      } else if (entry.type === "faceMove") {
+        shape = moveBoxFaceWithBooleans(this.r, shape, entry.min, entry.max, entry.operation);
+      }
+    }
+    return shape;
+  }
+
+  refreshBoundsFromCorners() {
+    for (let index = 0; index < 3; index += 1) {
+      this.min[index] = minCoordinate(this.corners, index);
+      this.max[index] = maxCoordinate(this.corners, index);
+    }
+  }
+
+  toLegacyPolygonShape() {
     const faces = [
       this.r.makePolygon([this.corners.nx_ny_nz, this.corners.px_ny_nz, this.corners.px_ny_pz, this.corners.nx_ny_pz]),
       this.r.makePolygon([this.corners.nx_py_nz, this.corners.nx_py_pz, this.corners.px_py_pz, this.corners.px_py_nz]),
@@ -246,6 +334,121 @@ class EditableBox {
     ];
     return this.r.makeSolid(faces);
   }
+}
+
+function canUseBrepKernel(r) {
+  return (
+    typeof r?.setOC === "function" &&
+    typeof r?.makeBox === "function" &&
+    typeof r?.makePolygon === "function"
+  );
+}
+
+function pushPullFaceOnShape(r, shape, operation) {
+  return pushPullFace(r, shape, operation);
+}
+
+function moveBoxFaceWithBooleans(r, shape, min, max, operation) {
+  const delta = normalizeDelta(operation?.delta);
+  const normal = normalizeVector(operation?.faceNormalWorld ?? axisFromFaceIdentity(operation));
+  const normalDistance = dot(delta, normal);
+  let nextShape = shape;
+  const extents = { min: [...min], max: [...max] };
+  const faceAxis = AXES.includes(operation?.faceAxis) ? operation.faceAxis : dominantAxis(normal);
+  const faceSign = Math.sign(operation?.faceSign ?? normal[faceAxis] ?? 1) || 1;
+
+  if (Math.abs(normalDistance) > 1e-8) {
+    nextShape = pushPullFaceOnShape(r, nextShape, {
+      ...operation,
+      axis: normal,
+      distance: normalDistance,
+      mode: "move",
+    });
+    moveSelectedFaceExtent(extents, faceAxis, faceSign, normalDistance);
+  }
+
+  for (const tangentAxis of AXES.filter((axis) => axis !== faceAxis)) {
+    const distance = delta[tangentAxis] ?? 0;
+    if (Math.abs(distance) < 1e-8) {
+      continue;
+    }
+
+    const { addTool, cutTool } = makeFaceMoveWedgeTools(r, extents.min, extents.max, operation, tangentAxis, distance);
+    nextShape = nextShape.fuse(addTool).cut(cutTool);
+    expandExtentForTangentialMove(extents, tangentAxis, distance);
+  }
+
+  return nextShape;
+}
+
+function moveSelectedFaceExtent(extents, faceAxis, faceSign, distance) {
+  const index = axisIndex(faceAxis);
+  if (faceSign > 0) {
+    extents.max[index] += distance;
+  } else {
+    extents.min[index] -= distance;
+  }
+}
+
+function expandExtentForTangentialMove(extents, tangentAxis, distance) {
+  const index = axisIndex(tangentAxis);
+  if (distance > 0) {
+    extents.max[index] += distance;
+  } else {
+    extents.min[index] += distance;
+  }
+}
+
+function makeFaceMoveWedgeTools(r, min, max, operation, tangentAxis, distance) {
+  const normal = normalizeVector(operation?.faceNormalWorld ?? axisFromFaceIdentity(operation));
+  const faceAxis = AXES.includes(operation?.faceAxis) ? operation.faceAxis : dominantAxis(normal);
+  const spanAxis = AXES.find((axis) => axis !== faceAxis && axis !== tangentAxis);
+  const faceSign = Math.sign(operation?.faceSign ?? normal[faceAxis] ?? 1) || 1;
+  const sideSign = Math.sign(distance) || 1;
+  const addTool = makeShearWedgeTool(r, min, max, {
+    faceAxis,
+    tangentAxis,
+    spanAxis,
+    faceSign,
+    sideSign,
+    distance,
+  });
+  const cutTool = makeShearWedgeTool(r, min, max, {
+    faceAxis,
+    tangentAxis,
+    spanAxis,
+    faceSign,
+    sideSign: -sideSign,
+    distance,
+  });
+
+  return { addTool, cutTool };
+}
+
+function makeShearWedgeTool(r, min, max, { faceAxis, tangentAxis, spanAxis, faceSign, sideSign, distance }) {
+  const faceIndex = axisIndex(faceAxis);
+  const tangentIndex = axisIndex(tangentAxis);
+  const spanIndex = axisIndex(spanAxis);
+  const targetFaceCoord = faceSign > 0 ? max[faceIndex] : min[faceIndex];
+  const fixedFaceCoord = faceSign > 0 ? min[faceIndex] : max[faceIndex];
+  const sideCoord = sideSign > 0 ? max[tangentIndex] : min[tangentIndex];
+  const spanStart = min[spanIndex];
+  const spanDistance = max[spanIndex] - min[spanIndex];
+  const p1 = pointFromAxisValues(faceIndex, fixedFaceCoord, tangentIndex, sideCoord, spanIndex, spanStart);
+  const p2 = pointFromAxisValues(faceIndex, targetFaceCoord, tangentIndex, sideCoord + distance, spanIndex, spanStart);
+  const p3 = pointFromAxisValues(faceIndex, targetFaceCoord, tangentIndex, sideCoord, spanIndex, spanStart);
+  const face = r.makePolygon([p1, p2, p3]);
+  const extrusion = [0, 0, 0];
+  extrusion[spanIndex] = spanDistance;
+  return basicFaceExtrusion(face, new Vector(extrusion));
+}
+
+function pointFromAxisValues(firstIndex, firstValue, secondIndex, secondValue, thirdIndex, thirdValue) {
+  const point = [0, 0, 0];
+  point[firstIndex] = firstValue;
+  point[secondIndex] = secondValue;
+  point[thirdIndex] = thirdValue;
+  return point;
 }
 
 function createBoxCorners(min, max) {
@@ -417,6 +620,20 @@ function axisFromFaceIdentity(operation) {
   };
 }
 
+function normalizeFaceOperation(operation) {
+  const axis = normalizeVector(operation?.axis ?? axisFromFaceIdentity(operation));
+  const faceAxis = AXES.includes(operation?.faceAxis) ? operation.faceAxis : dominantAxis(axis);
+  return {
+    faceIndex: Number.isInteger(operation?.faceIndex) ? operation.faceIndex : null,
+    faceNormalWorld: operation?.faceNormalWorld ?? axis,
+    axis,
+    distance: operation?.distance ?? 0,
+    faceAxis,
+    faceSign: Math.sign(operation?.faceSign ?? axis[faceAxis] ?? 1) || 1,
+    mode: operation?.mode === "extend" ? "extend" : "move",
+  };
+}
+
 function dominantAxis(axis) {
   const entries = [
     ["x", axis.x ?? 0],
@@ -440,6 +657,10 @@ function normalizeDelta(delta) {
     return { x: delta[0] ?? 0, y: delta[1] ?? 0, z: delta[2] ?? 0 };
   }
   return { x: delta?.x ?? 0, y: delta?.y ?? 0, z: delta?.z ?? 0 };
+}
+
+function dot(a, b) {
+  return (a.x ?? 0) * (b.x ?? 0) + (a.y ?? 0) * (b.y ?? 0) + (a.z ?? 0) * (b.z ?? 0);
 }
 
 function deltaArray(delta) {

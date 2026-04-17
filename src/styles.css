@@ -36,9 +36,11 @@ body.app-loading #app-shell {
 
 #app-shell {
   opacity: 1;
+  filter: blur(0);
   transition:
     grid-template-columns 180ms ease,
-    opacity 220ms ease;
+    filter 250ms ease,
+    opacity 250ms ease;
 }
 
 .app-loader {
@@ -56,15 +58,25 @@ body.app-loading #app-shell {
   visibility: hidden;
   pointer-events: none;
   transition:
-    opacity 220ms ease,
-    visibility 0s linear 220ms;
+    opacity 250ms ease,
+    visibility 0s linear 250ms;
 }
 
 body.app-loading .app-loader {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
-  transition: opacity 220ms ease;
+  transition: opacity 250ms ease;
+}
+
+body.welcome-modal-open {
+  overflow: hidden;
+}
+
+body.welcome-modal-open #app-shell {
+  filter: blur(5px);
+  pointer-events: none;
+  user-select: none;
 }
 
 .app-loader-spinner {
@@ -87,6 +99,159 @@ body.app-loading .app-loader {
   to {
     transform: rotate(360deg);
   }
+}
+
+.welcome-dialog {
+  width: min(560px, calc(100% - 32px));
+  max-height: min(720px, calc(100dvh - 32px));
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  overflow: visible;
+}
+
+.welcome-dialog::backdrop {
+  background: rgba(18, 28, 38, 0.34);
+  backdrop-filter: blur(6px);
+}
+
+.welcome-dialog-card {
+  position: relative;
+  max-height: min(720px, calc(100dvh - 32px));
+  padding: 28px;
+  border: 1px solid rgba(181, 189, 200, 0.9);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 24px 70px rgba(20, 35, 50, 0.3);
+  overflow: auto;
+}
+
+.welcome-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.welcome-close:hover,
+.welcome-close:focus-visible {
+  border-color: var(--line-strong);
+  background: #f0f4f8;
+  outline: none;
+}
+
+.welcome-dialog h2,
+.welcome-dialog h3,
+.welcome-dialog p {
+  margin: 0;
+}
+
+.welcome-dialog h2 {
+  padding-right: 38px;
+  font-size: 1.45rem;
+  line-height: 1.2;
+}
+
+.welcome-dialog h3 {
+  font-size: 0.92rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #4f6580;
+}
+
+.welcome-dialog p,
+.welcome-dialog li {
+  color: #33465c;
+  font-size: 0.94rem;
+  line-height: 1.5;
+}
+
+.welcome-dialog p {
+  margin-top: 12px;
+}
+
+.welcome-dialog hr {
+  margin: 20px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.welcome-dialog ul {
+  margin: 10px 0 0;
+  padding-left: 22px;
+}
+
+.welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.welcome-github-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--text);
+  font-size: 0.84rem;
+  text-decoration: none;
+}
+
+.welcome-github-link:hover,
+.welcome-github-link:focus-visible {
+  border-color: var(--accent);
+  background: #f9fcff;
+  outline: none;
+}
+
+.welcome-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.welcome-action-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.welcome-continue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-color: #16834a;
+  background: #1f9b62;
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 8px 22px rgba(31, 155, 98, 0.24);
+}
+
+.welcome-continue:hover,
+.welcome-continue:focus-visible {
+  border-color: #0f6f3d;
+  background: #16834a;
+  color: #ffffff;
+  outline: none;
 }
 
 #app-shell {
@@ -642,6 +807,25 @@ body.code-collapsed .code-panel {
   html,
   body {
     overflow: hidden;
+  }
+
+  .welcome-dialog {
+    width: min(100% - 18px, 560px);
+    max-height: calc(100dvh - 18px);
+  }
+
+  .welcome-dialog-card {
+    max-height: calc(100dvh - 18px);
+    padding: 22px 18px 18px;
+  }
+
+  .welcome-actions {
+    justify-content: stretch;
+  }
+
+  .welcome-actions button,
+  .welcome-github-link {
+    flex: 1 1 180px;
   }
 
   #app-shell {

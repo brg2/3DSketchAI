@@ -124,3 +124,59 @@ test("exact brep replacement updates translated geometry with unchanged topology
   assert.equal(positions.getX(0), 2);
   assert.equal(positions.getZ(0), -1);
 });
+
+test("face move preview translates selected brep face vertices", () => {
+  const store = new RepresentationStore();
+  store.bindScene(new THREE.Scene());
+  const meshData = {
+    vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+    triangles: [0, 1, 2],
+    normals: [],
+  };
+
+  store.setInitialSceneState({
+    obj_1: {
+      primitive: "brep_mesh",
+      meshData,
+      meshSignature: meshDataSignature(meshData),
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+  });
+
+  store.setPreviewOperation({
+    type: "move",
+    targetId: "obj_1",
+    selection: {
+      mode: "face",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      faceIndex: 0,
+      faceNormalWorld: { x: 0, y: 0, z: 1 },
+    },
+    params: {
+      delta: { x: 0, y: 0, z: 2 },
+      subshapeMove: {
+        mode: "face",
+        faceIndex: 0,
+        faceNormalWorld: { x: 0, y: 0, z: 1 },
+        faceAxis: "z",
+        faceSign: 1,
+        delta: { x: 0, y: 0, z: 2 },
+      },
+    },
+  });
+
+  let positions = store.getSelectableMeshes()[0].geometry.getAttribute("position");
+  assert.equal(positions.getZ(0), 2);
+  assert.equal(positions.getZ(1), 2);
+  assert.equal(positions.getZ(2), 2);
+
+  store.clearPreview();
+
+  positions = store.getSelectableMeshes()[0].geometry.getAttribute("position");
+  assert.equal(positions.getZ(0), 0);
+  assert.equal(positions.getZ(1), 0);
+  assert.equal(positions.getZ(2), 0);
+});

@@ -114,6 +114,88 @@ function previewPushPullMeshData(meshData, operation) {
   };
 }
 
+function previewSubshapeMoveMeshData(meshData, operation) {
+  if (!meshData) {
+    return null;
+  }
+
+  const vertices = [...(meshData.vertices ?? meshData.positions ?? [])];
+  const triangles = [...(meshData.triangles ?? meshData.indices ?? [])];
+  if (vertices.length === 0) {
+    return null;
+  }
+
+  const move = operation.params?.subshapeMove;
+  const delta = operation.params?.delta ?? move?.delta;
+  if (!move || !delta) {
+    return null;
+  }
+
+  const selectedVertices = selectedSubshapeMoveVertexIndices({
+    vertices,
+    triangles,
+    faceGroups: meshData.faceGroups ?? [],
+    operation,
+    move,
+  });
+  if (selectedVertices.size === 0) {
+    return null;
+  }
+
+  for (const index of selectedVertices) {
+    const offset = index * 3;
+    vertices[offset + 0] += delta.x ?? 0;
+    vertices[offset + 1] += delta.y ?? 0;
+    vertices[offset + 2] += delta.z ?? 0;
+  }
+
+  return {
+    ...meshData,
+    vertices,
+    triangles,
+    normals: [],
+    faceGroups: cloneFaceGroups(meshData.faceGroups),
+  };
+}
+
+function selectedSubshapeMoveVertexIndices({ vertices, triangles, faceGroups, operation, move }) {
+  if (move.mode === "face") {
+    const axis = normalizeVector(
+      move.faceNormalWorld ??
+      operation.selection?.faceNormalWorld ??
+      axisFromMoveIdentity(move),
+    );
+    return selectedPushPullVertexIndices({
+      vertices,
+      triangles,
+      faceGroups,
+      faceIndex: operation.selection?.faceIndex ?? move.faceIndex ?? null,
+      axis,
+    });
+  }
+
+  if (move.mode === "edge") {
+    const selected = new Set();
+    addMatchingVertexIndices(selected, vertices, move.edge?.a);
+    addMatchingVertexIndices(selected, vertices, move.edge?.b);
+    if (selected.size > 0) {
+      return selected;
+    }
+    return selectedVerticesFromCornerKeys(vertices, move.edge?.keys);
+  }
+
+  if (move.mode === "vertex") {
+    const selected = new Set();
+    addMatchingVertexIndices(selected, vertices, move.vertex);
+    if (selected.size > 0) {
+      return selected;
+    }
+    return selectedVerticesFromCornerKeys(vertices, [move.vertex?.key]);
+  }
+
+  return new Set();
+}
+
 function selectedPushPullVertexIndices({ vertices, triangles, faceGroups, faceIndex, axis }) {
   const byTrianglePlane = selectedVerticesFromTrianglePlane({ vertices, triangles, faceIndex, axis });
   if (byTrianglePlane.size > 0) {
@@ -126,6 +208,60 @@ function selectedPushPullVertexIndices({ vertices, triangles, faceGroups, faceIn
   }
 
   return selectedVerticesFromExtremePlane({ vertices, axis });
+}
+
+function selectedVerticesFromCornerKeys(vertices, keys) {
+  const selected = new Set();
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return selected;
+  }
+
+  const bounds = meshBounds(vertices);
+  const tolerance = meshTolerance(vertices);
+  for (const key of keys) {
+    const target = cornerPointFromKey(bounds, key);
+    if (!target) {
+      continue;
+    }
+    addMatchingVertexIndices(selected, vertices, target, tolerance);
+  }
+  return selected;
+}
+
+function addMatchingVertexIndices(selected, vertices, point, tolerance = meshTolerance(vertices)) {
+  if (!point) {
+    return;
+  }
+
+  const x = point.x ?? 0;
+  const y = point.y ?? 0;
+  const z = point.z ?? 0;
+  for (let vertexIndex = 0; vertexIndex < vertices.length / 3; vertexIndex += 1) {
+    const offset = vertexIndex * 3;
+    const distance = Math.hypot(
+      vertices[offset + 0] - x,
+      vertices[offset + 1] - y,
+      vertices[offset + 2] - z,
+    );
+    if (distance <= tolerance) {
+      selected.add(vertexIndex);
+    }
+  }
+}
+
+function cornerPointFromKey(bounds, key) {
+  if (typeof key !== "string") {
+    return null;
+  }
+  const parts = key.split("_");
+  if (parts.length !== 3) {
+    return null;
+  }
+  return {
+    x: parts[0] === "px" ? bounds.maxX : bounds.minX,
+    y: parts[1] === "py" ? bounds.maxY : bounds.minY,
+    z: parts[2] === "pz" ? bounds.maxZ : bounds.minZ,
+  };
 }
 
 function selectedVerticesFromFaceGroup({ triangles, faceGroups, faceIndex }) {
@@ -208,6 +344,12 @@ function vertexProjection(vertices, vertexIndex, axis) {
 }
 
 function meshTolerance(vertices) {
+  const bounds = meshBounds(vertices);
+  const diagonal = Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ);
+  return Math.max(diagonal * 1e-4, 1e-5);
+}
+
+function meshBounds(vertices) {
   let minX = Infinity;
   let minY = Infinity;
   let minZ = Infinity;
@@ -224,8 +366,7 @@ function meshTolerance(vertices) {
     maxZ = Math.max(maxZ, vertices[offset + 2]);
   }
 
-  const diagonal = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
-  return Math.max(diagonal * 1e-4, 1e-5);
+  return { minX, minY, minZ, maxX, maxY, maxZ };
 }
 
 function normalizeVector(vector) {
@@ -242,6 +383,16 @@ function normalizeVector(vector) {
 
 function cloneFaceGroups(faceGroups) {
   return Array.isArray(faceGroups) ? faceGroups.map((group) => ({ ...group })) : [];
+}
+
+function axisFromMoveIdentity(move) {
+  const faceAxis = ["x", "y", "z"].includes(move?.faceAxis) ? move.faceAxis : "z";
+  const faceSign = Math.sign(move?.faceSign ?? 1) || 1;
+  return {
+    x: faceAxis === "x" ? faceSign : 0,
+    y: faceAxis === "y" ? faceSign : 0,
+    z: faceAxis === "z" ? faceSign : 0,
+  };
 }
 
 
@@ -336,11 +487,33 @@ export class RepresentationStore {
     }
 
     const previewState = structuredClone(exactState);
-    if (type === "move" && !params?.subshapeMove) {
-      previewState.position.x += params.delta.x;
-      previewState.position.y += params.delta.y;
-      previewState.position.z += params.delta.z;
-      applyTransform(mesh, previewState);
+    if (type === "move") {
+      if (!params?.subshapeMove) {
+        previewState.position.x += params.delta.x;
+        previewState.position.y += params.delta.y;
+        previewState.position.z += params.delta.z;
+        applyTransform(mesh, previewState);
+        return;
+      }
+
+      if (previewState.primitive === "brep_mesh") {
+        const meshData = previewSubshapeMoveMeshData(previewState.meshData, this.previewOperation);
+        if (!meshData) {
+          return;
+        }
+        previewState.meshData = meshData;
+        previewState.meshSignature = [
+          previewState.meshSignature ?? "mesh",
+          "subshape-move",
+          params.subshapeMove.mode ?? "subshape",
+          params.delta?.x ?? 0,
+          params.delta?.y ?? 0,
+          params.delta?.z ?? 0,
+        ].join(":");
+        updateMeshGeometry(mesh, previewState);
+        applyTransform(mesh, previewState);
+        return;
+      }
       return;
     }
 

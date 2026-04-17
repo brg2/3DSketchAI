@@ -28,6 +28,11 @@ const terrainDensityValue = document.getElementById("terrain-density-value");
 const sidebarElement = document.querySelector(".sidebar");
 const sidebarScrollElement = document.querySelector(".sidebar-scroll-content");
 const toolGrid = document.getElementById("tool-grid");
+const welcomeDialog = document.getElementById("welcome-dialog");
+const welcomeContinueButton = document.getElementById("welcome-continue");
+const welcomeCloseButton = document.getElementById("welcome-close");
+
+const WELCOME_STORAGE_KEY = "3dsai.welcomeAcknowledged.v1";
 
 if (
   !canvas ||
@@ -57,10 +62,61 @@ if (
   !sidebarElement ||
   !sidebarScrollElement ||
   panelTabButtons.length === 0 ||
-  !toolGrid
+  !toolGrid ||
+  !welcomeDialog ||
+  !welcomeContinueButton ||
+  !welcomeCloseButton
 ) {
   throw new Error("Missing required DOM nodes for app bootstrap");
 }
+
+function hasSeenWelcomeDialog() {
+  try {
+    return window.localStorage?.getItem(WELCOME_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistWelcomeDialogAcknowledgement() {
+  try {
+    window.localStorage?.setItem(WELCOME_STORAGE_KEY, "1");
+  } catch {
+    // If browser storage is unavailable, closing the dialog should still unblock the app.
+  }
+}
+
+function closeWelcomeDialog() {
+  persistWelcomeDialogAcknowledgement();
+  if (welcomeDialog.open) {
+    welcomeDialog.close();
+  }
+  document.body.classList.remove("welcome-modal-open");
+}
+
+function maybeShowWelcomeDialog() {
+  if (hasSeenWelcomeDialog()) {
+    return;
+  }
+
+  document.body.classList.add("welcome-modal-open");
+  if (typeof welcomeDialog.showModal === "function") {
+    welcomeDialog.showModal();
+  } else {
+    welcomeDialog.setAttribute("open", "");
+  }
+  welcomeContinueButton.focus();
+}
+
+welcomeContinueButton.addEventListener("click", closeWelcomeDialog);
+welcomeCloseButton.addEventListener("click", closeWelcomeDialog);
+welcomeDialog.addEventListener("cancel", () => {
+  persistWelcomeDialogAcknowledgement();
+  document.body.classList.remove("welcome-modal-open");
+});
+welcomeDialog.addEventListener("close", () => {
+  document.body.classList.remove("welcome-modal-open");
+});
 
 const app = new SketchApp({
   canvas,
@@ -97,6 +153,7 @@ app.start()
   .then(() => {
     requestAnimationFrame(() => {
       document.body.classList.remove("app-loading");
+      maybeShowWelcomeDialog();
     });
   })
   .catch((error) => {
