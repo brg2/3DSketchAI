@@ -23,7 +23,6 @@ export function serializeCanonicalModelModule(operations) {
   const objectOrder = [];
   const objectVars = new Map();
   const objectState = new Map();
-  const editableBoxObjectIds = _editableBoxObjectIds(normalizedOperations);
 
   const getVarName = (objectId) => {
     if (!objectVars.has(objectId)) {
@@ -45,7 +44,6 @@ export function serializeCanonicalModelModule(operations) {
           rotation: { x: 0, y: 0, z: 0 },
           faceTilts: [],
           faceExtrudes: [],
-          subshapeMoves: [],
           faceExtensions: [],
         });
         if (primitive === "sphere") {
@@ -67,34 +65,14 @@ export function serializeCanonicalModelModule(operations) {
             y: position.y + size.y / 2,
             z: position.z + size.z / 2,
           };
-          const boxFactory = editableBoxObjectIds.has(objectId) ? "sai.makeBox" : "r.makeBox";
-          const declaration = editableBoxObjectIds.has(objectId) ? "const" : "let";
-          bodyLines.push(`  ${declaration} ${varName} = ${boxFactory}(${boxFactory === "sai.makeBox" ? "r, " : ""}${_vec3Literal(c1)}, ${_vec3Literal(c2)});`);
+          bodyLines.push(`  let ${varName} = r.makeBox(${_vec3Literal(c1)}, ${_vec3Literal(c2)});`);
         }
         break;
       }
       case "move": {
         const varName = getVarName(operation.targetId);
         const state = objectState.get(operation.targetId);
-        if (operation.params.subshapeMove && state?.primitive === "box") {
-          const subshapeMove = structuredClone(operation.params.subshapeMove);
-          state.subshapeMoves.push(subshapeMove);
-          if (subshapeMove.mode === "vertex") {
-            bodyLines.push(`  sai.moveBoxVertex(r, ${varName}, ${JSON.stringify(subshapeMove.vertex)}, ${_vec3Literal(subshapeMove.delta)});`);
-          } else {
-            bodyLines.push(`  sai.moveBoxSubshape(r, ${varName}, ${JSON.stringify(subshapeMove)});`);
-          }
-          break;
-        }
-        if (editableBoxObjectIds.has(operation.targetId)) {
-          bodyLines.push(`  sai.translateObject(r, ${varName}, ${_vec3Literal(operation.params.delta)});`);
-          if (state) {
-            state.position.x += operation.params.delta.x;
-            state.position.y += operation.params.delta.y;
-            state.position.z += operation.params.delta.z;
-          }
-          break;
-        }
+
         bodyLines.push(`  ${varName} = ${varName}.translate(${_vec3Literal(operation.params.delta)});`);
         if (state) {
           state.position.x += operation.params.delta.x;
@@ -106,12 +84,7 @@ export function serializeCanonicalModelModule(operations) {
       case "rotate": {
         const varName = getVarName(operation.targetId);
         if (operation.selection?.mode === "face" && operation.params.faceTilt) {
-          const state = objectState.get(operation.targetId);
-          const faceTilts = Array.isArray(operation.params.faceTilts) ? operation.params.faceTilts : [operation.params.faceTilt];
-          if (state?.primitive === "box") {
-            state.faceTilts.push(...faceTilts.map((tilt) => structuredClone(tilt)));
-            bodyLines.push(`  ${varName} = sai.makeTaperedBox(r, ${_boxConfigLiteral(state)});`);
-          }
+          // Note: makeTaperedBox and direct face tilting has been removed.
           break;
         }
         const origin = { x: 0, y: 0, z: 0 };
@@ -124,18 +97,7 @@ export function serializeCanonicalModelModule(operations) {
         }
         break;
       }
-      case "scale": {
-        const varName = getVarName(operation.targetId);
-        const scale = operation.params.scaleFactor;
-        bodyLines.push(`  ${varName} = ${varName}.scale([${_formatNumber(scale.x)}, ${_formatNumber(scale.y)}, ${_formatNumber(scale.z)}]);`);
-        const state = objectState.get(operation.targetId);
-        if (state) {
-          state.scale.x *= Math.max(0.1, scale.x);
-          state.scale.y *= Math.max(0.1, scale.y);
-          state.scale.z *= Math.max(0.1, scale.z);
-        }
-        break;
-      }
+
       case "push_pull": {
         const varName = getVarName(operation.targetId);
         const state = objectState.get(operation.targetId);
@@ -146,7 +108,7 @@ export function serializeCanonicalModelModule(operations) {
           } else {
             state.faceExtrudes.push(faceOperation);
           }
-          bodyLines.push(`  sai.pushPullFace(r, ${varName}, ${JSON.stringify(faceOperation)});`);
+          bodyLines.push(`  ${varName} = sai.pushPullFace(r, ${varName}, ${JSON.stringify(faceOperation)});`);
           break;
         }
         throw new Error("push_pull requires a solid modeling implementation for non-box targets");
@@ -159,10 +121,7 @@ export function serializeCanonicalModelModule(operations) {
     }
   }
 
-  const resultForObject = (objectId) => {
-    const varName = objectVars.get(objectId);
-    return editableBoxObjectIds.has(objectId) ? `${varName}.toShape()` : varName;
-  };
+  const resultForObject = (objectId) => objectVars.get(objectId);
   const resultExpr = objectOrder.length === 0 ? "null" : objectOrder.length === 1 ? resultForObject(objectOrder[0]) : `r.makeCompound([${objectOrder.map((id) => resultForObject(id)).join(", ")}])`;
 
   return [
@@ -186,17 +145,12 @@ export function parseOperationsFromCanonicalModelCode(code) {
   candidates.push(..._parseDirectTranslate(code));
   candidates.push(..._parseDirectTranslateObject(code));
   candidates.push(..._parseDirectRotate(code));
-  candidates.push(..._parseDirectMoveBoxSubshape(code));
-  candidates.push(..._parseDirectMoveBoxVertex(code));
   candidates.push(..._parseDirectPushPullFace(code));
-  candidates.push(..._parseDirectTaperedBox(code));
-  candidates.push(..._parseDirectScale(code));
   candidates.push(..._parseCreatePrimitiveBox(code));
   candidates.push(..._parseCreatePrimitiveSphere(code));
   candidates.push(..._parseCreatePrimitiveCylinder(code));
   candidates.push(..._parseMove(code));
   candidates.push(..._parseRotate(code));
-  candidates.push(..._parseScale(code));
 
   candidates.sort((a, b) => a.index - b.index);
 
@@ -245,18 +199,6 @@ function _normalizeOperationForModule(operation) {
   };
 }
 
-function _editableBoxObjectIds(operations) {
-  const ids = new Set();
-  for (const operation of operations) {
-    if (
-      ((operation.type === "move" && operation.params?.subshapeMove) || operation.type === "push_pull") &&
-      operation.targetId
-    ) {
-      ids.add(operation.targetId);
-    }
-  }
-  return ids;
-}
 
 function _formatNumber(value) {
   return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000) / 1000);
@@ -281,7 +223,7 @@ function _boxConfigLiteral(state) {
     state.position.y + state.scale.y / 2,
     state.position.z + state.scale.z / 2,
   ];
-  return `{"min":${_arrayVec3Literal(min)},"max":${_arrayVec3Literal(max)},"faceTilts":${JSON.stringify(state.faceTilts)},"faceExtrudes":${JSON.stringify(state.faceExtrudes ?? [])},"subshapeMoves":${JSON.stringify(state.subshapeMoves ?? [])},"faceExtensions":${JSON.stringify(state.faceExtensions ?? [])}}`;
+  return `{"min":${_arrayVec3Literal(min)},"max":${_arrayVec3Literal(max)},"faceTilts":${JSON.stringify(state.faceTilts)},"faceExtrudes":${JSON.stringify(state.faceExtrudes ?? [])},"faceExtensions":${JSON.stringify(state.faceExtensions ?? [])}}`;
 }
 
 function _dominantAxis(axis) {
@@ -375,7 +317,6 @@ function _parseDirectCreatePrimitiveBox(code) {
     };
   });
 }
-
 function _parseDirectCreatePrimitiveSaiBox(code) {
   const regex = /(?:let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*sai\.makeBox\(\s*r\s*,\s*(\[[\s\S]*?\])\s*,\s*(\[[\s\S]*?\])\s*\);/g;
   return _collectMatches(code, regex, (match) => {
@@ -460,67 +401,11 @@ function _parseDirectRotate(code) {
   });
 }
 
-function _parseDirectMoveBoxVertex(code) {
-  const regex = /sai\.moveBoxVertex\(\s*r\s*,\s*([A-Za-z_$][\w$]*)\s*,\s*(\{[^\n]*\})\s*,\s*(\[[^\n]*?\])\s*\);/g;
-  return _collectMatches(code, regex, (match) => {
-    const targetId = match[1];
-    const vertex = _safeJsonParse(match[2]);
-    const delta = _toVec3FromArray(_safeJsonParse(match[3]));
-    if (!targetId || !vertex || !delta) return null;
-    const subshapeMove = {
-      mode: "vertex",
-      vertex,
-      delta,
-    };
-    return {
-      type: "move",
-      targetId,
-      selection: {
-        mode: "vertex",
-        objectId: targetId,
-        objectIds: [targetId],
-        faceIndex: null,
-        faceNormalWorld: null,
-        edge: null,
-        vertex,
-      },
-      params: {
-        delta,
-        subshapeMove,
-      },
-    };
-  });
-}
-
-function _parseDirectMoveBoxSubshape(code) {
-  const regex = /sai\.moveBoxSubshape\(\s*r\s*,\s*([A-Za-z_$][\w$]*)\s*,\s*(\{[^\n]*\})\s*\);/g;
-  return _collectMatches(code, regex, (match) => {
-    const targetId = match[1];
-    const subshapeMove = _safeJsonParse(match[2]);
-    if (!targetId || !subshapeMove) return null;
-    const selectionMode = ["face", "edge", "vertex"].includes(subshapeMove.mode) ? subshapeMove.mode : "face";
-    return {
-      type: "move",
-      targetId,
-      selection: {
-        mode: selectionMode,
-        objectId: targetId,
-        objectIds: [targetId],
-        faceIndex: subshapeMove.faceIndex ?? null,
-        faceNormalWorld: subshapeMove.faceNormalWorld ?? null,
-        edge: selectionMode === "edge" ? subshapeMove.edge ?? null : null,
-        vertex: selectionMode === "vertex" ? subshapeMove.vertex ?? null : null,
-      },
-      params: {
-        delta: subshapeMove.delta ?? { x: 0, y: 0, z: 0 },
-        subshapeMove,
-      },
-    };
-  });
-}
 
 function _parseDirectPushPullFace(code) {
-  const regex = /sai\.pushPullFace\(\s*r\s*,\s*([A-Za-z_$][\w$]*)\s*,\s*(\{[^\n]*\})\s*\);/g;
+  // Matches: varName = sai.pushPullFace(r, varName, {...});
+  // Also matches legacy: sai.pushPullFace(r, varName, {...});
+  const regex = /(?:[A-Za-z_$][\w$]*\s*=\s*)?sai\.pushPullFace\(\s*r\s*,\s*([A-Za-z_$][\w$]*)\s*,\s*(\{[^\n]*\})\s*\);/g;
   return _collectMatches(code, regex, (match) => {
     const targetId = match[1];
     const operation = _safeJsonParse(match[2]);
@@ -545,119 +430,9 @@ function _parseDirectPushPullFace(code) {
   });
 }
 
-function _parseDirectTaperedBox(code) {
-  const regex = /([A-Za-z_$][\w$]*)\s*=\s*sai\.makeTaperedBox\(\s*r\s*,\s*(\{[^\n]*\})\s*\);/g;
-  const latestByTarget = new Map();
-  for (const match of code.matchAll(regex)) {
-    const targetId = match[1];
-    const config = _safeJsonParse(match[2]);
-    if (!targetId || !config) {
-      continue;
-    }
-    latestByTarget.set(targetId, { index: match.index ?? 0, targetId, config });
-  }
 
-  const candidates = [];
-  for (const { index, targetId, config } of latestByTarget.values()) {
-    const faceTilts = Array.isArray(config.faceTilts)
-      ? config.faceTilts.filter((tilt) => tilt && typeof tilt === "object")
-      : [];
-    const faceTilt = faceTilts.at(-1);
-    if (faceTilt) {
-      candidates.push({
-        index,
-        operation: {
-          type: "rotate",
-          targetId,
-          selection: { mode: "face", objectId: targetId, objectIds: [targetId], faceIndex: faceTilt.faceIndex ?? null, faceNormalWorld: faceTilt.faceNormalWorld ?? null },
-          params: {
-            deltaEuler: { x: 0, y: 0, z: 0 },
-            faceTilt,
-            faceTilts,
-          },
-        },
-      });
-    }
 
-    const faceExtrudes = Array.isArray(config.faceExtrudes)
-      ? config.faceExtrudes.filter((extrude) => extrude && typeof extrude === "object")
-      : [];
-    for (const extrude of faceExtrudes) {
-      candidates.push({
-        index,
-        operation: {
-          type: "push_pull",
-          targetId,
-          selection: { mode: "face", objectId: targetId, objectIds: [targetId], faceIndex: extrude.faceIndex ?? null, faceNormalWorld: extrude.axis ?? null },
-          params: {
-            axis: extrude.axis ?? { x: 0, y: 0, z: 1 },
-            distance: extrude.distance ?? 0,
-            faceIndex: extrude.faceIndex ?? null,
-            mode: "move",
-          },
-        },
-      });
-    }
 
-    const faceExtensions = Array.isArray(config.faceExtensions)
-      ? config.faceExtensions.filter((extension) => extension && typeof extension === "object")
-      : [];
-    for (const extension of faceExtensions) {
-      candidates.push({
-        index,
-        operation: {
-          type: "push_pull",
-          targetId,
-          selection: { mode: "face", objectId: targetId, objectIds: [targetId], faceIndex: extension.faceIndex ?? null, faceNormalWorld: extension.axis ?? null },
-          params: {
-            axis: extension.axis ?? { x: 0, y: 0, z: 1 },
-            distance: extension.distance ?? 0,
-            faceIndex: extension.faceIndex ?? null,
-            mode: "extend",
-          },
-        },
-      });
-    }
-
-    const subshapeMoves = Array.isArray(config.subshapeMoves)
-      ? config.subshapeMoves.filter((move) => move && typeof move === "object")
-      : [];
-    for (const move of subshapeMoves) {
-      const selectionMode = ["face", "edge", "vertex"].includes(move.mode) ? move.mode : "face";
-      candidates.push({
-        index,
-        operation: {
-          type: "move",
-          targetId,
-          selection: {
-            mode: selectionMode,
-            objectId: targetId,
-            objectIds: [targetId],
-            faceIndex: move.faceIndex ?? null,
-            faceNormalWorld: move.faceNormalWorld ?? null,
-            edge: selectionMode === "edge" ? move.edge ?? null : null,
-            vertex: selectionMode === "vertex" ? move.vertex ?? null : null,
-          },
-          params: {
-            delta: move.delta ?? { x: 0, y: 0, z: 0 },
-            subshapeMove: structuredClone(move),
-          },
-        },
-      });
-    }
-  }
-  return candidates;
-}
-
-function _parseDirectScale(code) {
-  const regex = /([A-Za-z_$][\w$]*)\s*=\s*\1\.scale\(\s*(\[[\s\S]*?\])\s*\);/g;
-  return _collectMatches(code, regex, (match) => {
-    const targetId = match[1];
-    const scale = _toVec3FromArray(_safeJsonParse(match[2]));
-    if (!targetId || !scale) return null;
-    return { type: "scale", targetId, selection: null, params: { scaleFactor: scale } };
-  });
-}
 
 function _parseCreatePrimitiveBox(code) {
   const regex =
@@ -777,25 +552,6 @@ function _parseRotate(code) {
       targetId,
       selection: null,
       params: { deltaEuler: { x: 0, y, z: 0 } },
-    };
-  });
-}
-
-function _parseScale(code) {
-  const regex =
-    /if\s*\(shapes\[\s*"([^"]+)"\s*\]\)\s*shapes\[\s*"\1"\s*\]\s*=\s*shapes\[\s*"\1"\s*\]\.scale\(\s*(\[[\s\S]*?\])\s*\);/g;
-  return _collectMatches(code, regex, (match) => {
-    const targetId = match[1];
-    const scale = _toVec3FromArray(_safeJsonParse(match[2]));
-    if (!targetId || !scale) {
-      return null;
-    }
-
-    return {
-      type: "scale",
-      targetId,
-      selection: null,
-      params: { scaleFactor: scale },
     };
   });
 }

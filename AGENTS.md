@@ -6,6 +6,15 @@ This project is intent-driven. `INTENT.md` is the authoritative source for appli
 
 Agents must not modify, regenerate, reinterpret, or redefine `INTENT.md`. Treat it as read-only input controlled by external intent-authoring processes.
 
+## Single Source of Truth
+
+The canonical model script (TypeScript) is the absolute, singular source of truth for the model's geometry and history.
+
+- Modeling must be purely parametric and derived from the execution of the model script.
+- No parallel object descriptors, state-replay mechanisms, or secondary geometry definitions are allowed for modeling.
+- The application must always execute the model script through the BREP kernel (Replicad/OpenCascade) to produce the exact geometry.
+- If the kernel is unavailable or execution fails, the application should report the error rather than falling back to an approximate state-based model.
+
 ## Orchestration Workflow
 
 When `INTENT.md` changes:

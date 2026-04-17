@@ -3,25 +3,33 @@ import * as THREE from "three";
 function createGeometryForState(state) {
   let geometry;
   switch (state.primitive) {
-    case "sphere":
-      geometry = new THREE.SphereGeometry(0.5, 24, 16);
-      break;
-    case "cylinder":
-      geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 24);
+    case "brep_mesh":
+      geometry = createGeometryFromBrepMesh(state.meshData);
       break;
     case "box":
     default:
       geometry = new THREE.BoxGeometry(1, 1, 1);
-      applyFaceTiltsToGeometry(geometry, state.faceTilts ?? [], state.rotation ?? { x: 0, y: 0, z: 0 });
-      applyFaceExtrudesToGeometry(geometry, state.faceExtrudes ?? [], state.rotation ?? { x: 0, y: 0, z: 0 });
-      applySubshapeMovesToGeometry(
-        geometry,
-        state.subshapeMoves ?? [],
-        state.rotation ?? { x: 0, y: 0, z: 0 },
-        state.scale ?? { x: 1, y: 1, z: 1 },
-      );
-      geometry = applyFaceExtensionsToGeometry(geometry, state.faceExtensions ?? [], state.rotation ?? { x: 0, y: 0, z: 0 });
       break;
+  }
+  return geometry;
+}
+
+function createGeometryFromBrepMesh(meshData) {
+  if (!meshData) {
+    return new THREE.BufferGeometry();
+  }
+
+  const vertices = meshData.vertices ?? meshData.positions ?? [];
+  const normals = meshData.normals ?? [];
+  const triangles = meshData.triangles ?? meshData.indices ?? [];
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(vertices), 3));
+  if (normals.length > 0) {
+    geometry.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(normals), 3));
+  }
+  geometry.setIndex(new THREE.Uint32BufferAttribute(new Uint32Array(triangles), 1));
+  if (normals.length === 0) {
+    geometry.computeVertexNormals();
   }
   return geometry;
 }
@@ -49,10 +57,7 @@ function updateMeshGeometry(mesh, state) {
 function geometrySignature(state) {
   return JSON.stringify({
     primitive: state.primitive,
-    faceTilts: state.faceTilts ?? [],
-    faceExtrudes: state.faceExtrudes ?? [],
-    subshapeMoves: state.subshapeMoves ?? [],
-    faceExtensions: state.faceExtensions ?? [],
+    meshSignature: state.meshSignature ?? null,
   });
 }
 
@@ -62,428 +67,184 @@ function applyTransform(mesh, state) {
   mesh.scale.set(state.scale.x, state.scale.y, state.scale.z);
 }
 
-function applyFaceTiltsToGeometry(geometry, faceTilts, rotation) {
-  if (!Array.isArray(faceTilts) || faceTilts.length === 0) {
-    return;
-  }
-
-  const position = geometry.attributes.position;
-  const basePoints = [];
-  for (let i = 0; i < position.count; i += 1) {
-    basePoints.push(new THREE.Vector3().fromBufferAttribute(position, i));
-  }
-
-  for (const tilt of faceTilts) {
-    const angle = tilt?.angle ?? 0;
-    if (!Number.isFinite(angle) || Math.abs(angle) < 1e-6) {
-      continue;
-    }
-
-    const localNormal = localFaceNormalFromTilt(tilt, rotation);
-    const dominant = tilt.faceAxis ?? dominantAxis(localNormal);
-    const sign = tilt.faceSign ?? (Math.sign(localNormal[dominant]) || 1);
-    const hingeAxisName = tilt.hingeAxis ?? defaultHingeAxisForFace(dominant);
-    const hingeSideAxis = tilt.hingeSideAxis ?? defaultHingeSideAxisForFace(dominant, hingeAxisName);
-    const hingeSideSign = tilt.hingeSideSign ?? -1;
-    const targetVertexIndices = vertexIndicesForTiltFace(geometry, tilt, dominant, sign, basePoints);
-    const hingeCoordinate = 0;
-    const slope = Math.tan(angle);
-
-    for (let i = 0; i < position.count; i += 1) {
-      if (!targetVertexIndices.has(i)) {
-        continue;
-      }
-
-      const point = new THREE.Vector3().fromBufferAttribute(position, i);
-      const basePoint = basePoints[i];
-      point[dominant] += sign * slope * (basePoint[hingeSideAxis] - hingeCoordinate);
-      point[dominant] = clampTaperCoordinate(point[dominant], sign);
-      position.setXYZ(i, point.x, point.y, point.z);
-    }
-  }
-
-  position.needsUpdate = true;
-  geometry.computeVertexNormals();
-}
-
-function clampTaperCoordinate(value, faceSign) {
-  return faceSign > 0 ? Math.max(value, -0.5) : Math.min(value, 0.5);
-}
-
-function vertexIndicesForTiltFace(geometry, tilt, dominant, sign, basePoints) {
-  const indices = new Set();
-  const faceIndex = Number.isInteger(tilt.faceIndex) ? tilt.faceIndex : -1;
-  if (faceIndex >= 0 && geometry.index) {
-    const selectedBasePoints = [];
-    const firstFaceTri = Math.floor(faceIndex / 2) * 2;
-    for (const tri of [firstFaceTri, firstFaceTri + 1]) {
-      const base = tri * 3;
-      if (base + 2 >= geometry.index.count) {
-        continue;
-      }
-      selectedBasePoints.push(basePoints[geometry.index.getX(base + 0)]);
-      selectedBasePoints.push(basePoints[geometry.index.getX(base + 1)]);
-      selectedBasePoints.push(basePoints[geometry.index.getX(base + 2)]);
-    }
-
-    for (let i = 0; i < basePoints.length; i += 1) {
-      if (selectedBasePoints.some((point) => pointsCoincide(basePoints[i], point))) {
-        indices.add(i);
-      }
-    }
-    return indices;
-  }
-
-  for (let i = 0; i < basePoints.length; i += 1) {
-    if (Math.abs(basePoints[i][dominant] - sign * 0.5) <= 1e-4) {
-      indices.add(i);
-    }
-  }
-  return indices;
-}
-
-function pointsCoincide(a, b) {
-  return Math.abs(a.x - b.x) <= 1e-4 && Math.abs(a.y - b.y) <= 1e-4 && Math.abs(a.z - b.z) <= 1e-4;
-}
-
-function applyFaceExtrudesToGeometry(geometry, faceExtrudes, rotation) {
-  if (!Array.isArray(faceExtrudes) || faceExtrudes.length === 0) {
-    return;
-  }
-
-  const position = geometry.attributes.position;
-  for (const extrude of faceExtrudes) {
-    const distance = extrude?.distance ?? 0;
-    if (!Number.isFinite(distance) || Math.abs(distance) < 1e-6) {
-      continue;
-    }
-
-    const axis = localFaceNormalFromExtrude(extrude, rotation);
-    const targetVertexIndices = vertexIndicesForExtrudeFace(geometry, extrude);
-    for (const index of targetVertexIndices) {
-      const point = new THREE.Vector3().fromBufferAttribute(position, index);
-      point.add(axis.clone().multiplyScalar(distance));
-      position.setXYZ(index, point.x, point.y, point.z);
-    }
-  }
-
-  position.needsUpdate = true;
-  geometry.computeVertexNormals();
-}
-
-function applyFaceExtensionsToGeometry(geometry, faceExtensions, rotation) {
-  if (!Array.isArray(faceExtensions) || faceExtensions.length === 0) {
-    return geometry;
-  }
-
-  let nextGeometry = geometry;
-  for (const extension of faceExtensions) {
-    nextGeometry = appendFaceExtension(nextGeometry, extension, rotation);
-  }
-  return nextGeometry;
-}
-
-function applySubshapeMovesToGeometry(geometry, subshapeMoves, rotation, scale) {
-  if (!Array.isArray(subshapeMoves) || subshapeMoves.length === 0) {
-    return;
-  }
-
-  const position = geometry.attributes.position;
-  const basePoints = [];
-  for (let i = 0; i < position.count; i += 1) {
-    basePoints.push(new THREE.Vector3().fromBufferAttribute(position, i));
-  }
-
-  for (const move of subshapeMoves) {
-    const delta = localDeltaFromWorld(move?.delta ?? { x: 0, y: 0, z: 0 }, rotation, scale);
-    if (delta.lengthSq() < 1e-12) {
-      continue;
-    }
-
-    const indices = vertexIndicesForSubshapeMove(geometry, move, basePoints);
-    for (const index of indices) {
-      const point = new THREE.Vector3().fromBufferAttribute(position, index).add(delta);
-      position.setXYZ(index, point.x, point.y, point.z);
-    }
-  }
-
-  position.needsUpdate = true;
-  geometry.computeVertexNormals();
-}
-
-function vertexIndicesForSubshapeMove(geometry, move, basePoints) {
-  if (!move || typeof move !== "object") {
-    return new Set();
-  }
-
-  if (move.mode === "face") {
-    const axis = move.faceAxis ?? "z";
-    const sign = Math.sign(move.faceSign ?? 1) || 1;
-    return vertexIndicesForTiltFace(
-      geometry,
-      { faceIndex: move.faceIndex ?? -1 },
-      axis,
-      sign,
-      basePoints,
-    );
-  }
-
-  const targetKeys = new Set();
-  if (move.mode === "edge") {
-    for (const key of move.edge?.keys ?? []) {
-      if (typeof key === "string") {
-        targetKeys.add(key);
-      }
-    }
-    if (targetKeys.size === 0) {
-      targetKeys.add(cornerKeyFromPoint(move.edge?.a));
-      targetKeys.add(cornerKeyFromPoint(move.edge?.b));
-    }
-  } else if (move.mode === "vertex") {
-    if (typeof move.vertex?.key === "string") {
-      targetKeys.add(move.vertex.key);
-    } else {
-      targetKeys.add(cornerKeyFromPoint(move.vertex));
-    }
-  }
-
-  targetKeys.delete(null);
-  targetKeys.delete(undefined);
-  const indices = new Set();
-  for (let i = 0; i < basePoints.length; i += 1) {
-    if (targetKeys.has(cornerKeyFromPoint(basePoints[i]))) {
-      indices.add(i);
-    }
-  }
-  return indices;
-}
-
-function appendFaceExtension(geometry, extension, rotation) {
-  const distance = extension?.distance ?? 0;
-  if (!Number.isFinite(distance) || Math.abs(distance) < 1e-6) {
-    return geometry;
-  }
-
-  const axis = localFaceNormalFromExtrude(extension, rotation);
-  const baseLoop = orderedFaceLoopFromGeometry(geometry, extension);
-  if (baseLoop.length < 3) {
-    return geometry;
-  }
-
-  const extensionLoop = baseLoop.map((point) => point.clone().add(axis.clone().multiplyScalar(distance)));
-  const triangles = trianglesFromGeometry(geometry);
-  addLoopCapTriangles(triangles, extensionLoop);
-  addSideWallTriangles(triangles, baseLoop, extensionLoop);
-  geometry.dispose();
-  return geometryFromTriangles(triangles);
-}
-
-function orderedFaceLoopFromGeometry(geometry, faceOperation) {
-  const position = geometry.attributes.position;
-  const indices = vertexIndicesForExtrudeFace(geometry, faceOperation);
-  const unique = [];
-  for (const index of indices) {
-    const point = new THREE.Vector3().fromBufferAttribute(position, index);
-    if (!unique.some((existing) => pointsCoincide(existing, point))) {
-      unique.push(point);
-    }
-  }
-  if (unique.length < 3) {
-    return unique;
-  }
-
-  const center = unique.reduce((acc, point) => acc.add(point), new THREE.Vector3()).multiplyScalar(1 / unique.length);
-  const normal = localFaceNormalFromExtrude(faceOperation, { x: 0, y: 0, z: 0 }).normalize();
-  const reference = unique[0].clone().sub(center).normalize();
-  const tangent = normal.clone().cross(reference).normalize();
-  return unique.sort((a, b) => {
-    const av = a.clone().sub(center);
-    const bv = b.clone().sub(center);
-    return Math.atan2(av.dot(tangent), av.dot(reference)) - Math.atan2(bv.dot(tangent), bv.dot(reference));
-  });
-}
-
-function trianglesFromGeometry(geometry) {
-  const position = geometry.attributes.position;
-  const index = geometry.index;
-  const triangles = [];
-  const triCount = index ? Math.floor(index.count / 3) : Math.floor(position.count / 3);
-  const idxAt = (idx) => (index ? index.getX(idx) : idx);
-  for (let tri = 0; tri < triCount; tri += 1) {
-    const base = tri * 3;
-    triangles.push([
-      new THREE.Vector3().fromBufferAttribute(position, idxAt(base + 0)),
-      new THREE.Vector3().fromBufferAttribute(position, idxAt(base + 1)),
-      new THREE.Vector3().fromBufferAttribute(position, idxAt(base + 2)),
-    ]);
-  }
-  return triangles;
-}
-
-function addLoopCapTriangles(triangles, loop) {
-  for (let i = 1; i < loop.length - 1; i += 1) {
-    triangles.push([loop[0].clone(), loop[i].clone(), loop[i + 1].clone()]);
-  }
-}
-
-function addSideWallTriangles(triangles, baseLoop, extensionLoop) {
-  for (let i = 0; i < baseLoop.length; i += 1) {
-    const next = (i + 1) % baseLoop.length;
-    const a = baseLoop[i].clone();
-    const b = baseLoop[next].clone();
-    const c = extensionLoop[next].clone();
-    const d = extensionLoop[i].clone();
-    triangles.push([a, b, c], [a, c, d]);
-  }
-}
-
-function geometryFromTriangles(triangles) {
-  const flat = new Float32Array(triangles.length * 9);
-  triangles.forEach((tri, triIndex) => {
-    tri.forEach((point, pointIndex) => {
-      const offset = triIndex * 9 + pointIndex * 3;
-      flat[offset + 0] = point.x;
-      flat[offset + 1] = point.y;
-      flat[offset + 2] = point.z;
-    });
-  });
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(flat, 3));
-  geometry.computeVertexNormals();
-  return geometry;
-}
-
-function vertexIndicesForExtrudeFace(geometry, extrude) {
-  const position = geometry.attributes.position;
-  const basePoints = [];
-  for (let i = 0; i < position.count; i += 1) {
-    basePoints.push(new THREE.Vector3().fromBufferAttribute(position, i));
-  }
-  const indices = vertexIndicesForTiltFace(
-    geometry,
-    { faceIndex: extrude.faceIndex ?? -1 },
-    extrude.faceAxis ?? dominantAxis(localFaceNormalFromExtrude(extrude, { x: 0, y: 0, z: 0 })),
-    extrude.faceSign ?? 1,
-    basePoints,
-  );
-  return indices;
-}
-
-function localFaceNormalFromTilt(tilt, rotation) {
-  const normal = tilt.faceNormalWorld ?? { x: 0, y: 0, z: 1 };
-  return localVectorFromWorld(normal, rotation);
-}
-
-function localFaceNormalFromExtrude(extrude, rotation) {
-  const normal = extrude.axis ?? { x: 0, y: 0, z: 1 };
-  return localVectorFromWorld(normal, rotation);
-}
-
-function localVectorFromWorld(normal, rotation) {
-  const vector = new THREE.Vector3(normal.x ?? 0, normal.y ?? 0, normal.z ?? 1);
-  if (vector.lengthSq() < 1e-8) {
-    vector.set(0, 0, 1);
-  }
-  const quaternion = new THREE.Quaternion().setFromEuler(
-    new THREE.Euler(rotation.x ?? 0, rotation.y ?? 0, rotation.z ?? 0),
-  );
-  return vector.normalize().applyQuaternion(quaternion.invert());
-}
-
-function localDeltaFromWorld(delta, rotation, scale) {
-  const vector = new THREE.Vector3(delta.x ?? 0, delta.y ?? 0, delta.z ?? 0);
-  const quaternion = new THREE.Quaternion().setFromEuler(
-    new THREE.Euler(rotation.x ?? 0, rotation.y ?? 0, rotation.z ?? 0),
-  );
-  vector.applyQuaternion(quaternion.invert());
-  vector.x /= Math.max(Math.abs(scale.x ?? 1), 1e-6);
-  vector.y /= Math.max(Math.abs(scale.y ?? 1), 1e-6);
-  vector.z /= Math.max(Math.abs(scale.z ?? 1), 1e-6);
-  return vector;
-}
-
-function cornerKeyFromPoint(point) {
-  if (!point) {
+function previewPushPullMeshData(meshData, operation) {
+  if (!meshData) {
     return null;
   }
-  const sx = (point.x ?? 0) >= 0 ? "px" : "nx";
-  const sy = (point.y ?? 0) >= 0 ? "py" : "ny";
-  const sz = (point.z ?? 0) >= 0 ? "pz" : "nz";
-  return `${sx}_${sy}_${sz}`;
-}
 
-function dominantAxis(vector) {
-  const abs = { x: Math.abs(vector.x), y: Math.abs(vector.y), z: Math.abs(vector.z) };
-  if (abs.x >= abs.y && abs.x >= abs.z) return "x";
-  if (abs.y >= abs.x && abs.y >= abs.z) return "y";
-  return "z";
-}
-
-function defaultHingeAxisForFace(dominant) {
-  if (dominant === "x") return "y";
-  return "x";
-}
-
-function defaultHingeSideAxisForFace(dominant, hingeAxisName) {
-  return ["x", "y", "z"].find((axis) => axis !== dominant && axis !== hingeAxisName) ?? "z";
-}
-
-function applyPushPullToState(state, params) {
-  const axis = params.axis ?? { x: 0, y: 0, z: 1 };
-  const distance = params.distance ?? 0;
-  if (state.primitive === "box" && params.mode === "extend") {
-    const faceExtension = makeFaceExtrude(params);
-    state.faceExtensions = [...(state.faceExtensions ?? []), faceExtension];
-    return;
-  }
-  if (state.primitive === "box" && !isAxisAligned(axis)) {
-    const faceExtrude = makeFaceExtrude(params);
-    state.faceExtrudes = [...(state.faceExtrudes ?? []), faceExtrude];
-    return;
+  const vertices = [...(meshData.vertices ?? meshData.positions ?? [])];
+  const triangles = [...(meshData.triangles ?? meshData.indices ?? [])];
+  if (vertices.length === 0 || triangles.length === 0) {
+    return null;
   }
 
-  const axisEntries = [
-    ["x", axis.x ?? 0],
-    ["y", axis.y ?? 0],
-    ["z", axis.z ?? 0],
-  ];
-  axisEntries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const axis = normalizeVector(operation.params?.axis ?? { x: 0, y: 0, z: 1 });
+  const distance = operation.params?.distance ?? 0;
+  if (!Number.isFinite(distance) || Math.abs(distance) < 1e-8) {
+    return {
+      ...meshData,
+      vertices,
+      triangles,
+      normals: [...(meshData.normals ?? [])],
+      faceGroups: cloneFaceGroups(meshData.faceGroups),
+    };
+  }
 
-  const [dominantAxis, dominantComponent] = axisEntries[0];
-  const axisSign = Math.sign(dominantComponent) || 1;
-  const previousScale = state.scale[dominantAxis];
-  const nextScale = Math.max(0.1, previousScale + distance);
-  const appliedDelta = nextScale - previousScale;
-
-  state.scale[dominantAxis] = nextScale;
-  state.position[dominantAxis] += axisSign * (appliedDelta * 0.5);
-}
-
-function makeFaceExtrude(params) {
-  const axis = normalizeAxis(params.axis ?? { x: 0, y: 0, z: 1 });
-  const faceAxis = dominantAxis(new THREE.Vector3(axis.x, axis.y, axis.z));
-  return {
-    faceIndex: Number.isInteger(params.faceIndex) ? params.faceIndex : null,
+  const selectedVertices = selectedPushPullVertexIndices({
+    vertices,
+    triangles,
+    faceGroups: meshData.faceGroups ?? [],
+    faceIndex: operation.selection?.faceIndex ?? operation.params?.faceIndex ?? null,
     axis,
-    distance: params.distance ?? 0,
-    faceAxis,
-    faceSign: Math.sign(axis[faceAxis] ?? 0) || 1,
+  });
+
+  for (const index of selectedVertices) {
+    const offset = index * 3;
+    vertices[offset + 0] += axis.x * distance;
+    vertices[offset + 1] += axis.y * distance;
+    vertices[offset + 2] += axis.z * distance;
+  }
+
+  return {
+    ...meshData,
+    vertices,
+    triangles,
+    normals: [],
+    faceGroups: cloneFaceGroups(meshData.faceGroups),
   };
 }
 
-function normalizeAxis(axis) {
-  const length = Math.hypot(axis.x ?? 0, axis.y ?? 0, axis.z ?? 0);
+function selectedPushPullVertexIndices({ vertices, triangles, faceGroups, faceIndex, axis }) {
+  const byTrianglePlane = selectedVerticesFromTrianglePlane({ vertices, triangles, faceIndex, axis });
+  if (byTrianglePlane.size > 0) {
+    return byTrianglePlane;
+  }
+
+  const byGroup = selectedVerticesFromFaceGroup({ triangles, faceGroups, faceIndex });
+  if (byGroup.size > 0) {
+    return byGroup;
+  }
+
+  return selectedVerticesFromExtremePlane({ vertices, axis });
+}
+
+function selectedVerticesFromFaceGroup({ triangles, faceGroups, faceIndex }) {
+  const selected = new Set();
+  if (!Number.isInteger(faceIndex) || faceIndex < 0 || !Array.isArray(faceGroups)) {
+    return selected;
+  }
+
+  const triangleOffset = faceIndex * 3;
+  const group = faceGroups.find((candidate) => {
+    if (!candidate || typeof candidate !== "object") {
+      return false;
+    }
+    const start = candidate.start ?? 0;
+    const count = candidate.count ?? 0;
+    return triangleOffset >= start && triangleOffset < start + count;
+  });
+
+  if (!group) {
+    return selected;
+  }
+
+  const start = group.start ?? 0;
+  const count = group.count ?? 0;
+  const endIndex = Math.min(triangles.length, start + count);
+  for (let index = start; index < endIndex; index += 1) {
+    selected.add(triangles[index]);
+  }
+  return selected;
+}
+
+function selectedVerticesFromTrianglePlane({ vertices, triangles, faceIndex, axis }) {
+  const selected = new Set();
+  if (!Number.isInteger(faceIndex) || faceIndex < 0) {
+    return selected;
+  }
+
+  const base = faceIndex * 3;
+  if (base + 2 >= triangles.length) {
+    return selected;
+  }
+
+  const planeProjection =
+    (
+      vertexProjection(vertices, triangles[base], axis) +
+      vertexProjection(vertices, triangles[base + 1], axis) +
+      vertexProjection(vertices, triangles[base + 2], axis)
+    ) / 3;
+  const tolerance = meshTolerance(vertices);
+
+  for (let vertexIndex = 0; vertexIndex < vertices.length / 3; vertexIndex += 1) {
+    if (Math.abs(vertexProjection(vertices, vertexIndex, axis) - planeProjection) <= tolerance) {
+      selected.add(vertexIndex);
+    }
+  }
+
+  return selected;
+}
+
+function selectedVerticesFromExtremePlane({ vertices, axis }) {
+  const selected = new Set();
+  let maxProjection = -Infinity;
+  for (let vertexIndex = 0; vertexIndex < vertices.length / 3; vertexIndex += 1) {
+    maxProjection = Math.max(maxProjection, vertexProjection(vertices, vertexIndex, axis));
+  }
+
+  const tolerance = meshTolerance(vertices);
+  for (let vertexIndex = 0; vertexIndex < vertices.length / 3; vertexIndex += 1) {
+    if (Math.abs(vertexProjection(vertices, vertexIndex, axis) - maxProjection) <= tolerance) {
+      selected.add(vertexIndex);
+    }
+  }
+
+  return selected;
+}
+
+function vertexProjection(vertices, vertexIndex, axis) {
+  const offset = vertexIndex * 3;
+  return vertices[offset + 0] * axis.x + vertices[offset + 1] * axis.y + vertices[offset + 2] * axis.z;
+}
+
+function meshTolerance(vertices) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+
+  for (let offset = 0; offset < vertices.length; offset += 3) {
+    minX = Math.min(minX, vertices[offset + 0]);
+    minY = Math.min(minY, vertices[offset + 1]);
+    minZ = Math.min(minZ, vertices[offset + 2]);
+    maxX = Math.max(maxX, vertices[offset + 0]);
+    maxY = Math.max(maxY, vertices[offset + 1]);
+    maxZ = Math.max(maxZ, vertices[offset + 2]);
+  }
+
+  const diagonal = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+  return Math.max(diagonal * 1e-4, 1e-5);
+}
+
+function normalizeVector(vector) {
+  const length = Math.hypot(vector.x ?? 0, vector.y ?? 0, vector.z ?? 0);
   if (length < 1e-8) {
     return { x: 0, y: 0, z: 1 };
   }
-  return { x: axis.x / length, y: axis.y / length, z: axis.z / length };
+  return {
+    x: (vector.x ?? 0) / length,
+    y: (vector.y ?? 0) / length,
+    z: (vector.z ?? 0) / length,
+  };
 }
 
-function isAxisAligned(axis) {
-  const normalized = normalizeAxis(axis);
-  const components = [Math.abs(normalized.x), Math.abs(normalized.y), Math.abs(normalized.z)];
-  return components.filter((value) => value > 1e-4).length <= 1;
+function cloneFaceGroups(faceGroups) {
+  return Array.isArray(faceGroups) ? faceGroups.map((group) => ({ ...group })) : [];
 }
+
+
 
 export class RepresentationStore {
   constructor() {
@@ -567,54 +328,28 @@ export class RepresentationStore {
       return;
     }
 
-    const { type, targetId, params } = this.previewOperation;
+    const { type, targetId } = this.previewOperation;
     const mesh = targetId ? this.meshById.get(targetId) : null;
-    if (!mesh) {
-      return;
-    }
-
-    const exactState = this.exactSceneState[targetId];
-    if (!exactState) {
+    const exactState = targetId ? this.exactSceneState[targetId] : null;
+    if (!mesh || !exactState || type !== "push_pull") {
       return;
     }
 
     const previewState = structuredClone(exactState);
-    if (type === "move") {
-      if (params.subshapeMove && previewState.primitive === "box") {
-        previewState.subshapeMoves = [
-          ...(previewState.subshapeMoves ?? []),
-          structuredClone(params.subshapeMove),
-        ];
-      } else {
-        previewState.position.x += params.delta.x;
-        previewState.position.y += params.delta.y;
-        previewState.position.z += params.delta.z;
+    if (previewState.primitive === "brep_mesh") {
+      const meshData = previewPushPullMeshData(previewState.meshData, this.previewOperation);
+      if (!meshData) {
+        return;
       }
+      previewState.meshData = meshData;
+      previewState.meshSignature = [
+        previewState.meshSignature ?? "mesh",
+        this.previewOperation.selection?.faceIndex ?? "face",
+        this.previewOperation.params?.distance ?? 0,
+      ].join(":");
+      updateMeshGeometry(mesh, previewState);
+      applyTransform(mesh, previewState);
     }
-
-    if (type === "rotate") {
-      if (this.previewOperation.selection?.mode === "face" && params.faceTilt) {
-        const faceTilts = Array.isArray(params.faceTilts) ? params.faceTilts : [params.faceTilt];
-        previewState.faceTilts = [...(previewState.faceTilts ?? []), ...faceTilts.map((tilt) => structuredClone(tilt))];
-      } else {
-        previewState.rotation.x += params.deltaEuler.x;
-        previewState.rotation.y += params.deltaEuler.y;
-        previewState.rotation.z += params.deltaEuler.z;
-      }
-    }
-
-    if (type === "scale") {
-      previewState.scale.x *= Math.max(0.1, params.scaleFactor.x);
-      previewState.scale.y *= Math.max(0.1, params.scaleFactor.y);
-      previewState.scale.z *= Math.max(0.1, params.scaleFactor.z);
-    }
-
-    if (type === "push_pull") {
-      applyPushPullToState(previewState, params);
-    }
-
-    updateMeshGeometry(mesh, previewState);
-    applyTransform(mesh, previewState);
   }
 
   getSelectableMeshes() {

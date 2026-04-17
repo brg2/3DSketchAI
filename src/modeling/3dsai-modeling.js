@@ -1,289 +1,159 @@
-const AXES = ["x", "y", "z"];
+import { basicFaceExtrusion } from "replicad";
 
 export function create3dsaiModelingLibrary() {
   return {
     makeBox,
-    makeTaperedBox,
-    moveBoxSubshape,
-    moveBoxVertex,
+    pushPull,
     pushPullFace,
     translateObject,
   };
 }
 
 export function makeBox(r, min, max) {
-  return new EditableBox(r, min, max);
-}
-
-export function makeTaperedBox(r, { min, max, faceTilts = [], faceExtrudes = [], subshapeMoves = [], faceExtensions = [] }) {
-  const corners = createBoxCorners(min, max);
-  for (const tilt of faceTilts) {
-    applyCenteredTaper(corners, tilt);
-  }
-  for (const extrude of faceExtrudes) {
-    applyFaceExtrude(corners, extrude);
-  }
-  for (const move of subshapeMoves) {
-    applySubshapeMove(corners, move);
-  }
-
-  const faces = [
-    r.makePolygon([corners.nx_ny_nz, corners.px_ny_nz, corners.px_ny_pz, corners.nx_ny_pz]),
-    r.makePolygon([corners.nx_py_nz, corners.nx_py_pz, corners.px_py_pz, corners.px_py_nz]),
-    r.makePolygon([corners.nx_ny_nz, corners.nx_py_nz, corners.px_py_nz, corners.px_ny_nz]),
-    r.makePolygon([corners.px_ny_nz, corners.px_py_nz, corners.px_py_pz, corners.px_ny_pz]),
-    r.makePolygon([corners.px_ny_pz, corners.px_py_pz, corners.nx_py_pz, corners.nx_ny_pz]),
-    r.makePolygon([corners.nx_ny_pz, corners.nx_py_pz, corners.nx_py_nz, corners.nx_ny_nz]),
-  ];
-
-  for (const extension of faceExtensions) {
-    addFaceExtensionFaces(r, faces, corners, extension);
-  }
-
-  return r.makeSolid(faces);
-}
-
-export function moveBoxVertex(r, shape, vertex, delta) {
-  return moveBoxSubshape(r, shape, {
-    mode: "vertex",
-    vertex: normalizeVertex(vertex),
-    delta: normalizeDelta(delta),
-  });
-}
-
-export function moveBoxSubshape(_r, shape, move) {
-  if (!shape || typeof shape.moveSubshape !== "function") {
-    throw new Error("moveBoxSubshape requires a shape created by sai.makeBox");
-  }
-  shape.moveSubshape(move);
-  return shape;
+  return r.makeBox(min, max);
 }
 
 export function pushPullFace(_r, shape, operation) {
-  if (!shape || typeof shape.pushPullFace !== "function") {
-    throw new Error("pushPullFace requires a shape created by sai.makeBox");
+  const { distance, axis } = operation;
+
+  if (axis) {
+    return pushPull(shape, (face, index, faces) => {
+      const selected = selectFaceForOperation(faces, operation);
+      return selected ? face === selected : false;
+    }, distance);
   }
-  shape.pushPullFace(operation);
-  return shape;
+
+  const faces = getFaces(shape);
+  const faceIndex = operation?.faceIndex;
+  if (Number.isInteger(faceIndex) && faceIndex >= 0 && faceIndex < faces.length) {
+    return pushPull(shape, faceIndex, distance);
+  }
+
+  throw new Error("pushPullFace: cannot determine target face from operation");
 }
 
 export function translateObject(_r, shape, delta) {
-  if (!shape || typeof shape.translateObject !== "function") {
-    throw new Error("translateObject requires a shape created by sai.makeBox");
+  if (!shape || typeof shape.translate !== "function") {
+    throw new Error("translateObject requires a shape");
   }
-  shape.translateObject(normalizeDelta(delta));
-  return shape;
+  return shape.translate(normalizeDelta(delta));
 }
 
-class EditableBox {
-  constructor(r, min, max) {
-    this.r = r;
-    this.min = [...min];
-    this.max = [...max];
-    this.faceTilts = [];
-    this.faceExtrudes = [];
-    this.subshapeMoves = [];
-    this.faceExtensions = [];
+export function pushPull(shape, faceSelector, distance) {
+  const faces = getFaces(shape);
+  const face =
+    typeof faceSelector === "function"
+      ? faces.find((candidate, index) => faceSelector(candidate, index, faces))
+      : faces[faceSelector];
+
+  if (!face) {
+    throw new Error(`pushPull: target face not found (${faces.length} available)`);
   }
 
-  moveSubshape(move) {
-    this.subshapeMoves.push(structuredClone(move));
-    return this;
-  }
+  const normal = face.normalAt().normalized();
+  const extrusionVec = normal.multiply(distance);
+  const tool = basicFaceExtrusion(face, extrusionVec);
 
-  pushPullFace(operation) {
-    const faceOperation = normalizeFaceOperation(operation);
-    if (faceOperation.mode === "extend") {
-      this.faceExtensions.push(faceOperation);
-    } else {
-      this.faceExtrudes.push(faceOperation);
-    }
-    return this;
-  }
-
-  translateObject(delta) {
-    const normalized = normalizeDelta(delta);
-    this.min[0] += normalized.x;
-    this.min[1] += normalized.y;
-    this.min[2] += normalized.z;
-    this.max[0] += normalized.x;
-    this.max[1] += normalized.y;
-    this.max[2] += normalized.z;
-    return this;
-  }
-
-  toShape() {
-    if (
-      this.faceTilts.length === 0 &&
-      this.faceExtrudes.length === 0 &&
-      this.subshapeMoves.length === 0 &&
-      this.faceExtensions.length === 0
-    ) {
-      return this.r.makeBox(this.min, this.max);
-    }
-
-    return makeTaperedBox(this.r, {
-      min: this.min,
-      max: this.max,
-      faceTilts: this.faceTilts,
-      faceExtrudes: this.faceExtrudes,
-      subshapeMoves: this.subshapeMoves,
-      faceExtensions: this.faceExtensions,
-    });
-  }
+  return distance > 0
+    ? shape.fuse(tool)
+    : shape.cut(tool);
 }
 
-function normalizeFaceOperation(operation) {
-  const axis = normalizeVector(operation?.axis ?? { x: 0, y: 0, z: 1 });
-  const faceAxis = AXES.includes(operation?.faceAxis) ? operation.faceAxis : dominantAxis(axis);
-  return {
-    faceIndex: Number.isInteger(operation?.faceIndex) ? operation.faceIndex : null,
-    axis,
-    distance: operation?.distance ?? 0,
-    faceAxis,
-    faceSign: Math.sign(operation?.faceSign ?? axis[faceAxis] ?? 1) || 1,
-    mode: operation?.mode === "extend" ? "extend" : "move",
-  };
+function getFaces(shape) {
+  const faces = typeof shape?.faces === "function" ? shape.faces() : shape?.faces;
+  return Array.isArray(faces) ? faces : [];
 }
 
-function normalizeVertex(vertex) {
-  if (typeof vertex === "string") {
-    return { ...pointFromCornerKey(vertex), key: vertex };
-  }
-  if (!vertex || typeof vertex !== "object") {
-    return { x: 0, y: 0, z: 0, key: "px_py_pz" };
-  }
-  return structuredClone(vertex);
-}
-
-function pointFromCornerKey(key) {
-  const parts = typeof key === "string" ? key.split("_") : [];
-  return {
-    x: parts[0] === "nx" ? -0.5 : 0.5,
-    y: parts[1] === "ny" ? -0.5 : 0.5,
-    z: parts[2] === "nz" ? -0.5 : 0.5,
-  };
-}
-
-function normalizeDelta(delta) {
-  if (Array.isArray(delta)) {
-    return { x: delta[0] ?? 0, y: delta[1] ?? 0, z: delta[2] ?? 0 };
-  }
-  return { x: delta?.x ?? 0, y: delta?.y ?? 0, z: delta?.z ?? 0 };
-}
-
-function applySubshapeMove(corners, move) {
-  const delta = move?.delta ?? { x: 0, y: 0, z: 0 };
-  const dx = delta.x ?? 0;
-  const dy = delta.y ?? 0;
-  const dz = delta.z ?? 0;
-  if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz) || Math.hypot(dx, dy, dz) < 1e-8) {
-    return;
-  }
-
-  const keys = subshapeCornerKeys(corners, move);
-  for (const key of keys) {
-    const corner = corners[key];
-    if (!corner) {
-      continue;
-    }
-    corner[0] += dx;
-    corner[1] += dy;
-    corner[2] += dz;
-  }
-}
-
-function subshapeCornerKeys(corners, move) {
-  if (move?.mode === "face") {
-    const loop = faceLoop(corners, move);
-    return Object.entries(corners)
-      .filter(([, corner]) => loop?.includes(corner))
-      .map(([key]) => key);
-  }
-
-  if (move?.mode === "edge") {
-    const keys = Array.isArray(move.edge?.keys) ? move.edge.keys.filter((key) => corners[key]) : [];
-    if (keys.length > 0) {
-      return keys;
-    }
-    return [cornerKeyFromPoint(move.edge?.a), cornerKeyFromPoint(move.edge?.b)].filter((key) => corners[key]);
-  }
-
-  if (move?.mode === "vertex") {
-    const key = typeof move.vertex?.key === "string" ? move.vertex.key : cornerKeyFromPoint(move.vertex);
-    return corners[key] ? [key] : [];
-  }
-
-  return [];
-}
-
-function applyFaceExtrude(corners, extrude) {
-  const axis = normalizeVector(extrude?.axis ?? { x: 0, y: 0, z: 1 });
-  const distance = extrude?.distance ?? 0;
-  const faceAxis = extrude?.faceAxis;
-  const faceSign = Math.sign(extrude?.faceSign ?? 1) || 1;
-  if (!AXES.includes(faceAxis) || !Number.isFinite(distance) || Math.abs(distance) < 1e-6) {
-    return;
-  }
-
-  const faceIndex = axisIndex(faceAxis);
-  const faceCoordinate = faceSign > 0 ? maxCoordinate(corners, faceIndex) : minCoordinate(corners, faceIndex);
-  const delta = [axis.x * distance, axis.y * distance, axis.z * distance];
-  for (const corner of Object.values(corners)) {
-    if (Math.abs(corner[faceIndex] - faceCoordinate) > 1e-6) {
-      continue;
-    }
-    corner[0] += delta[0];
-    corner[1] += delta[1];
-    corner[2] += delta[2];
-  }
-}
-
-function addFaceExtensionFaces(r, faces, corners, extension) {
-  const axis = normalizeVector(extension?.axis ?? { x: 0, y: 0, z: 1 });
-  const distance = extension?.distance ?? 0;
-  const loop = faceLoop(corners, extension);
-  if (!loop || !Number.isFinite(distance) || Math.abs(distance) < 1e-6) {
-    return;
-  }
-
-  const delta = [axis.x * distance, axis.y * distance, axis.z * distance];
-  const outer = loop.map((point) => [point[0] + delta[0], point[1] + delta[1], point[2] + delta[2]]);
-  faces.push(r.makePolygon(outer));
-  for (let i = 0; i < loop.length; i += 1) {
-    const next = (i + 1) % loop.length;
-    faces.push(r.makePolygon([loop[i], loop[next], outer[next], outer[i]]));
-  }
-}
-
-function faceLoop(corners, operation) {
-  const faceAxis = operation?.faceAxis;
-  const faceSign = Math.sign(operation?.faceSign ?? 1) || 1;
-  if (!AXES.includes(faceAxis)) {
+function selectFaceForOperation(faces, operation) {
+  if (!Array.isArray(faces) || faces.length === 0) {
     return null;
   }
 
-  if (faceAxis === "x") {
-    return faceSign > 0
-      ? [corners.px_ny_nz, corners.px_py_nz, corners.px_py_pz, corners.px_ny_pz]
-      : [corners.nx_ny_nz, corners.nx_ny_pz, corners.nx_py_pz, corners.nx_py_nz];
+  const axis = normalizeAxis(operation?.axis ?? axisFromFaceIdentity(operation));
+  const byNormal = bestFaceByNormal(faces, axis);
+  if (byNormal) {
+    return byNormal;
   }
-  if (faceAxis === "y") {
-    return faceSign > 0
-      ? [corners.nx_py_nz, corners.nx_py_pz, corners.px_py_pz, corners.px_py_nz]
-      : [corners.nx_ny_nz, corners.px_ny_nz, corners.px_ny_pz, corners.nx_ny_pz];
+
+  const byCoordinate = bestFaceByCoordinate(faces, operation, axis);
+  if (byCoordinate) {
+    return byCoordinate;
   }
-  return faceSign > 0
-    ? [corners.nx_ny_pz, corners.px_ny_pz, corners.px_py_pz, corners.nx_py_pz]
-    : [corners.nx_ny_nz, corners.nx_py_nz, corners.px_py_nz, corners.px_ny_nz];
+
+  const faceIndex = operation?.faceIndex;
+  if (Number.isInteger(faceIndex) && faceIndex >= 0 && faceIndex < faces.length) {
+    return faces[faceIndex];
+  }
+
+  return null;
 }
 
-function normalizeVector(vector) {
-  const length = Math.hypot(vector.x ?? 0, vector.y ?? 0, vector.z ?? 0);
-  if (length < 1e-8) {
-    return { x: 0, y: 0, z: 1 };
+function bestFaceByNormal(faces, axis) {
+  let best = null;
+  let bestDot = -Infinity;
+
+  for (const face of faces) {
+    const normal = safeFaceNormal(face);
+    if (!normal) {
+      continue;
+    }
+    const dot = normal.x * axis.x + normal.y * axis.y + normal.z * axis.z;
+    if (dot > bestDot) {
+      best = face;
+      bestDot = dot;
+    }
   }
-  return { x: (vector.x ?? 0) / length, y: (vector.y ?? 0) / length, z: (vector.z ?? 0) / length };
+
+  return bestDot > 0.25 ? best : null;
+}
+
+function bestFaceByCoordinate(faces, operation, axis) {
+  const faceAxis = ["x", "y", "z"].includes(operation?.faceAxis)
+    ? operation.faceAxis
+    : dominantAxis(axis);
+  const faceSign = Math.sign(operation?.faceSign ?? axis[faceAxis] ?? 1) || 1;
+  let best = null;
+  let bestScore = -Infinity;
+
+  for (const face of faces) {
+    const center = safeFaceCenter(face);
+    if (!center) {
+      continue;
+    }
+    const score = faceSign * (center[faceAxis] ?? 0);
+    if (score > bestScore) {
+      best = face;
+      bestScore = score;
+    }
+  }
+
+  return best;
+}
+
+function axisFromFaceIdentity(operation) {
+  const faceAxis = ["x", "y", "z"].includes(operation?.faceAxis) ? operation.faceAxis : "z";
+  const faceSign = Math.sign(operation?.faceSign ?? 1) || 1;
+  return {
+    x: faceAxis === "x" ? faceSign : 0,
+    y: faceAxis === "y" ? faceSign : 0,
+    z: faceAxis === "z" ? faceSign : 0,
+  };
+}
+
+function safeFaceNormal(face) {
+  try {
+    return face.normalAt().normalized();
+  } catch {
+    return null;
+  }
+}
+
+function safeFaceCenter(face) {
+  try {
+    return face.center;
+  } catch {
+    return null;
+  }
 }
 
 function dominantAxis(axis) {
@@ -296,64 +166,17 @@ function dominantAxis(axis) {
   return entries[0][0];
 }
 
-function createBoxCorners(min, max) {
-  return {
-    nx_ny_nz: [min[0], min[1], min[2]],
-    px_ny_nz: [max[0], min[1], min[2]],
-    px_ny_pz: [max[0], min[1], max[2]],
-    nx_ny_pz: [min[0], min[1], max[2]],
-    nx_py_nz: [min[0], max[1], min[2]],
-    px_py_nz: [max[0], max[1], min[2]],
-    px_py_pz: [max[0], max[1], max[2]],
-    nx_py_pz: [min[0], max[1], max[2]],
-  };
-}
-
-function cornerKeyFromPoint(point) {
-  if (!point) {
-    return null;
+function normalizeAxis(axis) {
+  const length = Math.hypot(axis.x ?? 0, axis.y ?? 0, axis.z ?? 0);
+  if (length < 1e-8) {
+    return { x: 0, y: 0, z: 1 };
   }
-  const sx = (point.x ?? 0) >= 0 ? "px" : "nx";
-  const sy = (point.y ?? 0) >= 0 ? "py" : "ny";
-  const sz = (point.z ?? 0) >= 0 ? "pz" : "nz";
-  return `${sx}_${sy}_${sz}`;
+  return { x: (axis.x ?? 0) / length, y: (axis.y ?? 0) / length, z: (axis.z ?? 0) / length };
 }
 
-function applyCenteredTaper(corners, tilt) {
-  const faceAxis = tilt.faceAxis;
-  const faceSign = Math.sign(tilt.faceSign ?? 1) || 1;
-  const sideAxis = tilt.hingeSideAxis;
-  const angle = tilt.angle ?? 0;
-  if (!AXES.includes(faceAxis) || !AXES.includes(sideAxis) || !Number.isFinite(angle)) {
-    return;
+function normalizeDelta(delta) {
+  if (Array.isArray(delta)) {
+    return { x: delta[0] ?? 0, y: delta[1] ?? 0, z: delta[2] ?? 0 };
   }
-
-  const faceIndex = axisIndex(faceAxis);
-  const sideIndex = axisIndex(sideAxis);
-  const faceCoordinate = faceSign > 0 ? maxCoordinate(corners, faceIndex) : minCoordinate(corners, faceIndex);
-  const sideCenter = (minCoordinate(corners, sideIndex) + maxCoordinate(corners, sideIndex)) / 2;
-  const oppositeCoordinate = faceSign > 0 ? minCoordinate(corners, faceIndex) : maxCoordinate(corners, faceIndex);
-  const slope = Math.tan(angle);
-
-  for (const corner of Object.values(corners)) {
-    if (Math.abs(corner[faceIndex] - faceCoordinate) > 1e-6) {
-      continue;
-    }
-    corner[faceIndex] += faceSign * slope * (corner[sideIndex] - sideCenter);
-    corner[faceIndex] = faceSign > 0
-      ? Math.max(corner[faceIndex], oppositeCoordinate)
-      : Math.min(corner[faceIndex], oppositeCoordinate);
-  }
-}
-
-function axisIndex(axis) {
-  return axis === "x" ? 0 : axis === "y" ? 1 : 2;
-}
-
-function minCoordinate(corners, index) {
-  return Math.min(...Object.values(corners).map((corner) => corner[index]));
-}
-
-function maxCoordinate(corners, index) {
-  return Math.max(...Object.values(corners).map((corner) => corner[index]));
+  return { x: delta?.x ?? 0, y: delta?.y ?? 0, z: delta?.z ?? 0 };
 }

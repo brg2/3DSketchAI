@@ -29,7 +29,6 @@ const TOOL_CONFIG = [
   { id: "select", label: "Select", icon: "cursor" },
   { id: "move", label: "Move", icon: "move" },
   { id: "rotate", label: "Rotate", icon: "rotate" },
-  { id: "scale", label: "Scale", icon: "scale" },
   { id: "pushPull", label: "Push/Pull", icon: "pushPull" },
 ];
 

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "replicad": "^0.23.0",
+    "replicad-opencascadejs": "^0.23.0",
     "three": "^0.180.0"
   },
   "devDependencies": {

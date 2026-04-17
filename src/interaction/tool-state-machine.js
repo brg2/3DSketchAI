@@ -1,4 +1,4 @@
-const DRAG_TOOLS = new Set(["move", "rotate", "scale", "pushPull"]);
+const DRAG_TOOLS = new Set(["move", "rotate", "pushPull"]);
 
 export class ToolStateMachine {
   constructor() {

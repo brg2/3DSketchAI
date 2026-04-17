@@ -36,78 +36,43 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
           deltaEuler: { x: 0, y: round3(dx * 0.01), z: 0 },
         };
 
-  const paramsByType = {
-    [OPERATION_TYPES.MOVE]: moveParams(selection, moveDelta),
-    [OPERATION_TYPES.ROTATE]: rotateParams,
-    [OPERATION_TYPES.SCALE]: {
-      scaleFactor: {
-        x: round3(1 + dy * -0.005),
-        y: round3(1 + dy * -0.005),
-        z: round3(1 + dy * -0.005),
-      },
-    },
-    [OPERATION_TYPES.PUSH_PULL]: {
+  let finalOperationType = operationType;
+  let finalParams = {};
+
+  if (tool === "move" && selection?.mode === "face") {
+    finalOperationType = OPERATION_TYPES.PUSH_PULL;
+    const dot = moveDelta.x * pushPullAxis.x + moveDelta.y * pushPullAxis.y + moveDelta.z * pushPullAxis.z;
+    finalParams = {
       axis: pushPullAxis,
-      distance: nextPushPullDistance,
+      distance: round3(dot),
       faceIndex: selection?.faceIndex ?? null,
       mode: shiftKey ? "extend" : "move",
-    },
-  };
+    };
+  } else {
+    const paramsByType = {
+      [OPERATION_TYPES.MOVE]: { delta: moveDelta },
+      [OPERATION_TYPES.ROTATE]: rotateParams,
+      [OPERATION_TYPES.PUSH_PULL]: {
+        axis: pushPullAxis,
+        distance: nextPushPullDistance,
+        faceIndex: selection?.faceIndex ?? null,
+        mode: shiftKey ? "extend" : "move",
+      },
+    };
+    finalParams = paramsByType[operationType] ?? {};
+  }
 
   const operation = {
-    type: operationType,
+    type: finalOperationType,
     targetId,
     selection,
-    params: paramsByType[operationType] ?? {},
+    params: finalParams,
   };
 
   return validateOperation(operation);
 }
 
-function moveParams(selection, delta) {
-  const params = { delta };
-  const subshapeMove = subshapeMoveParams(selection, delta);
-  if (subshapeMove) {
-    params.subshapeMove = subshapeMove;
-  }
-  return params;
-}
 
-function subshapeMoveParams(selection, delta) {
-  if (!selection || selection.mode === "object") {
-    return null;
-  }
-
-  if (selection.mode === "face") {
-    const identity = faceTiltIdentity(selection.faceNormalWorld ?? { x: 0, y: 0, z: 1 }, false);
-    return {
-      mode: "face",
-      faceIndex: selection.faceIndex ?? null,
-      faceNormalWorld: identity.faceNormalWorld,
-      faceAxis: identity.faceAxis,
-      faceSign: identity.faceSign,
-      delta: { ...delta },
-    };
-  }
-
-  if (selection.mode === "edge" && selection.edge) {
-    return {
-      mode: "edge",
-      edge: structuredClone(selection.edge),
-      delta: { ...delta },
-    };
-  }
-
-  if (selection.mode === "vertex" && selection.vertex) {
-    return {
-      mode: "vertex",
-      vertex: structuredClone(selection.vertex),
-      delta: { ...delta },
-    };
-  }
-
-  return null;
-}
 
 function faceRotateParams({ selection, faceNormalWorld, shiftKey, angle, faceTiltAngles }) {
   const makeTilt = (alternateAxis, tiltAngle) => ({
