@@ -206,3 +206,85 @@ When intent changes, development workflow must:
 Change discipline:
 - no large destructive rewrites to satisfy intent updates
 - preserve clarity, determinism, and architectural separation
+
+
+
+## 4.1 Internal Modeling Paradigm (Amendment)
+
+This system uses direct manipulation as its primary user interaction model.
+
+However, direct manipulation does NOT imply direct mutation of geometry.
+
+All user interactions MUST be interpreted as modifications to an internal feature-based representation.
+
+### Core Rule
+
+Geometry is never edited directly.
+
+All modeling operations must follow:
+
+    interaction → feature creation or modification → deterministic replay → geometry
+
+### Feature Representation
+
+Internally, the system maintains a feature graph representing the sequence of modeling operations.
+
+Features are:
+- structured operations (extrude, cut, push/pull, transform)
+- parameterized
+- replayable to produce exact geometry
+
+This feature graph is:
+
+- REQUIRED for all modeling operations
+- NOT exposed as a user-facing feature tree in V1
+- NOT directly editable by users
+
+### Relationship to Canonical Code
+
+The canonical executable TypeScript model code is a serialized form of the feature graph.
+
+Each committed operation must:
+
+- correspond to a feature
+- be reproducible via deterministic replay
+- avoid dependence on prior geometry mutation
+
+### Push/Pull Clarification
+
+Push/pull is not a direct geometry operation.
+
+It must be interpreted as:
+
+- modification of an existing feature when possible
+- creation of a new feature when no mapping exists
+
+Under no circumstances may push/pull directly mutate BREP geometry without being represented as a feature.
+
+### Prohibited Behavior
+
+The following are explicitly disallowed:
+
+- direct mutation of BREP geometry as authoritative state
+- accumulation of geometry operations without feature representation
+- storing intermediate geometry as the source of truth
+
+### Allowed Behavior
+
+- transient geometry for preview
+- geometry generation as a result of feature replay
+- use of OpenCascade strictly as a geometry execution engine
+
+### Architectural Clarification
+
+The system is not:
+
+    a geometry editor
+
+The system is:
+
+    a feature-driven modeling engine with direct manipulation input
+
+Direct manipulation is an input method.
+
+Features are the system of record.
