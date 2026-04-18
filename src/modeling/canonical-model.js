@@ -1,7 +1,7 @@
 import {
-  parseOperationsFromCanonicalModelCode,
   serializeCanonicalModelModule,
 } from "../operation/operation-serializer.js";
+import { FeatureStore } from "../feature/feature-store.js";
 
 const DEFAULT_STORAGE_KEY = "3dsketchai:canonical:model:ts";
 const DEFAULT_OPS_STORAGE_KEY = "3dsketchai:canonical:model:ops";
@@ -10,38 +10,59 @@ export class CanonicalModel {
   constructor({ storageKey = DEFAULT_STORAGE_KEY, opsStorageKey = DEFAULT_OPS_STORAGE_KEY } = {}) {
     this.storageKey = storageKey;
     this.opsStorageKey = opsStorageKey;
-    this._operations = [];
+    this._features = new FeatureStore();
   }
 
   appendCommittedOperation(operation) {
-    this._operations.push(structuredClone(operation));
+    this._features.appendOperation(operation);
+  }
+
+  appendFeature(feature) {
+    this._features.appendFeature(feature);
   }
 
   replaceCommittedOperations(operations) {
-    this._operations = operations.map((operation) => structuredClone(operation));
+    this._features.replaceOperations(operations);
+  }
+
+  replaceFeatures(features) {
+    this._features.replaceFeatures(features);
   }
 
   getOperations() {
-    return this._operations.map((operation) => structuredClone(operation));
+    return this._features.getOperations();
+  }
+
+  getFeatures() {
+    return this._features.getFeatures();
   }
 
   toTypeScriptModule() {
-    return serializeCanonicalModelModule(this._operations);
+    return serializeCanonicalModelModule(this.getOperations());
   }
 
-  fromTypeScriptModule(code) {
-    this._operations = parseOperationsFromCanonicalModelCode(code).map((operation) => structuredClone(operation));
-    return this.getOperations();
+  toFeatureGraphJSON() {
+    return JSON.stringify({ features: this.getFeatures() }, null, 2);
+  }
+
+  fromFeatureGraphJSON(json) {
+    const parsed = typeof json === "string" ? JSON.parse(json) : json;
+    const features = Array.isArray(parsed) ? parsed : parsed?.features;
+    if (!Array.isArray(features)) {
+      throw new Error("Feature graph JSON must contain a features array");
+    }
+    this._features.replaceFeatures(features);
+    return this.getFeatures();
   }
 
   persistToLocalStorage(storage = globalThis.localStorage ?? null) {
     if (!storage) {
-      return this.toTypeScriptModule();
+      return this.toFeatureGraphJSON();
     }
-    const code = this.toTypeScriptModule();
-    storage.setItem(this.storageKey, code);
-    storage.setItem(this.opsStorageKey, JSON.stringify(this._operations));
-    return code;
+    const graphJson = this.toFeatureGraphJSON();
+    storage.setItem(this.storageKey, graphJson);
+    storage.setItem(this.opsStorageKey, JSON.stringify(this.getFeatures()));
+    return graphJson;
   }
 
   loadFromLocalStorage(storage = globalThis.localStorage ?? null) {
@@ -51,7 +72,11 @@ export class CanonicalModel {
     const operationsJson = storage.getItem(this.opsStorageKey);
     if (operationsJson) {
       const parsed = JSON.parse(operationsJson);
-      this._operations = Array.isArray(parsed) ? parsed.map((operation) => structuredClone(operation)) : [];
+      if (Array.isArray(parsed) && parsed.every((entry) => entry?.target && Array.isArray(entry.dependsOn))) {
+        this._features.replaceFeatures(parsed);
+      } else {
+        this._features.replaceOperations(Array.isArray(parsed) ? parsed : []);
+      }
       return this.getOperations();
     }
 
@@ -59,11 +84,11 @@ export class CanonicalModel {
     if (!code) {
       return [];
     }
-    return this.fromTypeScriptModule(code);
+    return this.fromFeatureGraphJSON(code);
   }
 
   clear(storage = globalThis.localStorage ?? null) {
-    this._operations = [];
+    this._features.clear();
     if (!storage) {
       return;
     }

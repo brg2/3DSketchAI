@@ -98,8 +98,41 @@ function pickFaceNormalWorld(intersection) {
   };
 }
 
+export function selectorFromIntersection(intersection) {
+  const faceIndex = intersection?.faceIndex;
+  const provenance = Number.isInteger(faceIndex)
+    ? intersection.object?.geometry?.userData?.faceProvenance?.[faceIndex]
+    : null;
+  if (!provenance?.featureId || !provenance?.role || !intersection?.object || !intersection?.point) {
+    return null;
+  }
+
+  const point = intersection.object.worldToLocal(intersection.point.clone());
+  const normal = intersection.face?.normal?.clone?.().normalize?.() ?? null;
+  return {
+    featureId: provenance.featureId,
+    role: provenance.role,
+    hint: {
+      point: vecToRoundedObject(point),
+      normal: provenance.hint?.normal ?? (normal ? vecToRoundedObject(normal) : null),
+    },
+  };
+}
+
 function vecToObject(vector) {
   return { x: vector.x, y: vector.y, z: vector.z };
+}
+
+function vecToRoundedObject(vector) {
+  return {
+    x: round6(vector.x),
+    y: round6(vector.y),
+    z: round6(vector.z),
+  };
+}
+
+function round6(value) {
+  return Math.round(value * 1000000) / 1000000;
 }
 
 function cornerKeyFromLocalPoint(point) {
@@ -156,6 +189,7 @@ export class SelectionPipeline {
       objectId,
       faceIndex: hit.faceIndex ?? null,
       faceNormalWorld: pickFaceNormalWorld(hit),
+      selector: selectorFromIntersection(hit),
     };
   }
 
@@ -192,6 +226,7 @@ export class SelectionPipeline {
       objectIds: [...this.selectedObjectIds],
       faceIndex: hit.faceIndex ?? null,
       faceNormalWorld: pickFaceNormalWorld(hit),
+      selector: selectorFromIntersection(hit),
       edge: this.selectionMode === SELECTION_MODES.EDGE ? pickFaceEdge(hit) : null,
       vertex: this.selectionMode === SELECTION_MODES.VERTEX ? pickFaceVertex(hit) : null,
     };

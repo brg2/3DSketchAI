@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
-import { Viewport } from "../view/viewport.js";
+import { Viewport, ZOOM_EXTENTS_ANIMATION_MS } from "../view/viewport.js";
 import { Overlay } from "../view/overlay.js";
 import { SelectionPipeline } from "../interaction/selection-pipeline.js";
 import { ToolStateMachine } from "../interaction/tool-state-machine.js";
@@ -161,8 +161,8 @@ export class SketchApp {
       canonicalModel: new CanonicalModel(),
       modelExecutor: new ModelExecutor(),
       representationStore: this.representationStore,
-      onCanonicalCodeChanged: (code) => {
-        this.codeElement.textContent = code;
+      onCanonicalCodeChanged: (projection) => {
+        this._renderFeatureGraphProjection(projection);
       },
     });
 
@@ -200,7 +200,7 @@ export class SketchApp {
     if (loadedOperations.length === 0) {
       const defaultResult = await this.runtimeController.ensureDefaultModel();
       loadedOperations = defaultResult.operations;
-      this.modelHistory.reset(defaultResult.canonicalCode ?? this.runtimeController.getSnapshot().canonicalCode, {
+      this.modelHistory.reset(defaultResult.canonicalGraphJson ?? this.runtimeController.getSnapshot().canonicalGraphJson, {
         label: "Initial Cube",
       });
       await this._persistModelHistory();
@@ -487,7 +487,7 @@ export class SketchApp {
           this._setPanelPage("script");
           this._setGridVisible(false);
           const result = await this.runtimeController.ensureDefaultModel();
-          this.modelHistory.reset(result?.canonicalCode ?? this.runtimeController.getSnapshot().canonicalCode, {
+          this.modelHistory.reset(result?.canonicalGraphJson ?? this.runtimeController.getSnapshot().canonicalGraphJson, {
             label: "New",
           });
           await this._persistModelHistory();
@@ -507,9 +507,9 @@ export class SketchApp {
         }
 
         if (action === "zoomExtents") {
-          this.viewport.zoomToObjectsExtents(this.representationStore.getSelectableMeshes());
+          const didZoom = this.viewport.zoomToObjectsExtents(this.representationStore.getSelectableMeshes());
           this._renderOverlay();
-          this._scheduleSessionPersist();
+          this._scheduleSessionPersist(didZoom ? ZOOM_EXTENTS_ANIMATION_MS + 80 : undefined);
           return;
         }
 
@@ -582,7 +582,7 @@ export class SketchApp {
 
   _attachModelFileHandlers() {
     this.modelSaveButton?.addEventListener("click", () => {
-      this._saveModelScriptToFile();
+      this._saveFeatureGraphToFile();
     });
     this.modelOpenButton?.addEventListener("click", () => {
       this.modelOpenInput?.click();
@@ -591,7 +591,7 @@ export class SketchApp {
       const file = this.modelOpenInput.files?.[0] ?? null;
       this.modelOpenInput.value = "";
       if (file) {
-        void this._openModelScriptFile(file);
+        void this._openFeatureGraphFile(file);
       }
     });
   }
@@ -647,7 +647,7 @@ export class SketchApp {
     });
 
     const result = await this.runtimeController.commitOperation(operation);
-    await this._recordModelHistory(result?.canonicalCode, "Create Primitive");
+    await this._recordModelHistory(result?.canonicalGraphJson, "Create Primitive");
     this.selectionPipeline.selectedObjectIds = [objectId];
     this._applySelectionHighlights();
     this._scheduleSessionPersist();
@@ -665,7 +665,7 @@ export class SketchApp {
     });
 
     const result = await this.runtimeController.commitOperation(operation);
-    await this._recordModelHistory(result?.canonicalCode, "Group");
+    await this._recordModelHistory(result?.canonicalGraphJson, "Group");
     this._scheduleSessionPersist();
   }
 
@@ -681,7 +681,7 @@ export class SketchApp {
     });
 
     const result = await this.runtimeController.commitOperation(operation);
-    await this._recordModelHistory(result?.canonicalCode, "Component");
+    await this._recordModelHistory(result?.canonicalGraphJson, "Component");
     this._scheduleSessionPersist();
   }
 
@@ -695,20 +695,20 @@ export class SketchApp {
     this.exportToggleButton.setAttribute("aria-expanded", String(this.exportMenuOpen));
   }
 
-  _saveModelScriptToFile() {
-    this._downloadTextFile(this._modelFileName("ts"), this.codeElement?.textContent ?? "", "text/typescript;charset=utf-8");
+  _saveFeatureGraphToFile() {
+    this._downloadTextFile(this._modelFileName("3dsai.json"), this._currentFeatureGraphProjection(), "application/json;charset=utf-8");
   }
 
-  async _openModelScriptFile(file) {
+  async _openFeatureGraphFile(file) {
     if (!file || typeof file.text !== "function") {
       return;
     }
 
     try {
-      const scriptText = await file.text();
-      await this.runtimeController.reloadFromCanonicalCode(scriptText, { cleanSlate: true });
-      const canonicalCode = await this.runtimeController.persistCanonicalModel();
-      this.modelHistory.reset(canonicalCode, { label: "Open" });
+      const graphText = await file.text();
+      await this.runtimeController.reloadFromFeatureGraphJson(graphText, { cleanSlate: true });
+      const graphJson = await this.runtimeController.persistCanonicalModel();
+      this.modelHistory.reset(graphJson, { label: "Open" });
       await this._persistModelHistory();
       this.objectCounter = 1;
       this._syncObjectCounterFromOperations(this.runtimeController.canonicalModel.getOperations());
@@ -721,7 +721,7 @@ export class SketchApp {
       this._renderOverlay();
       await this._persistSessionState();
     } catch (error) {
-      console.warn("Failed to open model script", error);
+      console.warn("Failed to open feature graph", error);
     }
   }
 
@@ -1062,7 +1062,7 @@ export class SketchApp {
     this.tools.endDrag();
     this.viewport.controls.enabled = true;
     const result = await this.runtimeController.commitManipulation();
-    await this._recordModelHistory(result?.canonicalCode, "Manipulation");
+    await this._recordModelHistory(result?.canonicalGraphJson, "Manipulation");
     this._applySelectionHighlights();
     this._renderOverlay();
     this._scheduleSessionPersist();
@@ -1570,7 +1570,7 @@ export class SketchApp {
   }
 
   async _restoreModelHistory() {
-    const currentCode = this.runtimeController.getSnapshot().canonicalCode;
+    const currentCode = this.runtimeController.getSnapshot().canonicalGraphJson;
     try {
       const snapshot = await this.modelHistoryStore.loadHistory();
       if (snapshot) {
@@ -1591,7 +1591,7 @@ export class SketchApp {
   }
 
   async _recordModelHistory(canonicalCode, label) {
-    const code = typeof canonicalCode === "string" ? canonicalCode : this.runtimeController.getSnapshot().canonicalCode;
+    const code = typeof canonicalCode === "string" ? canonicalCode : this.runtimeController.getSnapshot().canonicalGraphJson;
     this.modelHistory.push(code, { label });
     await this._persistModelHistory();
   }
@@ -1629,11 +1629,11 @@ export class SketchApp {
       return;
     }
 
-    await this.runtimeController.reloadFromCanonicalCode(entry.script, { cleanSlate: true });
+    await this.runtimeController.reloadFromFeatureGraphJson(entry.script, { cleanSlate: true });
     this._syncObjectCounterFromOperations(this.runtimeController.canonicalModel.getOperations());
     this._dropInvalidSelections();
-    const canonicalCode = await this.runtimeController.persistCanonicalModel();
-    this.modelHistory.replaceCurrent(canonicalCode, { label: entry.label });
+    const graphJson = await this.runtimeController.persistCanonicalModel();
+    this.modelHistory.replaceCurrent(graphJson, { label: entry.label });
     await this._persistModelHistory();
     this._applySelectionHighlights();
     this._renderOverlay();
@@ -2024,7 +2024,7 @@ export class SketchApp {
 
     if (this.codeCopyButton) {
       this.codeCopyButton.classList.add("icon-btn");
-      this._setButtonIcon(this.codeCopyButton, "copy", "Copy Model Script");
+      this._setButtonIcon(this.codeCopyButton, "copy", "Copy Feature Graph");
       this.codeCopyButton.addEventListener("click", () => {
         void this._copyModelScriptToClipboard();
       });
@@ -2032,7 +2032,7 @@ export class SketchApp {
 
     if (this.codeCompressButton) {
       this.codeCompressButton.classList.add("icon-btn");
-      this._setButtonIcon(this.codeCompressButton, "compress", "Compress Model Script");
+      this._setButtonIcon(this.codeCompressButton, "compress", "Compact Feature Graph");
       this.codeCompressButton.addEventListener("click", () => {
         void this._compressModelScript();
       });
@@ -2491,16 +2491,16 @@ export class SketchApp {
   }
 
   async _copyModelScriptToClipboard() {
-    const scriptText = this.codeElement?.textContent ?? "";
-    if (scriptText.trim().length === 0) {
-      this._setCodeCopyButtonState("copy-empty", "No Script To Copy");
+    const graphText = this._currentFeatureGraphProjection();
+    if (graphText.trim().length === 0) {
+      this._setCodeCopyButtonState("copy-empty", "No Graph To Copy");
       return;
     }
 
     let copied = false;
     if (navigator?.clipboard?.writeText) {
       try {
-        await navigator.clipboard.writeText(scriptText);
+        await navigator.clipboard.writeText(graphText);
         copied = true;
       } catch {
         copied = false;
@@ -2508,7 +2508,7 @@ export class SketchApp {
     }
 
     if (!copied) {
-      copied = this._copyTextFallback(scriptText);
+      copied = this._copyTextFallback(graphText);
     }
 
     if (copied) {
@@ -2518,6 +2518,16 @@ export class SketchApp {
     }
   }
 
+  _renderFeatureGraphProjection(projection = this._currentFeatureGraphProjection()) {
+    if (this.codeElement) {
+      this.codeElement.textContent = projection;
+    }
+  }
+
+  _currentFeatureGraphProjection() {
+    return this.runtimeController.getSnapshot().canonicalGraphJson;
+  }
+
   async _compressModelScript() {
     if (!this.codeCompressButton) {
       return;
@@ -2525,14 +2535,14 @@ export class SketchApp {
 
     try {
       const result = await this.runtimeController.compressCanonicalModel();
-      await this._recordModelHistory(result?.canonicalCode, "Compress");
-      this._setCodeToolButtonState(this.codeCompressButton, "compressed", "Compressed");
+      await this._recordModelHistory(result?.canonicalGraphJson, "Compact");
+      this._setCodeToolButtonState(this.codeCompressButton, "compressed", "Compacted");
       this._applySelectionHighlights();
       this._renderOverlay();
       await this._persistSessionState();
     } catch (error) {
-      console.warn("Failed to compress model script", error);
-      this._setCodeToolButtonState(this.codeCompressButton, "copy-failed", "Compress Failed");
+      console.warn("Failed to compact feature graph", error);
+      this._setCodeToolButtonState(this.codeCompressButton, "copy-failed", "Compact Failed");
     }
   }
 
@@ -2585,7 +2595,7 @@ export class SketchApp {
         return;
       }
       button.classList.remove("copied", "compressed", "copy-failed", "copy-empty");
-      const defaultTitle = button === this.codeCompressButton ? "Compress Model Script" : "Copy Model Script";
+      const defaultTitle = button === this.codeCompressButton ? "Compact Feature Graph" : "Copy Feature Graph";
       button.title = defaultTitle;
       button.setAttribute("aria-label", defaultTitle);
       this.codeCopyResetTimer = null;

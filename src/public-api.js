@@ -38,8 +38,21 @@ export function createIntentOperationController({
     };
   }
 
-  function serializeToTypeScript(operation) {
-    return `applyOperation(model, ${JSON.stringify(operation, null, 2)})`;
+  function serializeToFeatureGraph(operation) {
+    return JSON.stringify({
+      features: [
+        {
+          id: "feature_1",
+          type: operation.type,
+          params: structuredClone(operation.params),
+          target: {
+            objectId: operation.targetId,
+            selection: null,
+          },
+          dependsOn: [],
+        },
+      ],
+    }, null, 2);
   }
 
   return {
@@ -50,7 +63,7 @@ export function createIntentOperationController({
     },
     async commit(params) {
       const operation = buildOperation(params ?? lastOperation?.params ?? {});
-      appendCanonicalOperation(serializeToTypeScript(operation));
+      appendCanonicalOperation(serializeToFeatureGraph(operation));
       return runExactModel(operation);
     },
   };

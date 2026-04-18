@@ -121,9 +121,9 @@ export function serializeCanonicalModelModule(operations) {
       }
       case "rotate": {
         const varName = getVarName(operation.targetId);
-        if (operation.selection?.mode === "face" && operation.params.faceTilt) {
+        if (operation.selection?.mode === "face" && faceTiltsFromParams(operation.params).length > 0) {
           const state = objectState.get(operation.targetId);
-          const faceTilts = Array.isArray(operation.params.faceTilts) ? operation.params.faceTilts : [operation.params.faceTilt];
+          const faceTilts = faceTiltsFromParams(operation.params);
           if (state?.primitive === "box") {
             state.faceTilts.push(...faceTilts.map((tilt) => structuredClone(tilt)));
             bodyLines.push(`  ${varName} = sai.makeTaperedBox(r, ${_boxConfigLiteral(state)});`);
@@ -557,7 +557,6 @@ function _parseDirectTaperedBox(code) {
           },
           params: {
             deltaEuler: { x: 0, y: 0, z: 0 },
-            faceTilt,
             faceTilts,
           },
         },
@@ -565,6 +564,12 @@ function _parseDirectTaperedBox(code) {
     }
   }
   return candidates;
+}
+
+function faceTiltsFromParams(params) {
+  return Array.isArray(params?.faceTilts) && params.faceTilts.length > 0
+    ? params.faceTilts
+    : [params?.faceTilt].filter(Boolean);
 }
 
 

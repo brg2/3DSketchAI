@@ -58,6 +58,20 @@ function assertNoBehaviorComments(code) {
   assert.doesNotMatch(code, /CANONICAL_OPS/);
 }
 
+function parseFeatureGraph(json) {
+  const parsed = JSON.parse(json);
+  assert.ok(Array.isArray(parsed.features), "Feature graph JSON must include features");
+  return parsed.features;
+}
+
+function createModelWithOperations(operations) {
+  const model = new CanonicalModel();
+  for (const operation of operations) {
+    model.appendCommittedOperation(operation);
+  }
+  return model;
+}
+
 test("canonical script serializes push_pull as direct callable geometry code without comment metadata", () => {
   const model = new CanonicalModel();
   model.appendCommittedOperation(
@@ -117,7 +131,7 @@ test("canonical script serializes tilted face push_pull as direct face extrusion
         faceSign: 1,
         hingeAxis: "x",
         hingeSideAxis: "z",
-        hingeSideSign: -1,
+        hingeSideSign: 0,
         angle: 0.4,
       },
     },
@@ -181,7 +195,7 @@ test("canonical script serializes shift push_pull as face extension helper call"
   assert.equal(parsed.at(-1).params.distance, 1.2);
 });
 
-test("runtime loads persisted script on clean slate and persists on commit", async () => {
+test("runtime loads persisted feature graph on clean slate and persists on commit", async () => {
   const scriptModel = new CanonicalModel();
   scriptModel.appendCommittedOperation(
     createPrimitiveOperation({
@@ -191,7 +205,7 @@ test("runtime loads persisted script on clean slate and persists on commit", asy
       size: { x: 1, y: 1, z: 1 },
     }),
   );
-  const persistedScript = scriptModel.toTypeScriptModule();
+  const persistedScript = scriptModel.toFeatureGraphJSON();
   const scriptStore = new InMemoryModelScriptStore(persistedScript);
 
   const executeCalls = [];
@@ -226,8 +240,8 @@ test("runtime loads persisted script on clean slate and persists on commit", asy
   runtime.initialize({ scene: null, seedSceneState: staleState });
 
   const loaded = await runtime.loadCanonicalModelFromStorage({ reload: true, cleanSlate: true });
-  assert.equal(loaded.length, 1, "Expected one operation loaded from persisted script");
-  assert.deepEqual(executeCalls[0].sceneState, {}, "Reload must execute script from a clean scene state");
+  assert.equal(loaded.length, 1, "Expected one operation loaded from persisted feature graph");
+  assert.deepEqual(executeCalls[0].sceneState, {}, "Reload must execute feature graph from a clean scene state");
 
   await runtime.commitOperation({
     type: OPERATION_TYPES.MOVE,
@@ -236,12 +250,35 @@ test("runtime loads persisted script on clean slate and persists on commit", asy
     params: { delta: { x: 1, y: 0, z: 0 } },
   });
 
-  assert.equal(scriptStore.saved.length, 1, "Each committed action should persist the canonical script");
-  assert.match(scriptStore.saved[0], /translate\(/, "Persisted script should contain the committed operation");
-  assertNoBehaviorComments(scriptStore.saved[0]);
+  assert.equal(scriptStore.saved.length, 1, "Each committed action should persist the canonical feature graph");
+  const savedFeatures = parseFeatureGraph(scriptStore.saved[0]);
+  assert.equal(savedFeatures.length, 1);
+  assert.equal(savedFeatures[0].type, OPERATION_TYPES.CREATE_PRIMITIVE);
+  assert.deepEqual(savedFeatures[0].params.position, { x: 1, y: 0.5, z: 0 });
 });
 
-test("runtime creates a default cube when no model script exists", async () => {
+test("runtime refuses persisted TypeScript as model input", async () => {
+  const scriptStore = new InMemoryModelScriptStore("export const main = () => null;");
+  const runtime = new RuntimeController({
+    canonicalModel: new CanonicalModel(),
+    modelExecutor: {
+      async executeCanonicalModel() {
+        throw new Error("TypeScript input should not reach execution");
+      },
+    },
+    representationStore: createRepresentationStore({}),
+    modelScriptStore: scriptStore,
+  });
+  runtime.initialize({ scene: null, seedSceneState: {} });
+
+  const loaded = await runtime.loadCanonicalModelFromStorage({ reload: true, cleanSlate: true });
+
+  assert.deepEqual(loaded, []);
+  assert.equal(scriptStore.script, null);
+  assert.deepEqual(parseFeatureGraph(runtime.getSnapshot().canonicalGraphJson), []);
+});
+
+test("runtime creates a default cube when no feature graph exists", async () => {
   const scriptStore = new InMemoryModelScriptStore();
   const stateReplayExecutor = new ModelExecutor({ adapter: { async execute() { throw new Error("exact kernel unavailable in test"); } } });
   const modelExecutor = {
@@ -262,8 +299,8 @@ test("runtime creates a default cube when no model script exists", async () => {
 
   const result = await runtime.ensureDefaultModel();
   assert.equal(result.operations.length, 1);
-  assert.match(result.canonicalCode, /let obj_1 = r\.makeBox\(\[-0\.5, 0\.1, -0\.5\], \[0\.5, 1\.1, 0\.5\]\);/);
-  assert.match(scriptStore.script, /return obj_1;/);
+  assert.equal(parseFeatureGraph(result.canonicalGraphJson)[0].type, OPERATION_TYPES.CREATE_PRIMITIVE);
+  assert.equal(parseFeatureGraph(scriptStore.script)[0].params.objectId, "obj_1");
   assert.equal(runtime.getSnapshot().representation.exactSceneState.obj_1.primitive, "box");
 });
 
@@ -277,7 +314,7 @@ test("runtime starts with explicit state replay test executor", async () => {
       size: { x: 1, y: 1, z: 1 },
     }),
   );
-  const scriptStore = new InMemoryModelScriptStore(scriptModel.toTypeScriptModule());
+  const scriptStore = new InMemoryModelScriptStore(scriptModel.toFeatureGraphJSON());
   const stateReplayExecutor = new ModelExecutor({
     adapter: {
       async execute() {
@@ -305,7 +342,7 @@ test("runtime starts with explicit state replay test executor", async () => {
   assert.equal(runtime.getSnapshot().representation.exactSceneState.obj_1.primitive, "box");
 });
 
-test("runtime compresses adjacent translates for the same object into one direct translate call", async () => {
+test("runtime folds adjacent whole-object moves into the primitive position", async () => {
   const scriptStore = new InMemoryModelScriptStore();
   const modelExecutor = {
     async executeCanonicalModel(input) {
@@ -345,13 +382,13 @@ test("runtime compresses adjacent translates for the same object into one direct
     params: { delta: { x: 0.805, y: 0, z: -4.693 } },
   });
 
-  const { canonicalCode, operationCount } = await runtime.compressCanonicalModel();
+  const { canonicalGraphJson, operationCount } = await runtime.compressCanonicalModel();
 
-  assert.equal(operationCount, 2);
-  assert.match(canonicalCode, /obj_1 = obj_1\.translate\(\[1\.539, 0, 0\.766\]\);/);
-  assert.equal(canonicalCode.match(/\.translate\(/g)?.length, 1);
-  assertNoBehaviorComments(canonicalCode);
-  assert.equal(scriptStore.saved.at(-1), canonicalCode, "Compressed script should persist as the new canonical script");
+  assert.equal(operationCount, 1);
+  const features = parseFeatureGraph(canonicalGraphJson);
+  assert.equal(features[0].type, OPERATION_TYPES.CREATE_PRIMITIVE);
+  assert.deepEqual(features[0].params.position, { x: 1.539, y: 0.6, z: 0.766 });
+  assert.equal(scriptStore.saved.at(-1), canonicalGraphJson, "Compacted graph should persist as the canonical feature graph");
 });
 
 test("runtime compresses adjacent scales for the same object into one direct scale call", async () => {
@@ -373,30 +410,37 @@ test("runtime compresses adjacent scales for the same object into one direct sca
   });
   runtime.initialize({ scene: null, seedSceneState: {} });
 
-  await runtime.reloadFromCanonicalCode(
-    [
-      "export const main = (r, sai) => {",
-      "  let obj_1 = r.makeBox([-0.5, 0.1, -0.5], [0.5, 1.1, 0.5]);",
-      "  obj_1 = obj_1.scale([1, 1.908, 1]);",
-      "  obj_1 = obj_1.scale([1, 1, 1.543]);",
-      "  obj_1 = obj_1.scale([1.594, 1, 1]);",
-      "  obj_1 = obj_1.scale([1, 1, 1.529]);",
-      "  obj_1 = obj_1.scale([1, 5.854, 1]);",
-      "  obj_1 = obj_1.scale([2.881, 1, 1]);",
-      "  obj_1 = obj_1.scale([1, -3.742, 1]);",
-      "  return obj_1;",
-      "}",
-    ].join("\n"),
-    { cleanSlate: true },
-  );
+  const model = createModelWithOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    ...[
+      { x: 1, y: 1.908, z: 1 },
+      { x: 1, y: 1, z: 1.543 },
+      { x: 1.594, y: 1, z: 1 },
+      { x: 1, y: 1, z: 1.529 },
+      { x: 1, y: 5.854, z: 1 },
+      { x: 2.881, y: 1, z: 1 },
+      { x: 1, y: -3.742, z: 1 },
+    ].map((scaleFactor) => ({
+      type: OPERATION_TYPES.SCALE,
+      targetId: "obj_1",
+      selection: null,
+      params: { scaleFactor },
+    })),
+  ]);
+  await runtime.reloadFromFeatureGraphJson(model.toFeatureGraphJSON(), { cleanSlate: true });
 
-  const { canonicalCode, operationCount } = await runtime.compressCanonicalModel();
+  const { canonicalGraphJson, operationCount } = await runtime.compressCanonicalModel();
 
   assert.equal(operationCount, 2);
-  assert.match(canonicalCode, /obj_1 = obj_1\.scale\(\[4\.592, 1\.117, 2\.359\]\);/);
-  assert.equal(canonicalCode.match(/\.scale\(/g)?.length, 1);
-  assertNoBehaviorComments(canonicalCode);
-  assert.equal(scriptStore.saved.at(-1), canonicalCode, "Compressed script should persist as the new canonical script");
+  const features = parseFeatureGraph(canonicalGraphJson);
+  assert.equal(features[1].type, OPERATION_TYPES.SCALE);
+  assert.deepEqual(features[1].params.scaleFactor, { x: 4.592, y: 1.117, z: 2.359 });
+  assert.equal(scriptStore.saved.at(-1), canonicalGraphJson, "Compacted graph should persist as the canonical feature graph");
 });
 
 test("runtime compresses interleaved scale and translate runs for the same object", async () => {
@@ -418,41 +462,41 @@ test("runtime compresses interleaved scale and translate runs for the same objec
   });
   runtime.initialize({ scene: null, seedSceneState: {} });
 
-  await runtime.reloadFromCanonicalCode(
-    [
-      "export const main = (r, sai) => {",
-      "  let obj_1 = r.makeBox([-0.5, 0.1, -0.5], [0.5, 1.1, 0.5]);",
-      "  obj_1 = obj_1.scale([1, 1, 2.49]);",
-      "  obj_1 = obj_1.translate([0, 0, -0.745]);",
-      "  obj_1 = obj_1.scale([1, 1, 1.401]);",
-      "  obj_1 = obj_1.translate([0, 0, -0.499]);",
-      "  obj_1 = obj_1.scale([1, 1, 1.195]);",
-      "  obj_1 = obj_1.translate([0, 0, -0.34]);",
-      "  obj_1 = obj_1.scale([2.961, 1, 1]);",
-      "  obj_1 = obj_1.translate([0.981, 0, 0]);",
-      "  obj_1 = obj_1.scale([1.206, 1, 1]);",
-      "  obj_1 = obj_1.translate([0.305, 0, 0]);",
-      "  obj_1 = obj_1.scale([1.058, 1, 1]);",
-      "  obj_1 = obj_1.translate([0.103, 0, 0]);",
-      "  obj_1 = obj_1.scale([1, 1.398, 1]);",
-      "  obj_1 = obj_1.translate([0, 0.199, 0]);",
-      "  obj_1 = obj_1.scale([1, 1.386, 1]);",
-      "  obj_1 = obj_1.translate([0, 0.27, 0]);",
-      "  return obj_1;",
-      "}",
-    ].join("\n"),
-    { cleanSlate: true },
-  );
+  const model = createModelWithOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    { type: OPERATION_TYPES.SCALE, targetId: "obj_1", selection: null, params: { scaleFactor: { x: 1, y: 1, z: 2.49 } } },
+    { type: OPERATION_TYPES.MOVE, targetId: "obj_1", selection: null, params: { delta: { x: 0, y: 0, z: -0.745 } } },
+    { type: OPERATION_TYPES.SCALE, targetId: "obj_1", selection: null, params: { scaleFactor: { x: 1, y: 1, z: 1.401 } } },
+    { type: OPERATION_TYPES.MOVE, targetId: "obj_1", selection: null, params: { delta: { x: 0, y: 0, z: -0.499 } } },
+    { type: OPERATION_TYPES.SCALE, targetId: "obj_1", selection: null, params: { scaleFactor: { x: 1, y: 1, z: 1.195 } } },
+    { type: OPERATION_TYPES.MOVE, targetId: "obj_1", selection: null, params: { delta: { x: 0, y: 0, z: -0.34 } } },
+    { type: OPERATION_TYPES.SCALE, targetId: "obj_1", selection: null, params: { scaleFactor: { x: 2.961, y: 1, z: 1 } } },
+    { type: OPERATION_TYPES.MOVE, targetId: "obj_1", selection: null, params: { delta: { x: 0.981, y: 0, z: 0 } } },
+    { type: OPERATION_TYPES.SCALE, targetId: "obj_1", selection: null, params: { scaleFactor: { x: 1.206, y: 1, z: 1 } } },
+    { type: OPERATION_TYPES.MOVE, targetId: "obj_1", selection: null, params: { delta: { x: 0.305, y: 0, z: 0 } } },
+    { type: OPERATION_TYPES.SCALE, targetId: "obj_1", selection: null, params: { scaleFactor: { x: 1.058, y: 1, z: 1 } } },
+    { type: OPERATION_TYPES.MOVE, targetId: "obj_1", selection: null, params: { delta: { x: 0.103, y: 0, z: 0 } } },
+    { type: OPERATION_TYPES.SCALE, targetId: "obj_1", selection: null, params: { scaleFactor: { x: 1, y: 1.398, z: 1 } } },
+    { type: OPERATION_TYPES.MOVE, targetId: "obj_1", selection: null, params: { delta: { x: 0, y: 0.199, z: 0 } } },
+    { type: OPERATION_TYPES.SCALE, targetId: "obj_1", selection: null, params: { scaleFactor: { x: 1, y: 1.386, z: 1 } } },
+    { type: OPERATION_TYPES.MOVE, targetId: "obj_1", selection: null, params: { delta: { x: 0, y: 0.27, z: 0 } } },
+  ]);
+  await runtime.reloadFromFeatureGraphJson(model.toFeatureGraphJSON(), { cleanSlate: true });
 
-  const { canonicalCode, operationCount } = await runtime.compressCanonicalModel();
+  const { canonicalGraphJson, operationCount } = await runtime.compressCanonicalModel();
 
   assert.equal(operationCount, 3);
-  assert.match(canonicalCode, /obj_1 = obj_1\.scale\(\[3\.778, 1\.938, 4\.168\]\);/);
-  assert.match(canonicalCode, /obj_1 = obj_1\.translate\(\[1\.389, 0\.469, -1\.584\]\);/);
-  assert.equal(canonicalCode.match(/\.scale\(/g)?.length, 1);
-  assert.equal(canonicalCode.match(/\.translate\(/g)?.length, 1);
-  assertNoBehaviorComments(canonicalCode);
-  assert.equal(scriptStore.saved.at(-1), canonicalCode, "Compressed script should persist as the new canonical script");
+  const features = parseFeatureGraph(canonicalGraphJson);
+  assert.equal(features[1].type, OPERATION_TYPES.SCALE);
+  assert.deepEqual(features[1].params.scaleFactor, { x: 3.778, y: 1.938, z: 4.168 });
+  assert.equal(features[2].type, OPERATION_TYPES.MOVE);
+  assert.deepEqual(features[2].params.delta, { x: 1.389, y: 0.469, z: -1.584 });
+  assert.equal(scriptStore.saved.at(-1), canonicalGraphJson, "Compacted graph should persist as the canonical feature graph");
 });
 
 test("runtime can compress again after appending push-pull to an already compressed model", async () => {
@@ -474,19 +518,19 @@ test("runtime can compress again after appending push-pull to an already compres
   });
   runtime.initialize({ scene: null, seedSceneState: {} });
 
-  await runtime.reloadFromCanonicalCode(
-    [
-      "export const main = (r, sai) => {",
-      "  let obj_1 = r.makeBox([-0.5, 0.1, -0.5], [0.5, 1.1, 0.5]);",
-      "  obj_1 = obj_1.scale([1, 1, 2.49]);",
-      "  obj_1 = obj_1.translate([0, 0, -0.745]);",
-      "  obj_1 = obj_1.scale([1, 1, 1.401]);",
-      "  obj_1 = obj_1.translate([0, 0, -0.499]);",
-      "  return obj_1;",
-      "}",
-    ].join("\n"),
-    { cleanSlate: true },
-  );
+  const model = createModelWithOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    { type: OPERATION_TYPES.SCALE, targetId: "obj_1", selection: null, params: { scaleFactor: { x: 1, y: 1, z: 2.49 } } },
+    { type: OPERATION_TYPES.MOVE, targetId: "obj_1", selection: null, params: { delta: { x: 0, y: 0, z: -0.745 } } },
+    { type: OPERATION_TYPES.SCALE, targetId: "obj_1", selection: null, params: { scaleFactor: { x: 1, y: 1, z: 1.401 } } },
+    { type: OPERATION_TYPES.MOVE, targetId: "obj_1", selection: null, params: { delta: { x: 0, y: 0, z: -0.499 } } },
+  ]);
+  await runtime.reloadFromFeatureGraphJson(model.toFeatureGraphJSON(), { cleanSlate: true });
   await runtime.compressCanonicalModel();
   await runtime.commitOperation({
     type: OPERATION_TYPES.PUSH_PULL,
@@ -498,16 +542,19 @@ test("runtime can compress again after appending push-pull to an already compres
     },
   });
 
-  const { canonicalCode, operationCount } = await runtime.compressCanonicalModel();
+  const { canonicalGraphJson, operationCount } = await runtime.compressCanonicalModel();
 
   assert.equal(operationCount, 4);
-  assert.match(canonicalCode, /let obj_1 = sai\.makeBox\(r,/);
-  assert.match(canonicalCode, /sai\.pushPullFace\(r, obj_1,/);
-  assert.match(canonicalCode, /"distance":1/);
-  assert.match(canonicalCode, /return obj_1\.toShape\(\);/);
-  assert.equal(canonicalCode.match(/\.scale\(/g)?.length, 1);
-  assert.equal(canonicalCode.match(/\.translate\(/g)?.length ?? 0, 0);
-  assertNoBehaviorComments(canonicalCode);
+  const features = parseFeatureGraph(canonicalGraphJson);
+  assert.deepEqual(features.map((feature) => feature.type), [
+    OPERATION_TYPES.CREATE_PRIMITIVE,
+    OPERATION_TYPES.SCALE,
+    OPERATION_TYPES.MOVE,
+    OPERATION_TYPES.PUSH_PULL,
+  ]);
+  assert.deepEqual(features[1].params.scaleFactor, { x: 1, y: 1, z: 3.488 });
+  assert.deepEqual(features[2].params.delta, { x: 0, y: 0, z: -1.244 });
+  assert.equal(features[3].params.distance, 1);
 });
 
 test("face rotate maps to a face tilt and serializes without object rotation", () => {
@@ -526,12 +573,15 @@ test("face rotate maps to a face tilt and serializes without object rotation", (
 
   assert.equal(operation.type, OPERATION_TYPES.ROTATE);
   assert.deepEqual(operation.params.deltaEuler, { x: 0, y: 0, z: 0 });
-  assert.equal(operation.params.faceTilt.faceIndex, 2);
-  assert.equal(operation.params.faceTilt.faceAxis, "x");
-  assert.equal(operation.params.faceTilt.faceSign, 1);
-  assert.equal(operation.params.faceTilt.hingeAxis, "z");
-  assert.equal(operation.params.faceTilt.hingeSideAxis, "y");
-  assert.equal(operation.params.faceTilt.angle, 0.25);
+  assert.equal(operation.params.faceTilt, undefined);
+  assert.equal(operation.params.faceTilts.length, 1);
+  assert.equal(operation.params.faceTilts[0].faceIndex, undefined);
+  assert.equal(operation.params.faceTilts[0].faceAxis, "x");
+  assert.equal(operation.params.faceTilts[0].faceSign, 1);
+  assert.equal(operation.params.faceTilts[0].hingeAxis, "z");
+  assert.equal(operation.params.faceTilts[0].hingeSideAxis, "y");
+  assert.equal(operation.params.faceTilts[0].hingeSideSign, 0);
+  assert.equal(operation.params.faceTilts[0].angle, 0.25);
 
   const model = new CanonicalModel();
   model.appendCommittedOperation(
@@ -552,7 +602,8 @@ test("face rotate maps to a face tilt and serializes without object rotation", (
   const parsed = parseOperationsFromCanonicalModelCode(code);
   assert.equal(parsed.at(-1).type, OPERATION_TYPES.ROTATE);
   assert.equal(parsed.at(-1).selection.mode, "face");
-  assert.equal(parsed.at(-1).params.faceTilt.angle, 0.25);
+  assert.equal(parsed.at(-1).params.faceTilt, undefined);
+  assert.equal(parsed.at(-1).params.faceTilts[0].angle, 0.25);
 });
 
 test("move in face, edge, and vertex modes serializes as box subshape translation", () => {
@@ -711,3 +762,50 @@ test("face rotate gesture can preserve normal-axis tilt while shifting to altern
   assert.equal(operation.params.faceTilts[1].hingeSideAxis, "x");
   assert.equal(operation.params.faceTilts[1].angle, 0.4);
 });
+
+test("face rotate gesture derives tilt basis from the current selected face normal", () => {
+  const normal = normalize({ x: 0, y: 1, z: 1 });
+  const operation = mapToolGestureToOperation({
+    tool: "rotate",
+    targetId: "obj_1",
+    selection: {
+      mode: "face",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      selector: {
+        featureId: "feature_2",
+        role: "face.py",
+        hint: {
+          point: { x: 0, y: 1, z: 0.4 },
+          normal,
+        },
+      },
+    },
+    gesture: {
+      dx: 40,
+      dy: 0,
+      shiftKey: true,
+      faceTiltAngles: { normal: 0.2, alternate: 0.4 },
+    },
+  });
+
+  const [normalTilt, alternateTilt] = operation.params.faceTilts;
+  assert.deepEqual(normalTilt.faceNormal, { x: 0, y: 0.707, z: 0.707 });
+  assert.ok(Math.abs(dot(normalTilt.faceNormal, normalTilt.hingeSideVector)) < 1e-6);
+  assert.ok(Math.abs(dot(alternateTilt.faceNormal, alternateTilt.hingeSideVector)) < 1e-6);
+  assert.notDeepEqual(normalTilt.hingeSideVector, { x: 0, y: 0, z: 1 });
+  assert.deepEqual(alternateTilt.hingeSideVector, { x: 1, y: 0, z: 0 });
+});
+
+function normalize(vector) {
+  const length = Math.hypot(vector.x, vector.y, vector.z);
+  return {
+    x: Math.round((vector.x / length) * 1000) / 1000,
+    y: Math.round((vector.y / length) * 1000) / 1000,
+    z: Math.round((vector.z / length) * 1000) / 1000,
+  };
+}
+
+function dot(a, b) {
+  return (a.x ?? 0) * (b.x ?? 0) + (a.y ?? 0) * (b.y ?? 0) + (a.z ?? 0) * (b.z ?? 0);
+}

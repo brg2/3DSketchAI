@@ -1,5 +1,6 @@
 import { OPERATION_TYPES, operationForTool } from "./operation-types.js";
 import { validateOperation } from "./operation-validator.js";
+import { selectorFaceIdentity } from "../feature/feature-selectors.js";
 
 function round3(value) {
   return Math.round(value * 1000) / 1000;
@@ -8,7 +9,8 @@ function round3(value) {
 export function mapToolGestureToOperation({ tool, targetId, selection, gesture }) {
   const operationType = operationForTool(tool);
   const { dx = 0, dy = 0, shiftKey = false, worldDelta = null, pushPullDistance = null, faceTiltAngles = null } = gesture ?? {};
-  const pushPullAxis = normalizeAxis(selection?.faceNormalWorld ?? { x: 0, y: 0, z: 1 });
+  const faceNormal = selection?.selector?.hint?.normal ?? selection?.faceNormalWorld ?? { x: 0, y: 0, z: 1 };
+  const pushPullAxis = normalizeAxis(faceNormal);
   const nextPushPullDistance =
     typeof pushPullDistance === "number" ? round3(pushPullDistance) : round3(dy * -0.02);
   const moveDelta = worldDelta
@@ -27,7 +29,7 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
     selection?.mode === "face"
       ? faceRotateParams({
           selection,
-          faceNormalWorld: selection.faceNormalWorld ?? { x: 0, y: 0, z: 1 },
+          faceNormal,
           shiftKey,
           angle: round3(dx * 0.01),
           faceTiltAngles,
@@ -53,7 +55,6 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
       [OPERATION_TYPES.PUSH_PULL]: {
         axis: pushPullAxis,
         distance: nextPushPullDistance,
-        faceIndex: selection?.faceIndex ?? null,
         mode: shiftKey ? "extend" : "move",
       },
     }[operationType] ?? {},
@@ -77,11 +78,9 @@ function subshapeMoveParams(selection, delta) {
   }
 
   if (selection.mode === "face") {
-    const identity = faceTiltIdentity(selection.faceNormalWorld ?? { x: 0, y: 0, z: 1 }, false);
+    const identity = faceTiltIdentityFromSelection(selection, false);
     return {
       mode: "face",
-      faceIndex: selection.faceIndex ?? null,
-      faceNormalWorld: identity.faceNormalWorld,
       faceAxis: identity.faceAxis,
       faceSign: identity.faceSign,
       delta: { ...delta },
@@ -108,10 +107,9 @@ function subshapeMoveParams(selection, delta) {
 }
 
 
-function faceRotateParams({ selection, faceNormalWorld, shiftKey, angle, faceTiltAngles }) {
+function faceRotateParams({ selection, faceNormal, shiftKey, angle, faceTiltAngles }) {
   const makeTilt = (alternateAxis, tiltAngle) => ({
-    faceIndex: selection.faceIndex ?? null,
-    ...faceTiltIdentity(faceNormalWorld, alternateAxis),
+    ...faceTiltIdentityFromSelection(selection, alternateAxis, faceNormal),
     angle: round3(tiltAngle),
   });
 
@@ -122,15 +120,37 @@ function faceRotateParams({ selection, faceNormalWorld, shiftKey, angle, faceTil
     ].filter((tilt) => Math.abs(tilt.angle) > 1e-6);
     return {
       deltaEuler: { x: 0, y: 0, z: 0 },
-      faceTilt: faceTilts.at(-1) ?? makeTilt(Boolean(shiftKey), 0),
-      faceTilts,
+      faceTilts: faceTilts.length > 0 ? faceTilts : [makeTilt(Boolean(shiftKey), 0)],
     };
   }
 
   return {
     deltaEuler: { x: 0, y: 0, z: 0 },
-    faceTilt: makeTilt(Boolean(shiftKey), angle),
+    faceTilts: [makeTilt(Boolean(shiftKey), angle)],
   };
+}
+
+function faceTiltIdentityFromSelection(selection, alternateAxis = false, fallbackNormal = null) {
+  const selectorIdentity = selectorFaceIdentity(selection?.selector);
+  const normal = normalizeAxis(selection?.selector?.hint?.normal ?? fallbackNormal ?? selection?.faceNormalWorld ?? { x: 0, y: 0, z: 1 });
+  if (selectorIdentity) {
+    const hinge = hingeForFaceAxis(selectorIdentity.axis, alternateAxis);
+    const basis = faceTiltBasis({
+      normal,
+      faceAxis: selectorIdentity.axis,
+      alternateAxis,
+    });
+    return compactFaceTiltIdentity({
+      faceAxis: selectorIdentity.axis,
+      faceSign: selectorIdentity.sign,
+      hingeAxis: hinge.axis,
+      hingeSideAxis: hinge.sideAxis,
+      hingeSideSign: 0,
+      normal,
+      basis,
+    });
+  }
+  return faceTiltIdentity(normal, alternateAxis);
 }
 
 function faceTiltIdentity(faceNormalWorld, alternateAxis = false) {
@@ -143,14 +163,44 @@ function faceTiltIdentity(faceNormalWorld, alternateAxis = false) {
   entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
   const [faceAxis, component] = entries[0];
   const hinge = hingeForFaceAxis(faceAxis, alternateAxis);
-  return {
-    faceNormalWorld: faceNormal,
+  const basis = faceTiltBasis({ normal: faceNormal, faceAxis, alternateAxis });
+  return compactFaceTiltIdentity({
     faceAxis,
     faceSign: Math.sign(component) || 1,
     hingeAxis: hinge.axis,
     hingeSideAxis: hinge.sideAxis,
-    hingeSideSign: -1,
+    hingeSideSign: 0,
+    normal: faceNormal,
+    basis,
+  });
+}
+
+function compactFaceTiltIdentity({ faceAxis, faceSign, hingeAxis, hingeSideAxis, hingeSideSign, normal, basis }) {
+  const identity = {
+    faceAxis,
+    faceSign,
+    hingeAxis,
+    hingeSideAxis,
+    hingeSideSign,
   };
+  if (isAxisAligned(normal, faceAxis, faceSign)) {
+    return identity;
+  }
+  return {
+    ...identity,
+    faceNormal: normal,
+    hingeAxisVector: basis.hingeAxisVector,
+    hingeSideVector: basis.hingeSideVector,
+  };
+}
+
+function isAxisAligned(vector, axis, sign = 1) {
+  return (
+    Math.abs((vector?.[axis] ?? 0) - (Math.sign(sign) || 1)) <= 1e-6 &&
+    ["x", "y", "z"].every((component) => (
+      component === axis || Math.abs(vector?.[component] ?? 0) <= 1e-6
+    ))
+  );
 }
 
 function hingeForFaceAxis(faceAxis, alternateAxis) {
@@ -161,6 +211,62 @@ function hingeForFaceAxis(faceAxis, alternateAxis) {
     return alternateAxis ? { axis: "z", sideAxis: "x" } : { axis: "x", sideAxis: "z" };
   }
   return alternateAxis ? { axis: "y", sideAxis: "x" } : { axis: "x", sideAxis: "y" };
+}
+
+function faceTiltBasis({ normal, faceAxis, alternateAxis }) {
+  const hinge = hingeForFaceAxis(faceAxis, alternateAxis);
+  let side = projectOntoPlane(unitAxis(hinge.sideAxis), normal);
+  if (vectorLength(side) < 1e-8) {
+    side = fallbackPerpendicular(normal);
+  }
+  side = normalizeAxis(side);
+  let hingeVector = projectOntoPlane(unitAxis(hinge.axis), normal);
+  if (vectorLength(hingeVector) < 1e-8) {
+    hingeVector = cross(normal, side);
+  }
+  hingeVector = normalizeAxis(hingeVector);
+  return {
+    hingeAxisVector: hingeVector,
+    hingeSideVector: side,
+  };
+}
+
+function unitAxis(axis) {
+  return {
+    x: axis === "x" ? 1 : 0,
+    y: axis === "y" ? 1 : 0,
+    z: axis === "z" ? 1 : 0,
+  };
+}
+
+function projectOntoPlane(vector, normal) {
+  const projection = dot(vector, normal);
+  return {
+    x: vector.x - normal.x * projection,
+    y: vector.y - normal.y * projection,
+    z: vector.z - normal.z * projection,
+  };
+}
+
+function fallbackPerpendicular(normal) {
+  const seed = Math.abs(normal.y) < 0.9 ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 };
+  return projectOntoPlane(seed, normal);
+}
+
+function cross(a, b) {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function dot(a, b) {
+  return (a.x ?? 0) * (b.x ?? 0) + (a.y ?? 0) * (b.y ?? 0) + (a.z ?? 0) * (b.z ?? 0);
+}
+
+function vectorLength(vector) {
+  return Math.hypot(vector.x ?? 0, vector.y ?? 0, vector.z ?? 0);
 }
 
 function normalizeAxis(axis) {

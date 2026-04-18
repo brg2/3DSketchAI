@@ -20,9 +20,7 @@ export function makeBox(r, min, max) {
 
 export function makeTaperedBox(r, { min, max, faceTilts = [], faceExtrudes = [], subshapeMoves = [], faceExtensions = [] }) {
   const box = makeBox(r, min, max);
-  for (const tilt of faceTilts) {
-    box.applyCenteredTaper(tilt);
-  }
+  box.applyCenteredTapers(faceTilts);
   for (const extrude of faceExtrudes) {
     box.pushPullFace(extrude);
   }
@@ -82,7 +80,7 @@ export function translateObject(_r, shape, delta) {
   if (!shape || typeof shape.translate !== "function") {
     throw new Error("translateObject requires a shape");
   }
-  return shape.translate(normalizeDelta(delta));
+  return shape.translate(deltaArray(delta));
 }
 
 export function pushPull(shape, faceSelector, distance) {
@@ -224,30 +222,95 @@ class EditableBox {
   }
 
   applyCenteredTaper(tilt) {
-    const faceAxis = tilt?.faceAxis;
-    const faceSign = Math.sign(tilt?.faceSign ?? 1) || 1;
-    const sideAxis = tilt?.hingeSideAxis;
-    const angle = tilt?.angle ?? 0;
-    if (!AXES.includes(faceAxis) || !AXES.includes(sideAxis) || !Number.isFinite(angle)) {
+    return this.applyCenteredTapers([tilt]);
+  }
+
+  applyCenteredTapers(tilts) {
+    const validTilts = (Array.isArray(tilts) ? tilts : [])
+      .filter((tilt) => (
+        (AXES.includes(tilt?.faceAxis) || normalizeVectorOrNull(tilt?.faceNormal)) &&
+        (AXES.includes(tilt?.hingeSideAxis) || normalizeVectorOrNull(tilt?.hingeSideVector)) &&
+        Number.isFinite(tilt?.angle) &&
+        Math.abs(tilt.angle) >= 1e-8
+      ));
+    if (validTilts.length === 0) {
       return this;
     }
     this.brepCompatible = false;
 
-    const faceIndex = axisIndex(faceAxis);
-    const sideIndex = axisIndex(sideAxis);
-    const faceCoordinate = faceSign > 0 ? maxCoordinate(this.corners, faceIndex) : minCoordinate(this.corners, faceIndex);
-    const sideCenter = (minCoordinate(this.corners, sideIndex) + maxCoordinate(this.corners, sideIndex)) / 2;
-    const oppositeCoordinate = faceSign > 0 ? minCoordinate(this.corners, faceIndex) : maxCoordinate(this.corners, faceIndex);
-    const slope = Math.tan(angle);
-
-    for (const corner of Object.values(this.corners)) {
-      if (Math.abs(corner[faceIndex] - faceCoordinate) > 1e-6) {
-        continue;
+    if (validTilts.some((tilt) => tilt.faceNormal || tilt.hingeSideVector)) {
+      for (const tilt of validTilts) {
+        this.applyVectorCenteredTaper(tilt);
       }
-      corner[faceIndex] += faceSign * slope * (corner[sideIndex] - sideCenter);
-      corner[faceIndex] = faceSign > 0
-        ? Math.max(corner[faceIndex], oppositeCoordinate)
-        : Math.min(corner[faceIndex], oppositeCoordinate);
+      return this;
+    }
+
+    const sourceCorners = Object.fromEntries(
+      Object.entries(this.corners).map(([key, point]) => [key, [...point]]),
+    );
+    const deltas = Object.fromEntries(
+      Object.keys(this.corners).map((key) => [key, [0, 0, 0]]),
+    );
+
+    for (const tilt of validTilts) {
+      const faceAxis = tilt.faceAxis;
+      const faceSign = Math.sign(tilt.faceSign ?? 1) || 1;
+      const sideAxis = tilt.hingeSideAxis;
+      const faceIndex = axisIndex(faceAxis);
+      const sideIndex = axisIndex(sideAxis);
+      const faceCoordinate = faceSign > 0
+        ? maxCoordinate(Object.values(sourceCorners), faceIndex)
+        : minCoordinate(Object.values(sourceCorners), faceIndex);
+      const sideCenter = (
+        minCoordinate(Object.values(sourceCorners), sideIndex) +
+        maxCoordinate(Object.values(sourceCorners), sideIndex)
+      ) / 2;
+      const slope = Math.tan(tilt.angle);
+
+      for (const [key, source] of Object.entries(sourceCorners)) {
+        if (Math.abs(source[faceIndex] - faceCoordinate) > 1e-6) {
+          continue;
+        }
+        deltas[key][faceIndex] += faceSign * slope * (source[sideIndex] - sideCenter);
+      }
+    }
+
+    for (const [key, delta] of Object.entries(deltas)) {
+      const corner = this.corners[key];
+      for (let index = 0; index < 3; index += 1) {
+        corner[index] = sourceCorners[key][index] + delta[index];
+      }
+    }
+    this.refreshBoundsFromCorners();
+    return this;
+  }
+
+  applyVectorCenteredTaper(tilt) {
+    const normal = normalizeVector(tilt.faceNormal ?? axisFromFaceIdentity(tilt));
+    const side = tiltSideVector(tilt, normal);
+    const sourceCorners = Object.fromEntries(
+      Object.entries(this.corners).map(([key, point]) => [key, [...point]]),
+    );
+    const sourcePoints = Object.values(sourceCorners);
+    const faceProjection = maxProjection(sourcePoints, normal);
+    const tolerance = Math.max(boxDiagonal(sourcePoints) * 1e-6, 1e-6);
+    const selectedKeys = Object.entries(sourceCorners)
+      .filter(([, point]) => Math.abs(dotArray(point, normal) - faceProjection) <= tolerance)
+      .map(([key]) => key);
+    if (selectedKeys.length === 0) {
+      return this;
+    }
+
+    const sideValues = selectedKeys.map((key) => dotArray(sourceCorners[key], side));
+    const sideCenter = (Math.min(...sideValues) + Math.max(...sideValues)) / 2;
+    const slope = Math.tan(tilt.angle);
+    for (const key of selectedKeys) {
+      const corner = this.corners[key];
+      const source = sourceCorners[key];
+      const displacement = slope * (dotArray(source, side) - sideCenter);
+      corner[0] = source[0] + normal.x * displacement;
+      corner[1] = source[1] + normal.y * displacement;
+      corner[2] = source[2] + normal.z * displacement;
     }
     this.refreshBoundsFromCorners();
     return this;
@@ -305,7 +368,7 @@ class EditableBox {
         if (typeof shape.translate !== "function") {
           return null;
         }
-        shape = shape.translate(entry.delta);
+        shape = shape.translate(deltaArray(entry.delta));
       } else if (entry.type === "pushPull") {
         shape = pushPullFaceOnShape(this.r, shape, entry.operation);
       } else if (entry.type === "faceMove") {
@@ -650,6 +713,76 @@ function normalizeVector(vector) {
     return { x: 0, y: 0, z: 1 };
   }
   return { x: (vector.x ?? 0) / length, y: (vector.y ?? 0) / length, z: (vector.z ?? 0) / length };
+}
+
+function normalizeVectorOrNull(vector) {
+  if (!vector || typeof vector !== "object") {
+    return null;
+  }
+  const length = Math.hypot(vector.x ?? 0, vector.y ?? 0, vector.z ?? 0);
+  if (length < 1e-8) {
+    return null;
+  }
+  return { x: (vector.x ?? 0) / length, y: (vector.y ?? 0) / length, z: (vector.z ?? 0) / length };
+}
+
+function tiltSideVector(tilt, normal) {
+  const explicit = normalizeVectorOrNull(tilt?.hingeSideVector);
+  if (explicit) {
+    return explicit;
+  }
+  const projected = projectOntoPlane(axisUnit(tilt?.hingeSideAxis), normal);
+  return normalizeVectorOrNull(projected) ?? fallbackPerpendicular(normal);
+}
+
+function axisUnit(axis) {
+  return {
+    x: axis === "x" ? 1 : 0,
+    y: axis === "y" ? 1 : 0,
+    z: axis === "z" ? 1 : 0,
+  };
+}
+
+function projectOntoPlane(vector, normal) {
+  const projection = dotVector(vector, normal);
+  return {
+    x: vector.x - normal.x * projection,
+    y: vector.y - normal.y * projection,
+    z: vector.z - normal.z * projection,
+  };
+}
+
+function fallbackPerpendicular(normal) {
+  const seed = Math.abs(normal.y) < 0.9 ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 };
+  return normalizeVector(projectOntoPlane(seed, normal));
+}
+
+function maxProjection(points, vector) {
+  return Math.max(...points.map((point) => dotArray(point, vector)));
+}
+
+function dotArray(point, vector) {
+  return (
+    (point[0] ?? 0) * (vector.x ?? 0) +
+    (point[1] ?? 0) * (vector.y ?? 0) +
+    (point[2] ?? 0) * (vector.z ?? 0)
+  );
+}
+
+function dotVector(a, b) {
+  return (a.x ?? 0) * (b.x ?? 0) + (a.y ?? 0) * (b.y ?? 0) + (a.z ?? 0) * (b.z ?? 0);
+}
+
+function boxDiagonal(points) {
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (const point of points) {
+    for (let index = 0; index < 3; index += 1) {
+      min[index] = Math.min(min[index], point[index] ?? 0);
+      max[index] = Math.max(max[index], point[index] ?? 0);
+    }
+  }
+  return Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
 }
 
 function normalizeDelta(delta) {

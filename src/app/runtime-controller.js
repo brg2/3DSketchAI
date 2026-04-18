@@ -4,6 +4,9 @@ import { RepresentationStore } from "../representation/representation-store.js";
 import { ManipulationSession } from "../interaction/manipulation-session.js";
 import { validateOperation } from "../operation/operation-validator.js";
 import { ModelScriptStore } from "../persistence/model-script-store.js";
+import { applyOperationToFeatureGraph } from "../feature/feature-resolution.js";
+import { operationFromFeature } from "../feature/feature-store.js";
+import { OPERATION_TYPES } from "../operation/operation-types.js";
 
 export class RuntimeController {
   constructor({ canonicalModel, modelExecutor, representationStore, modelScriptStore, onCanonicalCodeChanged } = {}) {
@@ -28,7 +31,7 @@ export class RuntimeController {
 
     this._activeSession = new ManipulationSession({ type, targetId, selection, params });
     const previewOperation = this._activeSession.getPreviewOperation();
-    this.representationStore.setPreviewOperation(previewOperation);
+    this.representationStore.setPreviewOperation(this._operationForDisplayPreview(previewOperation));
     return previewOperation;
   }
 
@@ -36,7 +39,7 @@ export class RuntimeController {
     const session = this._requireActiveSession();
     session.updateParams(params);
     const previewOperation = session.getPreviewOperation();
-    this.representationStore.setPreviewOperation(previewOperation);
+    this.representationStore.setPreviewOperation(this._operationForDisplayPreview(previewOperation));
     return previewOperation;
   }
 
@@ -57,66 +60,74 @@ export class RuntimeController {
 
   async commitOperation(operation) {
     const validOperation = validateOperation(structuredClone(operation));
-    this.canonicalModel.appendCommittedOperation(validOperation);
-    const canonicalCode = this.canonicalModel.toTypeScriptModule();
-    this.onCanonicalCodeChanged(canonicalCode);
+    const featureGraphUpdate = applyOperationToFeatureGraph(this.canonicalModel.getFeatures(), validOperation);
+    const nextFeatures = featureGraphUpdate.features;
 
     const exactRepresentation = await this._executeModelForDisplay({
-      operations: this.canonicalModel.getOperations(),
+      features: nextFeatures,
+      operations: nextFeatures.map((feature) => operationFromFeature(feature)),
       sceneState: this.representationStore.getExactSceneState(),
     });
 
+    this.canonicalModel.replaceFeatures(nextFeatures);
+    const featureGraphJson = this.canonicalModel.toFeatureGraphJSON();
     this._lastExactBackend = exactRepresentation.exactBackend;
     this.representationStore.replaceWithExact(exactRepresentation);
-    await this.modelScriptStore.saveScript(canonicalCode);
+    await this.modelScriptStore.saveScript(featureGraphJson);
+    this.onCanonicalCodeChanged(featureGraphJson);
 
     return {
       operation: validOperation,
       exactRepresentation,
-      canonicalCode,
+      canonicalGraphJson: featureGraphJson,
+      canonicalCode: featureGraphJson,
+      featureGraphUpdate,
     };
   }
 
-  async reloadFromCanonicalCode(code, { cleanSlate = false } = {}) {
+  async reloadFromFeatureGraphJson(graphJson, { cleanSlate = false } = {}) {
     this.cancelManipulation();
-    this.canonicalModel.fromTypeScriptModule(code);
+    this.canonicalModel.fromFeatureGraphJSON(graphJson);
     const sceneState = cleanSlate ? {} : this.representationStore.getExactSceneState();
     const exactRepresentation = await this._executeModelForDisplay({
+      features: this.canonicalModel.getFeatures(),
       operations: this.canonicalModel.getOperations(),
       sceneState,
     });
 
     this._lastExactBackend = exactRepresentation.exactBackend;
     this.representationStore.replaceWithExact(exactRepresentation);
-    this.onCanonicalCodeChanged(this.canonicalModel.toTypeScriptModule());
+    this.onCanonicalCodeChanged(this.canonicalModel.toFeatureGraphJSON());
     return exactRepresentation;
   }
 
   async persistCanonicalModel() {
-    const code = this.canonicalModel.toTypeScriptModule();
-    await this.modelScriptStore.saveScript(code);
-    this.onCanonicalCodeChanged(code);
-    return code;
+    const graphJson = this.canonicalModel.toFeatureGraphJSON();
+    await this.modelScriptStore.saveScript(graphJson);
+    this.onCanonicalCodeChanged(graphJson);
+    return graphJson;
   }
 
   async compressCanonicalModel() {
     this.cancelManipulation();
     const compressedOperations = compressAdjacentTransforms(this.canonicalModel.getOperations());
     this.canonicalModel.replaceCommittedOperations(compressedOperations);
-    const canonicalCode = this.canonicalModel.toTypeScriptModule();
+    const featureGraphJson = this.canonicalModel.toFeatureGraphJSON();
 
     const exactRepresentation = await this._executeModelForDisplay({
+      features: this.canonicalModel.getFeatures(),
       operations: this.canonicalModel.getOperations(),
       sceneState: {},
     });
 
     this._lastExactBackend = exactRepresentation.exactBackend;
     this.representationStore.replaceWithExact(exactRepresentation);
-    await this.modelScriptStore.saveScript(canonicalCode);
-    this.onCanonicalCodeChanged(canonicalCode);
+    await this.modelScriptStore.saveScript(featureGraphJson);
+    this.onCanonicalCodeChanged(featureGraphJson);
 
     return {
-      canonicalCode,
+      canonicalGraphJson: featureGraphJson,
+      canonicalCode: featureGraphJson,
       operationCount: compressedOperations.length,
     };
   }
@@ -124,15 +135,22 @@ export class RuntimeController {
   async loadCanonicalModelFromStorage({ reload = true, cleanSlate = true } = {}) {
     const code = await this.modelScriptStore.loadScript();
     if (!code) {
-      this.onCanonicalCodeChanged(this.canonicalModel.toTypeScriptModule());
+      this.onCanonicalCodeChanged(this.canonicalModel.toFeatureGraphJSON());
       return [];
     }
 
-    if (reload) {
-      await this.reloadFromCanonicalCode(code, { cleanSlate });
-    } else {
-      this.canonicalModel.fromTypeScriptModule(code);
-      this.onCanonicalCodeChanged(this.canonicalModel.toTypeScriptModule());
+    try {
+      if (reload) {
+        await this.reloadFromFeatureGraphJson(code, { cleanSlate });
+      } else {
+        this.canonicalModel.fromFeatureGraphJSON(code);
+        this.onCanonicalCodeChanged(this.canonicalModel.toFeatureGraphJSON());
+      }
+    } catch (error) {
+      await this.modelScriptStore.clear();
+      this.canonicalModel.clear();
+      this.onCanonicalCodeChanged(this.canonicalModel.toFeatureGraphJSON());
+      return [];
     }
 
     return this.canonicalModel.getOperations();
@@ -141,7 +159,8 @@ export class RuntimeController {
   async ensureDefaultModel() {
     if (this.canonicalModel.getOperations().length > 0) {
       return {
-        canonicalCode: this.canonicalModel.toTypeScriptModule(),
+        canonicalGraphJson: this.canonicalModel.toFeatureGraphJSON(),
+        canonicalCode: this.canonicalModel.toFeatureGraphJSON(),
         operations: this.canonicalModel.getOperations(),
       };
     }
@@ -157,14 +176,17 @@ export class RuntimeController {
     this.cancelManipulation();
     this.canonicalModel.clear();
     await this.modelScriptStore.clear();
-    this.onCanonicalCodeChanged(this.canonicalModel.toTypeScriptModule());
+    this.onCanonicalCodeChanged(this.canonicalModel.toFeatureGraphJSON());
   }
 
   getSnapshot() {
     return {
       hasActiveSession: Boolean(this._activeSession?.isActive()),
-      operationCount: this.canonicalModel.getOperations().length,
-      canonicalCode: this.canonicalModel.toTypeScriptModule(),
+      operationCount: this.canonicalModel.getFeatures().length,
+      canonicalGraphJson: this.canonicalModel.toFeatureGraphJSON(),
+      canonicalCode: this.canonicalModel.toFeatureGraphJSON(),
+      typescriptExport: this.canonicalModel.toTypeScriptModule(),
+      featureGraph: this.canonicalModel.getFeatures(),
       representation: this.representationStore.snapshot(),
       exactBackend: this._lastExactBackend,
     };
@@ -180,8 +202,74 @@ export class RuntimeController {
   async _executeModelForDisplay(input) {
     return await this.modelExecutor.executeCanonicalModel(input);
   }
+
+  _operationForDisplayPreview(operation) {
+    if (operation?.type !== OPERATION_TYPES.ROTATE || operation.selection?.mode !== "face") {
+      return structuredClone(operation);
+    }
+
+    let featureGraphUpdate;
+    try {
+      featureGraphUpdate = applyOperationToFeatureGraph(this.canonicalModel.getFeatures(), operation);
+    } catch {
+      return structuredClone(operation);
+    }
+
+    if (!featureGraphUpdate.modified || featureGraphUpdate.reason !== "modified_existing_face_rotate") {
+      return structuredClone(operation);
+    }
+
+    const currentFeature = this.canonicalModel.getFeatures().find((feature) => feature.id === featureGraphUpdate.featureId);
+    const nextFeature = featureGraphUpdate.features.find((feature) => feature.id === featureGraphUpdate.featureId);
+    const currentTilts = faceTiltsFromParams(currentFeature?.params);
+    const nextTilts = faceTiltsFromParams(nextFeature?.params);
+    if (nextTilts.length === 0) {
+      return structuredClone(operation);
+    }
+
+    const incrementalTilts = [];
+    for (const nextTilt of nextTilts) {
+      const currentTilt = currentTilts.find((tilt) => faceTiltMergeKey(tilt) === faceTiltMergeKey(nextTilt));
+      const angle = currentTilt
+        ? incrementalTiltAngle(currentTilt.angle ?? 0, nextTilt.angle ?? 0)
+        : nextTilt.angle ?? 0;
+      if (Math.abs(angle) < 1e-8) {
+        continue;
+      }
+      incrementalTilts.push({
+        ...structuredClone(nextTilt),
+        angle: roundMillimeters(angle),
+      });
+    }
+
+    const displayOperation = structuredClone(operation);
+    displayOperation.params = {
+      ...displayOperation.params,
+      deltaEuler: { x: 0, y: 0, z: 0 },
+      faceTilts: incrementalTilts,
+    };
+    delete displayOperation.params.faceTilt;
+    return displayOperation;
+  }
 }
 
+function faceTiltsFromParams(params) {
+  return Array.isArray(params?.faceTilts) && params.faceTilts.length > 0
+    ? params.faceTilts
+    : [params?.faceTilt].filter(Boolean);
+}
+
+function faceTiltMergeKey(tilt) {
+  return [
+    tilt?.faceAxis,
+    Math.sign(tilt?.faceSign ?? 1) || 1,
+    tilt?.hingeSideAxis,
+  ].join(":");
+}
+
+function incrementalTiltAngle(currentAngle, nextAngle) {
+  return Math.atan(Math.tan(nextAngle) - Math.tan(currentAngle));
+}
 
 function createDefaultBoxOperation() {
   return {
@@ -236,7 +324,6 @@ function canContinueRun(run, operation) {
   if (operation.type === "push_pull") {
     const p = operation.params;
     return (
-      run.faceIndex === (p.faceIndex ?? null) &&
       run.mode === (p.mode ?? "move") &&
       sameAxisDirection(run.axis, p.axis)
     );

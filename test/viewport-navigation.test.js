@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as THREE from "three";
-import { Viewport } from "../src/view/viewport.js";
+import { Viewport, ZOOM_EXTENTS_ANIMATION_MS } from "../src/view/viewport.js";
 
 function createViewportHarness({ focusPoint = new THREE.Vector3(0, 0, 0) } = {}) {
   const camera = new THREE.PerspectiveCamera(60, 800 / 600, 0.1, 2000);
@@ -35,8 +35,10 @@ function createViewportHarness({ focusPoint = new THREE.Vector3(0, 0, 0) } = {})
   viewport._cursorOrbit = null;
   viewport._cursorPan = null;
   viewport._cursorPanOrbit = null;
+  viewport._cameraTransition = null;
   viewport._zoomTargetDistance = null;
   viewport._zoomFocusPoint = null;
+  viewport._now = () => 0;
   viewport._pickFocusPointAtClient = (clientPoint) => {
     focusCalls.push(clientPoint);
     return focusPoint.clone();
@@ -46,6 +48,34 @@ function createViewportHarness({ focusPoint = new THREE.Vector3(0, 0, 0) } = {})
 
   return { viewport, focusCalls, focusPoint };
 }
+
+test("zoom to extents animates camera position and target over 250ms", () => {
+  const { viewport } = createViewportHarness();
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2));
+  mesh.position.set(3, 0, 0);
+
+  const startPosition = viewport.camera.position.clone();
+  const startTarget = viewport.controls.target.clone();
+  const didZoom = viewport.zoomToObjectsExtents([mesh]);
+
+  assert.equal(didZoom, true);
+  assert.equal(viewport._cameraTransition.durationMs, ZOOM_EXTENTS_ANIMATION_MS);
+  assert.ok(viewport.camera.position.distanceTo(startPosition) < 1e-8);
+  assert.ok(viewport.controls.target.distanceTo(startTarget) < 1e-8);
+
+  viewport._applyCameraTransitionStep(ZOOM_EXTENTS_ANIMATION_MS / 2);
+  assert.ok(viewport.camera.position.distanceTo(startPosition) > 0.01);
+  assert.ok(viewport.controls.target.distanceTo(startTarget) > 0.01);
+  assert.notEqual(viewport._cameraTransition, null);
+
+  viewport._applyCameraTransitionStep(ZOOM_EXTENTS_ANIMATION_MS);
+
+  const expectedCenter = new THREE.Vector3(3, 0, 0);
+  const expectedDistance = Math.hypot(6, 6, 8);
+  assert.equal(viewport._cameraTransition, null);
+  assert.ok(viewport.controls.target.distanceTo(expectedCenter) < 1e-8);
+  assert.ok(Math.abs(viewport.camera.position.distanceTo(expectedCenter) - expectedDistance) < 1e-8);
+});
 
 function createTouchPointer({ pointerId, clientX, clientY }) {
   return {

@@ -31,6 +31,7 @@ function createGeometryFromBrepMesh(meshData) {
   if (normals.length === 0) {
     geometry.computeVertexNormals();
   }
+  applyGeometryUserData(geometry, meshData);
   return geometry;
 }
 
@@ -47,11 +48,19 @@ function createMeshForState(state) {
 function updateMeshGeometry(mesh, state) {
   const signature = geometrySignature(state);
   if (mesh.userData.geometrySignature === signature) {
+    if (state.primitive === "brep_mesh") {
+      applyGeometryUserData(mesh.geometry, state.meshData);
+    }
     return;
   }
   mesh.geometry.dispose();
   mesh.geometry = createGeometryForState(state);
   mesh.userData.geometrySignature = signature;
+}
+
+function applyGeometryUserData(geometry, meshData) {
+  geometry.userData.faceProvenance = cloneFaceProvenance(meshData?.faceProvenance);
+  geometry.userData.faceGroups = cloneFaceGroups(meshData?.faceGroups);
 }
 
 function geometrySignature(state) {
@@ -94,6 +103,8 @@ function previewPushPullMeshData(meshData, operation) {
     vertices,
     triangles,
     faceGroups: meshData.faceGroups ?? [],
+    faceProvenance: meshData.faceProvenance ?? [],
+    selector: operation.selection?.selector ?? null,
     faceIndex: operation.selection?.faceIndex ?? operation.params?.faceIndex ?? null,
     axis,
   });
@@ -135,6 +146,7 @@ function previewSubshapeMoveMeshData(meshData, operation) {
     vertices,
     triangles,
     faceGroups: meshData.faceGroups ?? [],
+    faceProvenance: meshData.faceProvenance ?? [],
     operation,
     move,
   });
@@ -158,7 +170,193 @@ function previewSubshapeMoveMeshData(meshData, operation) {
   };
 }
 
-function selectedSubshapeMoveVertexIndices({ vertices, triangles, faceGroups, operation, move }) {
+function previewFaceRotateMeshData(meshData, operation) {
+  if (!meshData) {
+    return null;
+  }
+
+  const vertices = [...(meshData.vertices ?? meshData.positions ?? [])];
+  const triangles = [...(meshData.triangles ?? meshData.indices ?? [])];
+  if (vertices.length === 0) {
+    return null;
+  }
+
+  const faceTilts = faceTiltsFromParams(operation.params);
+  if (faceTilts.length === 0) {
+    return null;
+  }
+
+  let changed = false;
+  changed = applyFaceTiltsToVertices(vertices, faceTilts, {
+    triangles,
+    faceProvenance: meshData.faceProvenance ?? [],
+    selector: operation.selection?.selector ?? null,
+  });
+  if (!changed) {
+    return null;
+  }
+
+  return {
+    ...meshData,
+    vertices,
+    triangles,
+    normals: [],
+    faceGroups: cloneFaceGroups(meshData.faceGroups),
+  };
+}
+
+function faceTiltsFromParams(params) {
+  return Array.isArray(params?.faceTilts) && params.faceTilts.length > 0
+    ? params.faceTilts
+    : [params?.faceTilt].filter(Boolean);
+}
+
+function applyFaceTiltsToVertices(vertices, tilts, { triangles = [], faceProvenance = [], selector = null } = {}) {
+  const validTilts = (Array.isArray(tilts) ? tilts : [])
+    .filter((tilt) => (
+      ["x", "y", "z"].includes(tilt?.faceAxis) &&
+      ["x", "y", "z"].includes(tilt?.hingeSideAxis) &&
+      Number.isFinite(tilt?.angle) &&
+      Math.abs(tilt.angle) >= 1e-8
+    ));
+  if (validTilts.length === 0) {
+    return false;
+  }
+
+  const tolerance = meshTolerance(vertices);
+  const source = [...vertices];
+  const deltas = new Array(vertices.length).fill(0);
+  let changed = false;
+
+  for (const tilt of validTilts) {
+    const normal = tiltNormalVector(tilt);
+    const side = tiltSideVector(tilt, normal);
+    const selectedVertices = selectedTiltVertexIndices({
+      vertices: source,
+      triangles,
+      faceProvenance,
+      selector,
+      tilt,
+      tolerance,
+    });
+    if (selectedVertices.size === 0) {
+      continue;
+    }
+
+    const sideValues = [...selectedVertices].map((vertexIndex) => vertexDot(source, vertexIndex, side));
+    const sideCenter = (Math.min(...sideValues) + Math.max(...sideValues)) / 2;
+    const slope = Math.tan(tilt.angle);
+
+    for (const vertexIndex of selectedVertices) {
+      const offset = vertexIndex * 3;
+      const displacement = slope * (vertexDot(source, vertexIndex, side) - sideCenter);
+      deltas[offset + 0] += normal.x * displacement;
+      deltas[offset + 1] += normal.y * displacement;
+      deltas[offset + 2] += normal.z * displacement;
+    }
+  }
+
+  for (let index = 0; index < vertices.length; index += 1) {
+    if (Math.abs(deltas[index]) > 1e-8) {
+      vertices[index] = source[index] + deltas[index];
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function selectedTiltVertexIndices({ vertices, triangles, faceProvenance, selector, tilt, tolerance }) {
+  const bySelector = selectedVerticesFromSelector({ vertices, triangles, faceProvenance, selector });
+  if (bySelector.size > 0) {
+    return bySelector;
+  }
+
+  const normal = tiltNormalVector(tilt);
+  const bounds = meshBounds(vertices);
+  const corners = boxCornerPoints(bounds);
+  const faceCoordinate = Math.max(...corners.map((corner) => dotVector(corner, normal)));
+  const selected = new Set();
+  for (let vertexIndex = 0; vertexIndex < vertices.length / 3; vertexIndex += 1) {
+    if (Math.abs(vertexDot(vertices, vertexIndex, normal) - faceCoordinate) <= tolerance) {
+      selected.add(vertexIndex);
+    }
+  }
+  return selected;
+}
+
+function tiltNormalVector(tilt) {
+  return normalizeVector(tilt?.faceNormal ?? axisFromTiltFace(tilt));
+}
+
+function tiltSideVector(tilt, normal) {
+  const explicit = normalizeVectorOrNull(tilt?.hingeSideVector);
+  if (explicit) {
+    return explicit;
+  }
+  const side = projectOntoPlane(axisUnit(tilt?.hingeSideAxis), normal);
+  return normalizeVectorOrNull(side) ?? fallbackPerpendicular(normal);
+}
+
+function axisFromTiltFace(tilt) {
+  const faceAxis = ["x", "y", "z"].includes(tilt?.faceAxis) ? tilt.faceAxis : "z";
+  const faceSign = Math.sign(tilt?.faceSign ?? 1) || 1;
+  return {
+    x: faceAxis === "x" ? faceSign : 0,
+    y: faceAxis === "y" ? faceSign : 0,
+    z: faceAxis === "z" ? faceSign : 0,
+  };
+}
+
+function axisUnit(axis) {
+  return {
+    x: axis === "x" ? 1 : 0,
+    y: axis === "y" ? 1 : 0,
+    z: axis === "z" ? 1 : 0,
+  };
+}
+
+function projectOntoPlane(vector, normal) {
+  const projection = dotVector(vector, normal);
+  return {
+    x: vector.x - normal.x * projection,
+    y: vector.y - normal.y * projection,
+    z: vector.z - normal.z * projection,
+  };
+}
+
+function fallbackPerpendicular(normal) {
+  const seed = Math.abs(normal.y) < 0.9 ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 };
+  return normalizeVector(projectOntoPlane(seed, normal));
+}
+
+function vertexDot(vertices, vertexIndex, vector) {
+  const offset = vertexIndex * 3;
+  return (
+    (vertices[offset + 0] ?? 0) * vector.x +
+    (vertices[offset + 1] ?? 0) * vector.y +
+    (vertices[offset + 2] ?? 0) * vector.z
+  );
+}
+
+function dotVector(a, b) {
+  return (a.x ?? 0) * (b.x ?? 0) + (a.y ?? 0) * (b.y ?? 0) + (a.z ?? 0) * (b.z ?? 0);
+}
+
+function boxCornerPoints(bounds) {
+  return [
+    { x: bounds.minX, y: bounds.minY, z: bounds.minZ },
+    { x: bounds.minX, y: bounds.minY, z: bounds.maxZ },
+    { x: bounds.minX, y: bounds.maxY, z: bounds.minZ },
+    { x: bounds.minX, y: bounds.maxY, z: bounds.maxZ },
+    { x: bounds.maxX, y: bounds.minY, z: bounds.minZ },
+    { x: bounds.maxX, y: bounds.minY, z: bounds.maxZ },
+    { x: bounds.maxX, y: bounds.maxY, z: bounds.minZ },
+    { x: bounds.maxX, y: bounds.maxY, z: bounds.maxZ },
+  ];
+}
+
+function selectedSubshapeMoveVertexIndices({ vertices, triangles, faceGroups, faceProvenance, operation, move }) {
   if (move.mode === "face") {
     const axis = normalizeVector(
       move.faceNormalWorld ??
@@ -169,6 +367,8 @@ function selectedSubshapeMoveVertexIndices({ vertices, triangles, faceGroups, op
       vertices,
       triangles,
       faceGroups,
+      faceProvenance,
+      selector: operation.selection?.selector ?? null,
       faceIndex: operation.selection?.faceIndex ?? move.faceIndex ?? null,
       axis,
     });
@@ -196,7 +396,12 @@ function selectedSubshapeMoveVertexIndices({ vertices, triangles, faceGroups, op
   return new Set();
 }
 
-function selectedPushPullVertexIndices({ vertices, triangles, faceGroups, faceIndex, axis }) {
+function selectedPushPullVertexIndices({ vertices, triangles, faceGroups, faceProvenance, selector, faceIndex, axis }) {
+  const bySelector = selectedVerticesFromSelector({ vertices, triangles, faceProvenance, selector });
+  if (bySelector.size > 0) {
+    return bySelector;
+  }
+
   const byTrianglePlane = selectedVerticesFromTrianglePlane({ vertices, triangles, faceIndex, axis });
   if (byTrianglePlane.size > 0) {
     return byTrianglePlane;
@@ -208,6 +413,73 @@ function selectedPushPullVertexIndices({ vertices, triangles, faceGroups, faceIn
   }
 
   return selectedVerticesFromExtremePlane({ vertices, axis });
+}
+
+function selectedVerticesFromSelector({ vertices, triangles, faceProvenance, selector }) {
+  const selected = new Set();
+  if (!selector?.role || !Array.isArray(faceProvenance)) {
+    return selected;
+  }
+
+  for (let triangleIndex = 0; triangleIndex < faceProvenance.length; triangleIndex += 1) {
+    const provenance = faceProvenance[triangleIndex];
+    if (!provenance || provenance.role !== selector.role) {
+      continue;
+    }
+    if (selector.featureId && provenance.featureId !== selector.featureId) {
+      continue;
+    }
+    addTriangleVertices(selected, triangles, triangleIndex);
+  }
+
+  if (selected.size > 0 || !selector.featureId) {
+    return expandSelectedByCoincidentVertices(vertices, selected);
+  }
+
+  for (let triangleIndex = 0; triangleIndex < faceProvenance.length; triangleIndex += 1) {
+    const provenance = faceProvenance[triangleIndex];
+    if (provenance?.role === selector.role) {
+      addTriangleVertices(selected, triangles, triangleIndex);
+    }
+  }
+  return expandSelectedByCoincidentVertices(vertices, selected);
+}
+
+function expandSelectedByCoincidentVertices(vertices, selected) {
+  if (selected.size === 0) {
+    return selected;
+  }
+
+  const expanded = new Set(selected);
+  const tolerance = meshTolerance(vertices);
+  const selectedPoints = [...selected].map((vertexIndex) => vertexPoint(vertices, vertexIndex));
+  for (let vertexIndex = 0; vertexIndex < vertices.length / 3; vertexIndex += 1) {
+    const point = vertexPoint(vertices, vertexIndex);
+    if (selectedPoints.some((selectedPoint) => pointsNear(point, selectedPoint, tolerance))) {
+      expanded.add(vertexIndex);
+    }
+  }
+  return expanded;
+}
+
+function vertexPoint(vertices, vertexIndex) {
+  const offset = vertexIndex * 3;
+  return {
+    x: vertices[offset + 0] ?? 0,
+    y: vertices[offset + 1] ?? 0,
+    z: vertices[offset + 2] ?? 0,
+  };
+}
+
+function pointsNear(a, b, tolerance) {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) <= tolerance;
+}
+
+function addTriangleVertices(selected, triangles, triangleIndex) {
+  const base = triangleIndex * 3;
+  for (let index = base; index < base + 3 && index < triangles.length; index += 1) {
+    selected.add(triangles[index]);
+  }
 }
 
 function selectedVerticesFromCornerKeys(vertices, keys) {
@@ -369,6 +641,10 @@ function meshBounds(vertices) {
   return { minX, minY, minZ, maxX, maxY, maxZ };
 }
 
+function axisIndex(axis) {
+  return axis === "x" ? 0 : axis === "y" ? 1 : 2;
+}
+
 function normalizeVector(vector) {
   const length = Math.hypot(vector.x ?? 0, vector.y ?? 0, vector.z ?? 0);
   if (length < 1e-8) {
@@ -381,8 +657,29 @@ function normalizeVector(vector) {
   };
 }
 
+function normalizeVectorOrNull(vector) {
+  if (!vector || typeof vector !== "object") {
+    return null;
+  }
+  const length = Math.hypot(vector.x ?? 0, vector.y ?? 0, vector.z ?? 0);
+  if (length < 1e-8) {
+    return null;
+  }
+  return {
+    x: (vector.x ?? 0) / length,
+    y: (vector.y ?? 0) / length,
+    z: (vector.z ?? 0) / length,
+  };
+}
+
 function cloneFaceGroups(faceGroups) {
   return Array.isArray(faceGroups) ? faceGroups.map((group) => ({ ...group })) : [];
+}
+
+function cloneFaceProvenance(faceProvenance) {
+  return Array.isArray(faceProvenance)
+    ? faceProvenance.map((provenance) => (provenance ? structuredClone(provenance) : null))
+    : [];
 }
 
 function axisFromMoveIdentity(move) {
@@ -521,6 +818,31 @@ export class RepresentationStore {
       previewState.scale.x *= Math.max(0.1, params.scaleFactor.x);
       previewState.scale.y *= Math.max(0.1, params.scaleFactor.y);
       previewState.scale.z *= Math.max(0.1, params.scaleFactor.z);
+      applyTransform(mesh, previewState);
+      return;
+    }
+
+    const faceTilts = faceTiltsFromParams(params);
+    if (type === "rotate" && this.previewOperation.selection?.mode === "face" && faceTilts.length > 0) {
+      if (previewState.primitive !== "brep_mesh") {
+        return;
+      }
+      const meshData = previewFaceRotateMeshData(previewState.meshData, this.previewOperation);
+      if (!meshData) {
+        return;
+      }
+      previewState.meshData = meshData;
+      previewState.meshSignature = [
+        previewState.meshSignature ?? "mesh",
+        "face-rotate",
+        ...faceTilts.flatMap((tilt) => [
+          tilt?.faceAxis ?? "axis",
+          tilt?.faceSign ?? 1,
+          tilt?.hingeSideAxis ?? "side",
+          tilt?.angle ?? 0,
+        ]),
+      ].join(":");
+      updateMeshGeometry(mesh, previewState);
       applyTransform(mesh, previewState);
       return;
     }

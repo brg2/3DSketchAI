@@ -10,7 +10,8 @@ Required stack from project start:
 
 Core rule:
 - Users manipulate geometry directly.
-- The system generates executable TypeScript modeling code for every modeling action.
+- The system maps interactions to feature operations.
+- Geometry is produced by replaying the feature graph.
 
 ## 2. Source of Truth Separation
 
@@ -25,30 +26,54 @@ This document is authoritative for:
 - performance requirements
 - product boundaries
 
-### 2.2 Modeling System (User Geometry)
+### 2.2 Modeling System (User Geometry) — REVISED
 Scope: user model state and regeneration.
 
-Source of truth in V1: executable TypeScript modeling code.
+Source of truth: Feature Graph.
 
-The code:
+The feature graph:
 - is generated from interaction
 - fully represents committed operations
-- executes through Replicad + OpenCascade
+- is replayed to produce geometry via Replicad + OpenCascade
 
-V1 boundary:
-- no direct user editing of generated modeling code
-- no direct user-facing constraints or parametric relationship authoring
+Executable TypeScript is no longer the canonical model representation.
 
-## 3. Canonical Model Rule
-The canonical model is executable TypeScript. No custom modeling file format is canonical.
+## 3. Canonical Model Rule — REVISED
+The canonical model is the Feature Graph.
 
-Canonical requirements:
-- deterministic regeneration
+Requirements:
+- deterministic replay
 - complete representation of committed operations
-- single authoritative scene definition
+- independent of transient geometry state
 
-UI requirement:
-- interaction updates must eventually serialize to canonical modeling code
+Geometry (BREP/mesh) is a derived artifact and must not be used as source of truth.
+
+Executable TypeScript:
+- is an export format only
+- must be generated from the feature graph
+- must not be edited or treated as authoritative state
+
+## 3.1 Serialization
+The system must support:
+- Feature Graph -> JSON (primary persistence format)
+- Feature Graph -> executable TypeScript (optional export)
+
+Loading a model must:
+- reconstruct the feature graph
+- replay to generate geometry
+
+No system behavior may depend on TypeScript as input.
+
+## 3.2 Feature Graph Purpose
+The Feature Graph is a minimal, deterministic, and reproducible representation of modeling intent.
+
+It is NOT:
+- a history log of interactions
+- a sequence of raw geometry edits
+
+System rules:
+- redundant operations may be collapsed only when safe
+- correctness must be preserved over compactness
 
 ## 4. Interaction Philosophy
 The UI is non-parametric-first.
@@ -61,6 +86,171 @@ Users are not required to:
 
 Internal parametric structure MUST exist, but it is not exposed in V1 UI.
 
+## 4.1 Internal Modeling Paradigm
+Direct manipulation is an input method, not a direct geometry mutation model.
+
+All committed operations must follow:
+- interaction -> resolve feature -> validate modification -> modify OR fallback -> deterministic replay -> geometry
+
+Feature graph constraints:
+- all committed modeling changes must be represented as features
+- users cannot directly edit feature graph internals in V1
+- transient geometry is allowed only for preview
+
+## 4.1.1 Safe Feature-Aware Editing Constraint
+Feature modification is permitted only when all conditions are true:
+- affected geometry maps to a single originating feature
+- that feature fully defines the geometry being modified
+- modifying feature parameters can reproduce the intended result
+- no downstream features conflict with the modification
+
+If any condition fails:
+- the system MUST create a new feature
+- correctness MUST take priority over minimizing feature count
+
+## 4.1.2 Push/Pull Behavior
+Push/pull is a feature-editing operation.
+
+Push/pull must:
+- attempt to modify the originating feature first
+- accumulate into that feature when safe
+
+Required behavior example:
+- Box(height: 10 -> 12 -> 14)
+
+Push/pull may create a new feature only when:
+- the originating feature cannot safely represent the change
+- downstream operations invalidate safe modification
+
+## 4.1.3 Topology Identity Prohibition
+The system MUST NOT use the following as persistent identifiers:
+- face indices
+- edge indices
+- topology ordering
+
+Topology is unstable and must not be used for feature lookup or authoritative identity.
+
+## 4.1.4 Feature-Origin Identity
+All geometry produced by a feature MUST carry:
+- featureId
+- role (semantic label within that feature)
+
+Role rules:
+- roles are defined per feature, not globally
+- a role may map to multiple faces after topology changes
+
+Feature-origin identity is the primary mechanism for feature lookup.
+
+## 4.1.5 Selector Model
+All feature operations that reference geometry MUST use selectors.
+
+Selectors must include:
+- featureId (when available)
+- role (within that feature)
+- geometric hints (approximate point, normal)
+
+Selectors must NOT include:
+- topology indices
+- world-space coordinates
+
+## 4.1.6 Coordinate Space Rules
+The system defines two spaces:
+- Feature Space (canonical model space)
+- World Space (rendering only)
+
+Rules:
+- interaction input is received in world space
+- interaction data MUST be transformed into feature/model space before selector construction and feature operations
+- feature graph operations run exclusively in feature/model space
+
+Selectors must remain valid under:
+- translation
+- rotation
+- scaling
+- grouping
+
+## 4.1.7 Deterministic Feature Resolution Process
+Feature resolution must follow:
+- selector -> feature-origin match -> role filter -> geometric disambiguation
+
+Resolution order:
+1. match featureId
+2. match role within feature
+3. if multiple candidates, disambiguate by geometric proximity using approximate point
+4. fallback to geometric search only when feature-origin identity is unavailable
+
+Resolution requirements:
+- deterministic
+- stable across replay
+- tolerant to topology changes
+
+The system must reliably answer: "Which feature produced this geometry?"
+
+## 4.1.8 Topology Change Handling
+The system must support:
+- one-to-many face mapping after splits
+- many-to-one face mapping after merges
+
+Roles must be interpreted as semantic face groups, not single topology elements.
+
+## 4.1.9 Prohibited Behavior
+The following are explicitly disallowed:
+- defaulting to feature creation when safe modification is possible
+- modifying features without validation
+- storing world-space selector data
+- using topology indices for persistent identity
+- treating the feature graph as a simple operation log
+
+## 4.2 User Representation Model (Clarification)
+Users do not interact with:
+- feature graphs
+- parametric trees
+- modeling scripts
+
+Users interact only with geometry via direct manipulation.
+
+The system internally maps these interactions to validated feature modification or explicit feature creation fallback.
+
+## 4.3 History Representation
+User-visible history is an Action Timeline, not a feature tree.
+
+Example:
+
+Actions
+1. Box
+2. Push/Pull Face +1.25
+3. Move Object X +2.00
+
+This is a projection of the feature graph for usability.
+
+It must:
+- not expose dependency graphs
+- not expose internal identifiers
+- remain simple and descriptive
+
+## 4.4 Developer Inspection
+A developer-only inspector may expose:
+- feature graph JSON
+- replay order
+- feature parameters
+
+This is not part of the user-facing UI.
+
+## 4.5 Representation Visibility
+The Feature Graph may be projected into a human-readable representation (for example JSON or a TypeScript-like structure) for inspection.
+
+This projection:
+- must update in real time with model changes
+- must reflect the current Feature Graph exactly
+- must be read-only in the user interface
+
+It must not:
+- be editable by users
+- be parsed as input
+- be treated as authoritative state
+
+The Feature Graph object remains the only source of truth.
+
 ## 5. Tooling Scope (V1)
 Required tools:
 - selection (face, edge, object)
@@ -72,7 +262,8 @@ Required tools:
 - grouping and components
 
 Persistence requirement:
-- save and load scene state as executable TypeScript model code
+- save/load Feature Graph JSON as primary model format
+- optional export to executable TypeScript
 
 ## 6. Interaction Execution Model
 All manipulations use two phases:
@@ -81,8 +272,8 @@ All manipulations use two phases:
 
 ### 6.1 Interactive Preview Phase
 During active input:
-- do not execute full model code on each event
-- do not invoke the CAD kernel on each event
+- do not replay the full feature graph on each event
+- do not invoke full CAD-kernel recompute on each event
 - maintain a transient operation and continuously update its parameters
 - update preview mesh at interactive frame rates
 
@@ -93,14 +284,16 @@ Preview constraints:
 
 ### 6.2 Commit Phase
 On interaction completion:
-- generate committed TypeScript operation
-- append operation to canonical model code
-- execute model via Replicad + OpenCascade
+- resolve feature deterministically using selector -> feature-origin match -> role filter -> geometric disambiguation
+- validate safe feature modification constraints
+- modify existing feature only when all safety conditions pass; otherwise create a new feature
+- update canonical feature graph
+- replay feature graph via Replicad + OpenCascade
 - replace preview with exact resulting geometry
 
 Commit outcome:
 - exact geometry becomes visible
-- canonical authority remains committed code
+- canonical authority remains the feature graph
 
 ### 6.3 Consistency Constraint
 Preview and commit must be driven by the same operation parameters to avoid visible discontinuity at commit.
@@ -113,7 +306,7 @@ The runtime maintains:
 Rules:
 - during interaction, display mesh is preview-driven
 - after commit, display mesh is regenerated from exact geometry
-- canonical source of truth is committed modeling code only
+- canonical source of truth is the committed feature graph only
 
 ## 8. Layered Architecture
 
@@ -126,11 +319,13 @@ Rules:
 - selection pipeline
 - manipulation tool state machines
 - minimal snapping and inference for V1
+- world-space input capture and transformation into feature/model space
 
 ### 8.3 Operation Layer
-- interaction-to-operation mapping
+- interaction-to-feature-operation mapping
+- selector construction in feature/model space only
 - operation parameter validation
-- serialization to executable TypeScript
+- commit payload construction for feature graph updates
 
 ### 8.4 Modeling Layer
 - Replicad execution interface
@@ -140,6 +335,10 @@ Rules:
 - display mesh lifecycle management
 - exact geometry lifecycle management
 - preview/commit synchronization
+
+### 8.6 Serialization and Export Layer
+- feature graph JSON persistence
+- TypeScript export generation from feature graph
 
 ## 9. Performance Requirements
 System requirements:
@@ -179,7 +378,7 @@ Contribution rule:
 
 ## 13. Long-Term Direction
 Possible future evolution:
-- structured introspection over generated modeling code
+- structured introspection over feature graph operations
 - optional parametric editing interfaces above the same model core
 - AI-assisted modeling workflows with explicit user control
 - live recompute architecture with partial model reevaluation
@@ -192,7 +391,7 @@ All architecture and product decisions prioritize:
 - minimal latency
 - predictable behavior
 - direct manipulation over abstraction
-- modeling code that maps clearly to user actions
+- internal feature determinism with simple user-facing interaction
 
 ## 15. Intent Governance
 `INTENT.md` is the authoritative definition of system intent.
@@ -206,85 +405,3 @@ When intent changes, development workflow must:
 Change discipline:
 - no large destructive rewrites to satisfy intent updates
 - preserve clarity, determinism, and architectural separation
-
-
-
-## 4.1 Internal Modeling Paradigm (Amendment)
-
-This system uses direct manipulation as its primary user interaction model.
-
-However, direct manipulation does NOT imply direct mutation of geometry.
-
-All user interactions MUST be interpreted as modifications to an internal feature-based representation.
-
-### Core Rule
-
-Geometry is never edited directly.
-
-All modeling operations must follow:
-
-    interaction → feature creation or modification → deterministic replay → geometry
-
-### Feature Representation
-
-Internally, the system maintains a feature graph representing the sequence of modeling operations.
-
-Features are:
-- structured operations (extrude, cut, push/pull, transform)
-- parameterized
-- replayable to produce exact geometry
-
-This feature graph is:
-
-- REQUIRED for all modeling operations
-- NOT exposed as a user-facing feature tree in V1
-- NOT directly editable by users
-
-### Relationship to Canonical Code
-
-The canonical executable TypeScript model code is a serialized form of the feature graph.
-
-Each committed operation must:
-
-- correspond to a feature
-- be reproducible via deterministic replay
-- avoid dependence on prior geometry mutation
-
-### Push/Pull Clarification
-
-Push/pull is not a direct geometry operation.
-
-It must be interpreted as:
-
-- modification of an existing feature when possible
-- creation of a new feature when no mapping exists
-
-Under no circumstances may push/pull directly mutate BREP geometry without being represented as a feature.
-
-### Prohibited Behavior
-
-The following are explicitly disallowed:
-
-- direct mutation of BREP geometry as authoritative state
-- accumulation of geometry operations without feature representation
-- storing intermediate geometry as the source of truth
-
-### Allowed Behavior
-
-- transient geometry for preview
-- geometry generation as a result of feature replay
-- use of OpenCascade strictly as a geometry execution engine
-
-### Architectural Clarification
-
-The system is not:
-
-    a geometry editor
-
-The system is:
-
-    a feature-driven modeling engine with direct manipulation input
-
-Direct manipulation is an input method.
-
-Features are the system of record.

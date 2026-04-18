@@ -10,11 +10,14 @@ import {
   normalizeTerrainVariation,
 } from "../environment/ground-theme.js";
 
+export const ZOOM_EXTENTS_ANIMATION_MS = 250;
+
 export class Viewport {
   constructor({ canvas }) {
     this.canvas = canvas;
     this._viewportWidth = 0;
     this._viewportHeight = 0;
+    this._cameraTransition = null;
     this._zoomTargetDistance = null;
     this._zoomFocusPoint = null;
     this._zoomRaycaster = new THREE.Raycaster();
@@ -186,7 +189,7 @@ export class Viewport {
     return hit?.point?.clone?.() ?? null;
   }
 
-  zoomToObjectsExtents(objects) {
+  zoomToObjectsExtents(objects, { animate = true, durationMs = ZOOM_EXTENTS_ANIMATION_MS } = {}) {
     const bounds = new THREE.Box3();
     const objectList = Array.isArray(objects) ? objects : [];
     for (const object of objectList) {
@@ -218,11 +221,60 @@ export class Viewport {
     }
     viewDirection.normalize();
 
-    this.controls.target.copy(center);
-    this.camera.position.copy(center).add(viewDirection.multiplyScalar(distance));
+    const targetPosition = center.clone().add(viewDirection.multiplyScalar(distance));
     this._zoomTargetDistance = null;
     this._zoomFocusPoint = null;
-    this.camera.updateProjectionMatrix();
+    const transitionDurationMs = Number.isFinite(durationMs) ? Math.max(0, durationMs) : ZOOM_EXTENTS_ANIMATION_MS;
+
+    if (!animate || transitionDurationMs <= 0) {
+      this._cameraTransition = null;
+      this.controls.target.copy(center);
+      this.camera.position.copy(targetPosition);
+      this.camera.updateProjectionMatrix();
+      this.controls.update();
+      return true;
+    }
+
+    this._cameraTransition = {
+      startTime: this._now(),
+      durationMs: transitionDurationMs,
+      startPosition: this.camera.position.clone(),
+      startTarget: this.controls.target.clone(),
+      endPosition: targetPosition,
+      endTarget: center,
+    };
+    return true;
+  }
+
+  _now() {
+    return globalThis.performance?.now?.() ?? Date.now();
+  }
+
+  _cancelCameraTransition() {
+    this._cameraTransition = null;
+  }
+
+  _applyCameraTransitionStep(now = this._now()) {
+    const transition = this._cameraTransition;
+    if (!transition) {
+      return false;
+    }
+
+    const durationMs = Math.max(transition.durationMs, 1);
+    const elapsedMs = Math.max(0, now - transition.startTime);
+    const progress = THREE.MathUtils.clamp(elapsedMs / durationMs, 0, 1);
+    const eased = progress * progress * (3 - (2 * progress));
+
+    this.camera.position.copy(transition.startPosition).lerp(transition.endPosition, eased);
+    this.controls.target.copy(transition.startTarget).lerp(transition.endTarget, eased);
+    this.camera.updateMatrixWorld();
+
+    if (progress >= 1) {
+      this.camera.position.copy(transition.endPosition);
+      this.controls.target.copy(transition.endTarget);
+      this._cameraTransition = null;
+    }
+
     this.controls.update();
     return true;
   }
@@ -249,6 +301,7 @@ export class Viewport {
       : orbitMode ? "orbit" : "pan";
 
     this.cancelCursorNavigation();
+    this._cancelCameraTransition();
     this._cursorNavigation = {
       mode: null,
       allowShiftToggle: Boolean(allowShiftOrbit),
@@ -394,6 +447,7 @@ export class Viewport {
     }
 
     this.cancelCursorNavigation();
+    this._cancelCameraTransition();
     const positions = new Map();
     for (const event of events) {
       positions.set(event.pointerId, this._touchPositionFromEvent(event));
@@ -1133,6 +1187,7 @@ export class Viewport {
 
   beginTouchGesture() {
     this.cancelCursorNavigation();
+    this._cancelCameraTransition();
     this.controls.enabled = false;
     this._zoomTargetDistance = null;
     this._zoomFocusPoint = null;
@@ -1299,6 +1354,7 @@ export class Viewport {
   }
 
   _queueSmoothZoom(event) {
+    this._cancelCameraTransition();
     const deltaMode = event.deltaMode ?? 0;
     const unitScale = deltaMode === 1 ? 16 : deltaMode === 2 ? window.innerHeight : 1;
     const normalizedDeltaY = event.deltaY * unitScale;
@@ -1463,8 +1519,10 @@ export class Viewport {
     } else if (this._touchGestureActive) {
       // Touch gesture drives camera directly; skip smooth zoom step and controls update
     } else {
-      this._applySmoothZoomStep();
-      this.controls.update();
+      if (!this._applyCameraTransitionStep()) {
+        this._applySmoothZoomStep();
+        this.controls.update();
+      }
     }
     this.renderer.render(this.scene, this.camera);
   }

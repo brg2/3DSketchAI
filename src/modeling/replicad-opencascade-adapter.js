@@ -1,5 +1,6 @@
 import { create3dsaiModelingLibrary } from "./3dsai-modeling.js";
-import { serializeCanonicalModelModule } from "../operation/operation-serializer.js";
+import { replayFeaturesToShapes } from "../feature/feature-replay.js";
+import { annotateMeshDataWithFeatureProvenance } from "../feature/feature-provenance.js";
 
 /**
  * Adapter boundary for exact kernel execution.
@@ -9,57 +10,46 @@ export class ReplicadOpenCascadeAdapter {
     this._cachedReplicad = null;
   }
 
-  async execute({ operations }) {
+  async execute({ features = [] }) {
     const replicad = await this._loadReplicad();
     const sai = create3dsaiModelingLibrary();
-    const script = serializeCanonicalModelModule(operations);
+    const replayed = replayFeaturesToShapes({ features, r: replicad, sai });
 
-    // We execute the script to get the resulting shape.
-    // The script is: "export const main = (r, sai) => { ... }"
-    // We'll use a simple regex to get the function body.
-    const bodyMatch = script.match(/export const main = \(r, sai\) => \{([\s\S]*)\}/);
-    if (!bodyMatch) {
-      throw new Error("Failed to parse canonical model script for execution");
-    }
-
-    const body = bodyMatch[1];
-    const mainFunc = new Function("r", "sai", body);
-    const shape = mainFunc(replicad, sai);
-
-    // If the script returned null, return an empty state.
-    if (!shape) {
+    if (!replayed.shape) {
       return {
         kind: "exact_geometry",
         exactBackend: "replicad",
         sceneState: {},
-        operationCount: operations.length,
+        operationCount: features.length,
       };
     }
 
-    const meshData = shape.mesh();
+    const sceneState = {};
+    for (const [objectId, shape] of replayed.objectShapes.entries()) {
+      const meshData = annotateMeshDataWithFeatureProvenance(shape.mesh(), { objectId, features });
+      sceneState[objectId] = {
+        primitive: "brep_mesh",
+        meshData,
+        meshSignature: meshDataSignature(meshData),
+        position: { x: 0, y: 0, z: 0 },
+        rotation: { x: 0, y: 0, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      };
+    }
 
     return {
       kind: "exact_geometry",
       exactBackend: "replicad",
-      sceneState: {
-        obj_1: {
-          primitive: "brep_mesh",
-          meshData,
-          meshSignature: meshDataSignature(meshData),
-          position: { x: 0, y: 0, z: 0 },
-          rotation: { x: 0, y: 0, z: 0 },
-          scale: { x: 1, y: 1, z: 1 },
-        }
-      },
-      operationCount: operations.length,
+      sceneState,
+      operationCount: features.length,
     };
   }
 
-  async executeStateReplay({ operations, sceneState, replayExecutor }) {
+  async executeStateReplay({ features, operations, sceneState, replayExecutor }) {
     if (typeof replayExecutor !== "function") {
       throw new Error("State replay requires an explicit replay executor");
     }
-    return replayExecutor({ operations, sceneState, exactBackend: "state-replay" });
+    return replayExecutor({ features, operations, sceneState, exactBackend: "feature-replay" });
   }
 
   async _loadReplicad() {

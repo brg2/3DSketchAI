@@ -38,8 +38,8 @@
             id="model-open"
             class="icon-btn"
             type="button"
-            aria-label="Open Model Script"
-            title="Open Model Script"
+            aria-label="Open Feature Graph"
+            title="Open Feature Graph"
           >
             <span class="btn-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
@@ -50,13 +50,13 @@
             </span>
             <span class="btn-label">Open</span>
           </button>
-          <input id="model-open-input" type="file" accept=".ts,text/typescript,text/plain" hidden />
+          <input id="model-open-input" type="file" accept=".json,.3dsai.json,application/json,text/json,text/plain" hidden />
           <button
             id="model-save"
             class="icon-btn"
             type="button"
-            aria-label="Save Model Script"
-            title="Save Model Script"
+            aria-label="Save Feature Graph"
+            title="Save Feature Graph"
           >
             <span class="btn-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
@@ -148,7 +148,7 @@
       <section class="code-panel" id="code-panel">
         <div class="panel-tabs" role="tablist" aria-label="Panel Sections">
           <button class="panel-tab active" id="panel-tab-script" data-panel-page="script" type="button" role="tab" aria-selected="true">
-            Script
+            Graph
           </button>
           <button class="panel-tab" id="panel-tab-settings" data-panel-page="settings" type="button" role="tab" aria-selected="false">
             Settings
@@ -156,25 +156,25 @@
         </div>
         <div class="panel-page active" data-panel-page-content="script">
           <div class="code-header">
-            <h2>Model Script</h2>
+            <h2>Feature Graph</h2>
             <div class="code-actions">
               <button
                 id="code-compress"
                 class="code-tool-btn"
                 type="button"
-                title="Compress Model Script"
-                aria-label="Compress Model Script"
+                title="Compact Feature Graph"
+                aria-label="Compact Feature Graph"
               ></button>
               <button
                 id="code-copy"
                 class="code-tool-btn"
                 type="button"
-                title="Copy Model Script"
-                aria-label="Copy Model Script"
+                title="Copy Feature Graph"
+                aria-label="Copy Feature Graph"
               ></button>
             </div>
           </div>
-          <pre id="code-view"></pre>
+          <pre id="code-view" aria-label="Read-only Feature Graph Projection" aria-readonly="true" data-readonly-projection="true"></pre>
         </div>
         <div class="panel-page" data-panel-page-content="settings">
           <h2>Settings</h2>

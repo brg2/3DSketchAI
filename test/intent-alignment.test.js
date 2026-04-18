@@ -124,18 +124,20 @@ test('preview updates do not execute kernel/full model', async () => {
   assert.ok(h.updatePreviewMesh.calls.length >= 1, 'Preview should update preview mesh');
 });
 
-test('commit appends canonical TypeScript operation code', async () => {
+test('commit appends canonical feature graph JSON', async () => {
   const h = await createHarness();
   const params = { targetId: 'face-1', distance: 5, axis: 'normal' };
 
   await h.preview(params);
   await h.commit(params);
 
-  assert.equal(h.appendCanonicalOperation.calls.length, 1, 'Commit must append canonical operation code');
-  const [code] = h.appendCanonicalOperation.calls[0];
-  assert.equal(typeof code, 'string', 'Canonical operation must be serialized as code string');
-  assert.ok(code.trim().length > 0, 'Canonical operation code must be non-empty');
-  assert.match(code, /[A-Za-z_$][\w$]*\s*\(/, 'Canonical operation should look like executable code');
+  assert.equal(h.appendCanonicalOperation.calls.length, 1, 'Commit must append canonical feature graph');
+  const [graphJson] = h.appendCanonicalOperation.calls[0];
+  assert.equal(typeof graphJson, 'string', 'Canonical feature graph must be serialized as JSON string');
+  const graph = JSON.parse(graphJson);
+  assert.ok(Array.isArray(graph.features), 'Canonical feature graph must include features');
+  assert.equal(graph.features[0].type, 'pushPull');
+  assert.deepEqual(graph.features[0].params, params);
 });
 
 test('commit path executes exact model asynchronously', async () => {
