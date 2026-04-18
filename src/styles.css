@@ -119,13 +119,15 @@ body.welcome-modal-open #app-shell {
 
 .welcome-dialog-card {
   position: relative;
+  display: flex;
+  flex-direction: column;
   max-height: min(720px, calc(100dvh - 32px));
   padding: 28px;
   border: 1px solid rgba(181, 189, 200, 0.9);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.97);
   box-shadow: 0 24px 70px rgba(20, 35, 50, 0.3);
-  overflow: auto;
+  overflow: hidden;
 }
 
 .welcome-close {
@@ -189,12 +191,24 @@ body.welcome-modal-open #app-shell {
   padding-left: 22px;
 }
 
+.welcome-body {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 12px;
+}
+
+.welcome-body > :first-child {
+  margin-top: 0;
+}
+
 .welcome-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
   margin-top: 18px;
+  flex-shrink: 0;
 }
 
 .welcome-github-link {
