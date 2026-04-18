@@ -108,6 +108,10 @@ export function selectorFromIntersection(intersection) {
   }
 
   const point = intersection.object.worldToLocal(intersection.point.clone());
+  const origin = intersection.object.geometry.userData.featureSpaceOrigin;
+  if (origin) {
+    point.add(new THREE.Vector3(origin.x ?? 0, origin.y ?? 0, origin.z ?? 0));
+  }
   const normal = intersection.face?.normal?.clone?.().normalize?.() ?? null;
   return {
     featureId: provenance.featureId,

@@ -130,9 +130,12 @@ export function serializeCanonicalModelModule(operations) {
           }
           break;
         }
-        const origin = { x: 0, y: 0, z: 0 };
-        bodyLines.push(`  ${varName} = ${varName}.rotate(${_formatNumber(operation.params.deltaEuler.y)}, ${_vec3Literal(origin)}, [0, 1, 0]);`);
         const state = objectState.get(operation.targetId);
+        const origin = state?.position ?? { x: 0, y: 0, z: 0 };
+        for (const rotation of _rotationsFromEuler(operation.params.deltaEuler)) {
+          const rotateCall = `${varName}.rotate(${_formatNumber(rotation.angle)}, ${_vec3Literal(origin)}, ${_arrayVec3Literal(rotation.axis)})`;
+          bodyLines.push(state?.editable ? `  ${rotateCall};` : `  ${varName} = ${rotateCall};`);
+        }
         if (state) {
           state.rotation.x += operation.params.deltaEuler.x;
           state.rotation.y += operation.params.deltaEuler.y;
@@ -206,6 +209,7 @@ export function parseOperationsFromCanonicalModelCode(code) {
   candidates.push(..._parseDirectMoveBoxSubshape(code));
   candidates.push(..._parseDirectMoveBoxVertex(code));
   candidates.push(..._parseDirectRotate(code));
+  candidates.push(..._parseDirectRotateObjectMethod(code));
   candidates.push(..._parseDirectTaperedBox(code));
   candidates.push(..._parseDirectPushPullFace(code));
   candidates.push(..._parseDirectScale(code));
@@ -319,6 +323,41 @@ function _normalizeAxis(axis) {
     return { x: 0, y: 0, z: 1 };
   }
   return { x: axis.x / length, y: axis.y / length, z: axis.z / length };
+}
+
+function _rotationsFromEuler(deltaEuler = {}) {
+  return [
+    { key: "x", axis: [1, 0, 0] },
+    { key: "y", axis: [0, 1, 0] },
+    { key: "z", axis: [0, 0, 1] },
+  ]
+    .map((rotation) => ({
+      axis: rotation.axis,
+      angle: deltaEuler[rotation.key] ?? 0,
+    }))
+    .filter((rotation) => Number.isFinite(rotation.angle) && Math.abs(rotation.angle) >= 1e-8);
+}
+
+function _deltaEulerFromAngleAxis(angle, rawAxis) {
+  if (angle === null || !Array.isArray(rawAxis) || rawAxis.length < 3) {
+    return null;
+  }
+  const axis = _normalizeAxis({ x: rawAxis[0] ?? 0, y: rawAxis[1] ?? 0, z: rawAxis[2] ?? 0 });
+  const entries = [
+    ["x", axis.x],
+    ["y", axis.y],
+    ["z", axis.z],
+  ];
+  entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const [key, component] = entries[0];
+  if (Math.abs(component) < 0.5) {
+    return null;
+  }
+  return {
+    x: key === "x" ? angle * Math.sign(component) : 0,
+    y: key === "y" ? angle * Math.sign(component) : 0,
+    z: key === "z" ? angle * Math.sign(component) : 0,
+  };
 }
 
 function _safeJsonParse(text) {
@@ -518,9 +557,21 @@ function _parseDirectRotate(code) {
   const regex = /([A-Za-z_$][\w$]*)\s*=\s*\1\.rotate\(\s*([-\d.eE+]+)\s*,\s*(\[[\s\S]*?\])\s*,\s*(\[[\s\S]*?\])\s*\);/g;
   return _collectMatches(code, regex, (match) => {
     const targetId = match[1];
-    const y = _toFiniteNumber(match[2]);
-    if (!targetId || y === null) return null;
-    return { type: "rotate", targetId, selection: null, params: { deltaEuler: { x: 0, y, z: 0 } } };
+    const angle = _toFiniteNumber(match[2]);
+    const deltaEuler = _deltaEulerFromAngleAxis(angle, _safeJsonParse(match[4]));
+    if (!targetId || !deltaEuler) return null;
+    return { type: "rotate", targetId, selection: null, params: { deltaEuler } };
+  });
+}
+
+function _parseDirectRotateObjectMethod(code) {
+  const regex = /^\s*([A-Za-z_$][\w$]*)\.rotate\(\s*([-\d.eE+]+)\s*,\s*(\[[\s\S]*?\])\s*,\s*(\[[\s\S]*?\])\s*\);/gm;
+  return _collectMatches(code, regex, (match) => {
+    const targetId = match[1];
+    const angle = _toFiniteNumber(match[2]);
+    const deltaEuler = _deltaEulerFromAngleAxis(angle, _safeJsonParse(match[4]));
+    if (!targetId || !deltaEuler) return null;
+    return { type: "rotate", targetId, selection: null, params: { deltaEuler } };
   });
 }
 
@@ -720,11 +771,12 @@ function _parseMove(code) {
 
 function _parseRotate(code) {
   const regex =
-    /if\s*\(shapes\[\s*"([^"]+)"\s*\]\)\s*shapes\[\s*"\1"\s*\]\s*=\s*shapes\[\s*"\1"\s*\]\.rotate\(\s*([-\d.eE+]+)\s*,\s*\[[^\]]*\]\s*,\s*\[[^\]]*\]\s*\);/g;
+    /if\s*\(shapes\[\s*"([^"]+)"\s*\]\)\s*shapes\[\s*"\1"\s*\]\s*=\s*shapes\[\s*"\1"\s*\]\.rotate\(\s*([-\d.eE+]+)\s*,\s*\[[^\]]*\]\s*,\s*(\[[^\]]*\])\s*\);/g;
   return _collectMatches(code, regex, (match) => {
     const targetId = match[1];
-    const y = _toFiniteNumber(match[2]);
-    if (!targetId || y === null) {
+    const angle = _toFiniteNumber(match[2]);
+    const deltaEuler = _deltaEulerFromAngleAxis(angle, _safeJsonParse(match[3]));
+    if (!targetId || !deltaEuler) {
       return null;
     }
 
@@ -732,7 +784,7 @@ function _parseRotate(code) {
       type: "rotate",
       targetId,
       selection: null,
-      params: { deltaEuler: { x: 0, y, z: 0 } },
+      params: { deltaEuler },
     };
   });
 }

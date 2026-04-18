@@ -161,6 +161,32 @@ class EditableBox {
     return this;
   }
 
+  rotate(angle, origin = [0, 0, 0], axis = [0, 1, 0]) {
+    const normalizedAngle = Number.isFinite(angle) ? angle : 0;
+    if (Math.abs(normalizedAngle) < 1e-8) {
+      return this;
+    }
+    const normalizedOrigin = vectorArray(origin);
+    const normalizedAxis = normalizeVector(arrayToVector(axis));
+    this.brepOperations.push({
+      type: "rotate",
+      angle: normalizedAngle,
+      origin: normalizedOrigin,
+      axis: vectorArray(normalizedAxis),
+    });
+
+    for (const corner of Object.values(this.corners)) {
+      rotatePointInPlace(corner, normalizedAngle, normalizedOrigin, normalizedAxis);
+    }
+    for (const face of this.extraFaces) {
+      for (const point of face) {
+        rotatePointInPlace(point, normalizedAngle, normalizedOrigin, normalizedAxis);
+      }
+    }
+    this.refreshBoundsFromCorners();
+    return this;
+  }
+
   pushPullFace(operation) {
     const axis = normalizeVector(operation?.axis ?? axisFromFaceIdentity(operation));
     const distance = operation?.distance ?? 0;
@@ -369,6 +395,11 @@ class EditableBox {
           return null;
         }
         shape = shape.translate(deltaArray(entry.delta));
+      } else if (entry.type === "rotate") {
+        if (typeof shape.rotate !== "function") {
+          return null;
+        }
+        shape = shape.rotate(entry.angle, entry.origin, entry.axis);
       } else if (entry.type === "pushPull") {
         shape = pushPullFaceOnShape(this.r, shape, entry.operation);
       } else if (entry.type === "faceMove") {
@@ -713,6 +744,36 @@ function normalizeVector(vector) {
     return { x: 0, y: 0, z: 1 };
   }
   return { x: (vector.x ?? 0) / length, y: (vector.y ?? 0) / length, z: (vector.z ?? 0) / length };
+}
+
+function arrayToVector(value) {
+  if (Array.isArray(value)) {
+    return { x: value[0] ?? 0, y: value[1] ?? 0, z: value[2] ?? 0 };
+  }
+  return value ?? { x: 0, y: 1, z: 0 };
+}
+
+function vectorArray(value) {
+  if (Array.isArray(value)) {
+    return [value[0] ?? 0, value[1] ?? 0, value[2] ?? 0];
+  }
+  return [value?.x ?? 0, value?.y ?? 0, value?.z ?? 0];
+}
+
+function rotatePointInPlace(point, angle, origin, axis) {
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const x = point[0] - origin[0];
+  const y = point[1] - origin[1];
+  const z = point[2] - origin[2];
+  const u = axis.x;
+  const v = axis.y;
+  const w = axis.z;
+  const dot = u * x + v * y + w * z;
+
+  point[0] = origin[0] + u * dot * (1 - cos) + x * cos + (-w * y + v * z) * sin;
+  point[1] = origin[1] + v * dot * (1 - cos) + y * cos + (w * x - u * z) * sin;
+  point[2] = origin[2] + w * dot * (1 - cos) + z * cos + (-v * x + u * y) * sin;
 }
 
 function normalizeVectorOrNull(vector) {

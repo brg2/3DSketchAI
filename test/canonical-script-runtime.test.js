@@ -763,6 +763,29 @@ test("face rotate gesture can preserve normal-axis tilt while shifting to altern
   assert.equal(operation.params.faceTilts[1].angle, 0.4);
 });
 
+test("object rotate gesture maps shift drag to the alternate rotation axis", () => {
+  const shifted = mapToolGestureToOperation({
+    tool: "rotate",
+    targetId: "obj_1",
+    selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+    gesture: { dx: 25, dy: 0, shiftKey: true },
+  });
+  const accumulated = mapToolGestureToOperation({
+    tool: "rotate",
+    targetId: "obj_1",
+    selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+    gesture: {
+      dx: 70,
+      dy: 0,
+      shiftKey: true,
+      objectRotationEuler: { x: 0.3, y: 0.4, z: 0 },
+    },
+  });
+
+  assert.deepEqual(shifted.params.deltaEuler, { x: 0.25, y: 0, z: 0 });
+  assert.deepEqual(accumulated.params.deltaEuler, { x: 0.3, y: 0.4, z: 0 });
+});
+
 test("face rotate gesture derives tilt basis from the current selected face normal", () => {
   const normal = normalize({ x: 0, y: 1, z: 1 });
   const operation = mapToolGestureToOperation({

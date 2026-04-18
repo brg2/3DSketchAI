@@ -18,13 +18,13 @@ export function replayFeaturesToSceneState({ features, exactBackend = "feature-r
   };
 }
 
-export function replayFeaturesToShapes({ features, r, sai }) {
+export function replayFeaturesToShapes({ features, r, sai, bakeObjectRotations = true }) {
   if (!r || !sai) {
     throw new Error("Feature replay requires modeling runtime and 3DSAI library");
   }
 
   const ordered = orderedFeatures(features);
-  const context = createShapeReplayContext({ features: ordered, r, sai });
+  const context = createShapeReplayContext({ features: ordered, r, sai, bakeObjectRotations });
   for (const feature of ordered) {
     applyFeature(context, feature);
   }
@@ -139,10 +139,11 @@ function applyFeatureToSceneState(sceneState, feature) {
   }
 }
 
-function createShapeReplayContext({ features, r, sai }) {
+function createShapeReplayContext({ features, r, sai, bakeObjectRotations = true }) {
   return {
     r,
     sai,
+    bakeObjectRotations,
     objectOrder: [],
     objectValues: new Map(),
     objectState: new Map(),
@@ -240,8 +241,15 @@ function applyRotateFeature(context, current, operation) {
     return current;
   }
 
-  const origin = [0, 0, 0];
-  const next = current.rotate(operation.params.deltaEuler.y, origin, [0, 1, 0]);
+  const origin = state
+    ? [state.position.x ?? 0, state.position.y ?? 0, state.position.z ?? 0]
+    : [0, 0, 0];
+  let next = current;
+  if (context.bakeObjectRotations) {
+    for (const rotation of rotationsFromEuler(operation.params.deltaEuler)) {
+      next = next.rotate(rotation.angle, origin, rotation.axis);
+    }
+  }
   if (state) {
     state.rotation.x += operation.params.deltaEuler.x;
     state.rotation.y += operation.params.deltaEuler.y;
@@ -302,6 +310,19 @@ function faceTiltsFromParams(params) {
   return Array.isArray(params?.faceTilts) && params.faceTilts.length > 0
     ? params.faceTilts
     : [params?.faceTilt].filter(Boolean);
+}
+
+function rotationsFromEuler(deltaEuler = {}) {
+  return [
+    { key: "x", axis: [1, 0, 0] },
+    { key: "y", axis: [0, 1, 0] },
+    { key: "z", axis: [0, 0, 1] },
+  ]
+    .map((rotation) => ({
+      axis: rotation.axis,
+      angle: deltaEuler[rotation.key] ?? 0,
+    }))
+    .filter((rotation) => Number.isFinite(rotation.angle) && Math.abs(rotation.angle) >= 1e-8);
 }
 
 function faceOperationFromPushPull(params) {

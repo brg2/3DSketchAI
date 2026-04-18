@@ -214,3 +214,29 @@ test("editable box object translation replays to the BREP kernel with array vect
   assert.equal(calls.boxes.length, 1);
   assert.deepEqual(calls.translates, [[1.25, -0.5, 0.75]]);
 });
+
+test("editable box object rotation replays after local shape edits", () => {
+  const calls = { polygons: [], solids: [] };
+  const r = {
+    makePolygon(points) {
+      calls.polygons.push(points.map((point) => [...point]));
+      return { type: "face", points };
+    },
+    makeSolid(faces) {
+      calls.solids.push(faces);
+      return { type: "solid", faces };
+    },
+  };
+  const box = makeBox(r, [-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]);
+  moveBoxVertex(r, box, { x: 0.5, y: 0.5, z: 0.5, key: "px_py_pz" }, [0.25, 0, 0]);
+  box.rotate(Math.PI / 2, [0, 0, 0], [0, 1, 0]);
+  const solid = box.toShape();
+
+  assert.equal(solid.type, "solid");
+  assert.equal(calls.solids.length, 1);
+  const rotatedVertex = calls.polygons
+    .flatMap((face) => face)
+    .find((point) => Math.abs(point[2] + 0.75) < 1e-6 && Math.abs(point[1] - 0.5) < 1e-6);
+  assert.ok(rotatedVertex, "rotated edited corner should be present in replayed solid");
+  assert.ok(Math.abs(rotatedVertex[0] - 0.5) < 1e-6);
+});

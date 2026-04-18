@@ -1,5 +1,5 @@
 import { create3dsaiModelingLibrary } from "./3dsai-modeling.js";
-import { replayFeaturesToShapes } from "../feature/feature-replay.js";
+import { replayFeaturesToSceneState, replayFeaturesToShapes } from "../feature/feature-replay.js";
 import { annotateMeshDataWithFeatureProvenance } from "../feature/feature-provenance.js";
 
 /**
@@ -13,7 +13,8 @@ export class ReplicadOpenCascadeAdapter {
   async execute({ features = [] }) {
     const replicad = await this._loadReplicad();
     const sai = create3dsaiModelingLibrary();
-    const replayed = replayFeaturesToShapes({ features, r: replicad, sai });
+    const transformReplay = replayFeaturesToSceneState({ features, exactBackend: "replicad:transforms" });
+    const replayed = replayFeaturesToShapes({ features, r: replicad, sai, bakeObjectRotations: false });
 
     if (!replayed.shape) {
       return {
@@ -26,13 +27,17 @@ export class ReplicadOpenCascadeAdapter {
 
     const sceneState = {};
     for (const [objectId, shape] of replayed.objectShapes.entries()) {
-      const meshData = annotateMeshDataWithFeatureProvenance(shape.mesh(), { objectId, features });
+      const transformState = transformReplay.sceneState[objectId] ?? null;
+      const meshData = meshDataForDisplayTransform(
+        annotateMeshDataWithFeatureProvenance(shape.mesh(), { objectId, features }),
+        transformState,
+      );
       sceneState[objectId] = {
         primitive: "brep_mesh",
         meshData,
         meshSignature: meshDataSignature(meshData),
-        position: { x: 0, y: 0, z: 0 },
-        rotation: { x: 0, y: 0, z: 0 },
+        position: shouldUseDisplayTransform(transformState) ? { ...transformState.position } : { x: 0, y: 0, z: 0 },
+        rotation: shouldUseDisplayTransform(transformState) ? { ...transformState.rotation } : { x: 0, y: 0, z: 0 },
         scale: { x: 1, y: 1, z: 1 },
       };
     }
@@ -70,6 +75,34 @@ export class ReplicadOpenCascadeAdapter {
     this._cachedReplicad = replicad;
     return replicad;
   }
+}
+
+function shouldUseDisplayTransform(state) {
+  return Boolean(state && (
+    Math.abs(state.rotation?.x ?? 0) > 1e-8 ||
+    Math.abs(state.rotation?.y ?? 0) > 1e-8 ||
+    Math.abs(state.rotation?.z ?? 0) > 1e-8
+  ));
+}
+
+export function meshDataForDisplayTransform(meshData, transformState) {
+  if (!shouldUseDisplayTransform(transformState)) {
+    return meshData;
+  }
+  const position = transformState.position ?? { x: 0, y: 0, z: 0 };
+  const sourceVertices = meshData?.vertices ?? meshData?.positions ?? [];
+  const vertices = [...sourceVertices];
+  for (let offset = 0; offset < vertices.length; offset += 3) {
+    vertices[offset + 0] = (vertices[offset + 0] ?? 0) - (position.x ?? 0);
+    vertices[offset + 1] = (vertices[offset + 1] ?? 0) - (position.y ?? 0);
+    vertices[offset + 2] = (vertices[offset + 2] ?? 0) - (position.z ?? 0);
+  }
+  return {
+    ...meshData,
+    vertices,
+    positions: meshData?.positions ? vertices : meshData?.positions,
+    featureSpaceOrigin: { x: position.x ?? 0, y: position.y ?? 0, z: position.z ?? 0 },
+  };
 }
 
 export function meshDataSignature(meshData) {

@@ -61,6 +61,7 @@ function updateMeshGeometry(mesh, state) {
 function applyGeometryUserData(geometry, meshData) {
   geometry.userData.faceProvenance = cloneFaceProvenance(meshData?.faceProvenance);
   geometry.userData.faceGroups = cloneFaceGroups(meshData?.faceGroups);
+  geometry.userData.featureSpaceOrigin = meshData?.featureSpaceOrigin ? { ...meshData.featureSpaceOrigin } : null;
 }
 
 function geometrySignature(state) {
@@ -843,6 +844,14 @@ export class RepresentationStore {
         ]),
       ].join(":");
       updateMeshGeometry(mesh, previewState);
+      applyTransform(mesh, previewState);
+      return;
+    }
+
+    if (type === "rotate") {
+      previewState.rotation.x += params.deltaEuler?.x ?? 0;
+      previewState.rotation.y += params.deltaEuler?.y ?? 0;
+      previewState.rotation.z += params.deltaEuler?.z ?? 0;
       applyTransform(mesh, previewState);
       return;
     }

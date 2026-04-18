@@ -39,7 +39,10 @@ export function resolveFeatureModification(features, operation) {
     return modifyOriginatingPrimitivePosition(features, validOperation);
   }
   if (validOperation.type === OPERATION_TYPES.ROTATE) {
-    return modifyExistingFaceRotateFeature(features, validOperation);
+    return (
+      modifyExistingFaceRotateFeature(features, validOperation) ??
+      modifyExistingObjectRotateFeature(features, validOperation)
+    );
   }
   if (validOperation.type === OPERATION_TYPES.PUSH_PULL) {
     return (
@@ -104,6 +107,52 @@ function modifyExistingFaceRotateFeature(features, operation) {
     return {
       features: normalizeFeatureGraph(next),
       reason: "modified_existing_face_rotate",
+      featureId: feature.id,
+    };
+  }
+
+  return null;
+}
+
+function modifyExistingObjectRotateFeature(features, operation) {
+  if (operation.selection?.mode === "face" || normalizeFaceTilts(operation.params).length > 0) {
+    return null;
+  }
+  const operationAxes = nonZeroEulerAxes(operation.params?.deltaEuler);
+  if (operationAxes.length === 0) {
+    return null;
+  }
+
+  const normalized = normalizeFeatureGraph(features);
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    const feature = normalized[index];
+    if (feature.type !== OPERATION_TYPES.ROTATE) {
+      continue;
+    }
+    if (feature.target?.objectId !== operation.targetId) {
+      continue;
+    }
+    if (feature.target?.selection?.mode === "face" || normalizeFaceTilts(feature.params).length > 0) {
+      continue;
+    }
+    if (!hasOnlySafeDownstreamFeatures(normalized, index, operation.targetId)) {
+      return null;
+    }
+
+    const next = structuredClone(normalized);
+    const current = vectorWithDefaults(next[index].params.deltaEuler, { x: 0, y: 0, z: 0 });
+    const delta = vectorWithDefaults(operation.params.deltaEuler, { x: 0, y: 0, z: 0 });
+    next[index].params = {
+      ...next[index].params,
+      deltaEuler: {
+        x: roundMillimeters(current.x + delta.x),
+        y: roundMillimeters(current.y + delta.y),
+        z: roundMillimeters(current.z + delta.z),
+      },
+    };
+    return {
+      features: normalizeFeatureGraph(next),
+      reason: "modified_existing_object_rotate",
       featureId: feature.id,
     };
   }
@@ -430,6 +479,11 @@ function mergeMatchingFaceTilt(existingTilt, operationTilt) {
     hingeSideSign: 0,
     angle: roundMillimeters((existingTilt.angle ?? 0) + (operationTilt.angle ?? 0)),
   };
+}
+
+function nonZeroEulerAxes(deltaEuler) {
+  const vector = vectorWithDefaults(deltaEuler, { x: 0, y: 0, z: 0 });
+  return AXES.filter((axis) => Math.abs(vector[axis]) >= 1e-8);
 }
 
 function faceTiltMergeKey(tilt) {

@@ -98,3 +98,32 @@ test("tool drag commit samples the release pointer before committing", async () 
   assert.equal(committed, true);
   assert.deepEqual(calls, ["update:240,180", "end", "commit"]);
 });
+
+test("object rotate drag can switch to the alternate axis mid-drag", () => {
+  const app = Object.create(SketchApp.prototype);
+  app.tools = { activeTool: "rotate", dragState: null };
+
+  const context = app._buildDragContext(
+    { clientX: 100, clientY: 100, shiftKey: false },
+    {
+      hit: {
+        point: new THREE.Vector3(0, 0, 0),
+        object: {},
+      },
+      selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+    },
+  );
+  app.tools.dragState = { context };
+
+  const first = app._buildGestureFromDrag(
+    { clientX: 140, clientY: 100, shiftKey: false },
+    { dx: 40, dy: 0, selection: { mode: "object", objectId: "obj_1" }, context },
+  );
+  const second = app._buildGestureFromDrag(
+    { clientX: 170, clientY: 100, shiftKey: true },
+    { dx: 70, dy: 0, selection: { mode: "object", objectId: "obj_1" }, context },
+  );
+
+  assert.deepEqual(first.objectRotationEuler, { x: 0, y: 0.4, z: 0 });
+  assert.deepEqual(second.objectRotationEuler, { x: 0.3, y: 0.4, z: 0 });
+});

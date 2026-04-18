@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { RepresentationStore } from "../src/representation/representation-store.js";
 import { selectorFromIntersection } from "../src/interaction/selection-pipeline.js";
 import { ModelExecutor } from "../src/modeling/model-executor.js";
-import { meshDataSignature } from "../src/modeling/replicad-opencascade-adapter.js";
+import { meshDataForDisplayTransform, meshDataSignature } from "../src/modeling/replicad-opencascade-adapter.js";
 
 test("full-object move preview translates the displayed mesh", () => {
   const store = new RepresentationStore();
@@ -30,6 +30,109 @@ test("full-object move preview translates the displayed mesh", () => {
     { x: mesh.position.x, y: mesh.position.y, z: mesh.position.z },
     { x: 1.25, y: 0, z: 0.75 },
   );
+});
+
+test("full-object rotate preview rotates the displayed mesh", () => {
+  const store = new RepresentationStore();
+  store.bindScene(new THREE.Scene());
+  store.setInitialSceneState({
+    obj_1: {
+      primitive: "box",
+      position: { x: 0, y: 0.5, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+  });
+
+  store.setPreviewOperation({
+    type: "rotate",
+    targetId: "obj_1",
+    selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+    params: { deltaEuler: { x: 0, y: 0.75, z: 0 } },
+  });
+
+  const mesh = store.getSelectableMeshes()[0];
+  assert.equal(mesh.rotation.x, 0);
+  assert.equal(mesh.rotation.y, 0.75);
+  assert.equal(mesh.rotation.z, 0);
+});
+
+test("exact brep replacement preserves committed object rotation as display transform", () => {
+  const store = new RepresentationStore();
+  store.bindScene(new THREE.Scene());
+  const meshData = {
+    vertices: [-0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5],
+    triangles: [0, 1, 2],
+    normals: [],
+  };
+  const signature = meshDataSignature(meshData);
+  store.setInitialSceneState({
+    obj_1: {
+      primitive: "brep_mesh",
+      meshData,
+      meshSignature: signature,
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+  });
+
+  store.replaceWithExact({
+    sceneState: {
+      obj_1: {
+        primitive: "brep_mesh",
+        meshData,
+        meshSignature: signature,
+        position: { x: 0, y: 0.6, z: 0 },
+        rotation: { x: 0, y: 0.4, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      },
+    },
+  });
+
+  const mesh = store.getSelectableMeshes()[0];
+  assert.equal(mesh.position.y, 0.6);
+  assert.equal(mesh.rotation.y, 0.4);
+});
+
+test("display transform mesh data keeps feature-space selector hints stable", () => {
+  const meshData = meshDataForDisplayTransform({
+    vertices: [1.5, 0.1, -1.5, 2.5, 0.1, -1.5, 2.5, 1.1, -1.5],
+    triangles: [0, 1, 2],
+    normals: [],
+    faceProvenance: [{
+      objectId: "obj_1",
+      featureId: "feature_1",
+      role: "face.nz",
+      hint: {
+        point: { x: 2, y: 0.6, z: -1.5 },
+        normal: { x: 0, y: 0, z: -1 },
+      },
+    }],
+  }, {
+    position: { x: 2, y: 0.6, z: -1 },
+    rotation: { x: 0, y: 0.4, z: 0 },
+  });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(meshData.vertices), 3));
+  geometry.setIndex([0, 1, 2]);
+  geometry.userData.faceProvenance = meshData.faceProvenance;
+  geometry.userData.featureSpaceOrigin = meshData.featureSpaceOrigin;
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial());
+  mesh.position.set(2, 0.6, -1);
+  mesh.rotation.set(0, 0.4, 0);
+  mesh.updateMatrixWorld(true);
+  const localPoint = new THREE.Vector3(0.2, 0, -0.5);
+  const worldPoint = mesh.localToWorld(localPoint.clone());
+
+  const selector = selectorFromIntersection({
+    object: mesh,
+    faceIndex: 0,
+    face: { normal: new THREE.Vector3(0, 0, -1) },
+    point: worldPoint,
+  });
+
+  assert.deepEqual(selector.hint.point, { x: 2.2, y: 0.6, z: -1.5 });
 });
 
 test("state replay move commit uses canonical operations instead of the current preview baseline", async () => {

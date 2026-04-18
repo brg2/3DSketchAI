@@ -8,7 +8,15 @@ function round3(value) {
 
 export function mapToolGestureToOperation({ tool, targetId, selection, gesture }) {
   const operationType = operationForTool(tool);
-  const { dx = 0, dy = 0, shiftKey = false, worldDelta = null, pushPullDistance = null, faceTiltAngles = null } = gesture ?? {};
+  const {
+    dx = 0,
+    dy = 0,
+    shiftKey = false,
+    worldDelta = null,
+    pushPullDistance = null,
+    faceTiltAngles = null,
+    objectRotationEuler = null,
+  } = gesture ?? {};
   const faceNormal = selection?.selector?.hint?.normal ?? selection?.faceNormalWorld ?? { x: 0, y: 0, z: 1 };
   const pushPullAxis = normalizeAxis(faceNormal);
   const nextPushPullDistance =
@@ -34,9 +42,11 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
           angle: round3(dx * 0.01),
           faceTiltAngles,
         })
-      : {
-          deltaEuler: { x: 0, y: round3(dx * 0.01), z: 0 },
-        };
+      : objectRotateParams({
+          shiftKey,
+          angle: round3(dx * 0.01),
+          objectRotationEuler,
+        });
 
   const operation = {
     type: operationType,
@@ -61,6 +71,26 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
   };
 
   return validateOperation(operation);
+}
+
+function objectRotateParams({ shiftKey, angle, objectRotationEuler }) {
+  if (objectRotationEuler && typeof objectRotationEuler === "object") {
+    return {
+      deltaEuler: {
+        x: round3(objectRotationEuler.x ?? 0),
+        y: round3(objectRotationEuler.y ?? 0),
+        z: round3(objectRotationEuler.z ?? 0),
+      },
+    };
+  }
+
+  return {
+    deltaEuler: {
+      x: shiftKey ? angle : 0,
+      y: shiftKey ? 0 : angle,
+      z: 0,
+    },
+  };
 }
 
 function moveParams(selection, delta) {

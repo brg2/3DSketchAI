@@ -209,6 +209,81 @@ test("shape replay returns all primitive object shapes without requiring a compo
   assert.ok(replayed.shape);
 });
 
+test("shape replay applies whole-object rotate feature across changed axes", () => {
+  const calls = [];
+  const shape = {
+    rotate(angle, origin, axis) {
+      calls.push({ angle, origin, axis });
+      return this;
+    },
+    mesh() {
+      return { vertices: [], triangles: [], normals: [] };
+    },
+  };
+  const r = {
+    makeBox() {
+      return shape;
+    },
+  };
+  const features = featureGraphFromOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 2, y: 0.6, z: -1 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    {
+      type: OPERATION_TYPES.ROTATE,
+      targetId: "obj_1",
+      selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+      params: { deltaEuler: { x: 0.3, y: 0.4, z: 0 } },
+    },
+  ]);
+
+  replayFeaturesToShapes({ features, r, sai: {} });
+
+  assert.deepEqual(calls, [
+    { angle: 0.3, origin: [2, 0.6, -1], axis: [1, 0, 0] },
+    { angle: 0.4, origin: [2, 0.6, -1], axis: [0, 1, 0] },
+  ]);
+});
+
+test("shape replay can leave whole-object rotation for display transform state", () => {
+  const calls = [];
+  const shape = {
+    rotate(angle, origin, axis) {
+      calls.push({ angle, origin, axis });
+      return this;
+    },
+    mesh() {
+      return { vertices: [], triangles: [], normals: [] };
+    },
+  };
+  const r = {
+    makeBox() {
+      return shape;
+    },
+  };
+  const features = featureGraphFromOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 2, y: 0.6, z: -1 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    {
+      type: OPERATION_TYPES.ROTATE,
+      targetId: "obj_1",
+      selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+      params: { deltaEuler: { x: 0, y: 0.4, z: 0 } },
+    },
+  ]);
+
+  replayFeaturesToShapes({ features, r, sai: {}, bakeObjectRotations: false });
+
+  assert.deepEqual(calls, []);
+});
+
 test("feature store can round-trip features and operation compatibility view", () => {
   const store = new FeatureStore();
   store.appendOperation(
@@ -464,6 +539,96 @@ test("whole-object move falls back when downstream transforms make creation-posi
   assert.equal(result.reason, "fallback_new_feature");
   assert.equal(result.features.length, 3);
   assert.equal(result.features[2].type, OPERATION_TYPES.MOVE);
+});
+
+test("repeated whole-object rotations on the same axis modify the existing rotate feature", () => {
+  const features = featureGraphFromOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    {
+      type: OPERATION_TYPES.ROTATE,
+      targetId: "obj_1",
+      selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+      params: { deltaEuler: { x: 0, y: 0.25, z: 0 } },
+    },
+  ]);
+
+  const result = applyOperationToFeatureGraph(features, {
+    type: OPERATION_TYPES.ROTATE,
+    targetId: "obj_1",
+    selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+    params: { deltaEuler: { x: 0, y: 0.4, z: 0 } },
+  });
+
+  assert.equal(result.reason, "modified_existing_object_rotate");
+  assert.equal(result.features.length, 2);
+  assert.deepEqual(result.features[1].params.deltaEuler, { x: 0, y: 0.65, z: 0 });
+});
+
+test("whole-object rotations on a different axis modify the root rotate feature", () => {
+  const features = featureGraphFromOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    {
+      type: OPERATION_TYPES.ROTATE,
+      targetId: "obj_1",
+      selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+      params: { deltaEuler: { x: 0, y: 0.25, z: 0 } },
+    },
+  ]);
+
+  const result = applyOperationToFeatureGraph(features, {
+    type: OPERATION_TYPES.ROTATE,
+    targetId: "obj_1",
+    selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+    params: { deltaEuler: { x: 0.4, y: 0, z: 0 } },
+  });
+
+  assert.equal(result.reason, "modified_existing_object_rotate");
+  assert.equal(result.features.length, 2);
+  assert.deepEqual(result.features[1].params.deltaEuler, { x: 0.4, y: 0.25, z: 0 });
+});
+
+test("whole-object rotation does not merge across downstream geometry edits", () => {
+  const features = featureGraphFromOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    {
+      type: OPERATION_TYPES.ROTATE,
+      targetId: "obj_1",
+      selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+      params: { deltaEuler: { x: 0, y: 0.25, z: 0 } },
+    },
+    {
+      type: OPERATION_TYPES.PUSH_PULL,
+      targetId: "obj_1",
+      selection: { mode: "face", objectId: "obj_1", objectIds: ["obj_1"], faceNormalWorld: { x: 0, y: 0, z: 1 } },
+      params: { axis: { x: 0, y: 0, z: 1 }, distance: 0.5, mode: "move" },
+    },
+  ]);
+
+  const result = applyOperationToFeatureGraph(features, {
+    type: OPERATION_TYPES.ROTATE,
+    targetId: "obj_1",
+    selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+    params: { deltaEuler: { x: 0, y: 0.4, z: 0 } },
+  });
+
+  assert.equal(result.reason, "fallback_new_feature");
+  assert.equal(result.features.length, 4);
+  assert.deepEqual(result.features[1].params.deltaEuler, { x: 0, y: 0.25, z: 0 });
 });
 
 test("edge move always creates its own subshape move feature", () => {

@@ -917,7 +917,18 @@ export class SketchApp {
         mode: "face-rotate",
         activeShift: Boolean(shiftKey),
         startDx: 0,
+        lastDx: 0,
         baseAngles: { normal: 0, alternate: 0 },
+      };
+    }
+
+    if (this.tools.activeTool === "rotate") {
+      return {
+        mode: "object-rotate",
+        activeShift: Boolean(shiftKey),
+        startDx: 0,
+        lastDx: 0,
+        baseEuler: { x: 0, y: 0, z: 0 },
       };
     }
 
@@ -1087,10 +1098,11 @@ export class SketchApp {
       const wantsAlternateAxis = Boolean(event.shiftKey);
       if (wantsAlternateAxis !== drag.context.activeShift) {
         const previousKey = drag.context.activeShift ? "alternate" : "normal";
-        const previousDelta = Math.round(((drag.dx - drag.context.startDx) * 0.01) * 1000) / 1000;
+        const splitDx = Number.isFinite(drag.context.lastDx) ? drag.context.lastDx : drag.dx;
+        const previousDelta = Math.round(((splitDx - drag.context.startDx) * 0.01) * 1000) / 1000;
         drag.context.baseAngles[previousKey] += previousDelta;
         drag.context.activeShift = wantsAlternateAxis;
-        drag.context.startDx = drag.dx;
+        drag.context.startDx = splitDx;
         if (this.tools.dragState) {
           this.tools.dragState.context = drag.context;
         }
@@ -1098,11 +1110,39 @@ export class SketchApp {
 
       const activeKey = drag.context.activeShift ? "alternate" : "normal";
       const activeDelta = Math.round(((drag.dx - drag.context.startDx) * 0.01) * 1000) / 1000;
+      drag.context.lastDx = drag.dx;
       return {
         ...gesture,
         faceTiltAngles: {
           normal: drag.context.baseAngles.normal + (activeKey === "normal" ? activeDelta : 0),
           alternate: drag.context.baseAngles.alternate + (activeKey === "alternate" ? activeDelta : 0),
+        },
+      };
+    }
+
+    if (this.tools.activeTool === "rotate" && drag.context?.mode === "object-rotate") {
+      const wantsAlternateAxis = Boolean(event.shiftKey);
+      if (wantsAlternateAxis !== drag.context.activeShift) {
+        const previousAxis = drag.context.activeShift ? "x" : "y";
+        const splitDx = Number.isFinite(drag.context.lastDx) ? drag.context.lastDx : drag.dx;
+        const previousDelta = Math.round(((splitDx - drag.context.startDx) * 0.01) * 1000) / 1000;
+        drag.context.baseEuler[previousAxis] += previousDelta;
+        drag.context.activeShift = wantsAlternateAxis;
+        drag.context.startDx = splitDx;
+        if (this.tools.dragState) {
+          this.tools.dragState.context = drag.context;
+        }
+      }
+
+      const activeAxis = drag.context.activeShift ? "x" : "y";
+      const activeDelta = Math.round(((drag.dx - drag.context.startDx) * 0.01) * 1000) / 1000;
+      drag.context.lastDx = drag.dx;
+      return {
+        ...gesture,
+        objectRotationEuler: {
+          x: drag.context.baseEuler.x + (activeAxis === "x" ? activeDelta : 0),
+          y: drag.context.baseEuler.y + (activeAxis === "y" ? activeDelta : 0),
+          z: drag.context.baseEuler.z,
         },
       };
     }
