@@ -105,7 +105,7 @@ function maybeShowWelcomeDialog() {
   } else {
     welcomeDialog.setAttribute("open", "");
   }
-  welcomeContinueButton.focus();
+  welcomeContinueButton.focus({ preventScroll: true });
 }
 
 welcomeContinueButton.addEventListener("click", closeWelcomeDialog);
