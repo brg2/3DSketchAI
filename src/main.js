@@ -223,6 +223,7 @@ function createTestApi(app) {
       app.hoveredObjectId = null;
       app.hoveredHit = null;
       app.objectCounter = 2;
+      app.polylineCounter = 1;
       app._setModelName("E2E Deterministic Scene");
       app._setActiveTool("select", { render: false });
       app._setSelectionMode("object", { render: false });
@@ -417,6 +418,30 @@ function createTestApi(app) {
     getCanvasPointForVertex(objectName, vertexIndex) {
       const vertex = this.getVertexData(objectName).find((entry) => entry.vertexIndex === vertexIndex);
       return vertex?.click ?? null;
+    },
+    getCanvasPointForWorldPoint(point) {
+      return clientPointForWorldPoint(new THREE.Vector3(point?.x ?? 0, point?.y ?? 0, point?.z ?? 0));
+    },
+    getPolylineDrawPath({ objectName = "cube", faceIndex = 0, points = [] } = {}) {
+      const face = this.getFaceData(objectName).find((entry) => entry.faceIndex === faceIndex);
+      if (!face) {
+        return null;
+      }
+      const center = new THREE.Vector3(face.center.x, face.center.y, face.center.z);
+      const normal = new THREE.Vector3(face.normal.x, face.normal.y, face.normal.z).normalize();
+      const tangentA = Math.abs(normal.y) > 0.9
+        ? new THREE.Vector3(1, 0, 0)
+        : new THREE.Vector3(0, 1, 0).cross(normal).normalize();
+      const tangentB = normal.clone().cross(tangentA).normalize();
+      return points.map((point) => {
+        const world = center.clone()
+          .add(tangentA.clone().multiplyScalar(point?.x ?? 0))
+          .add(tangentB.clone().multiplyScalar(point?.y ?? 0));
+        return {
+          world: vector(world),
+          client: clientPointForWorldPoint(world),
+        };
+      });
     },
     getMoveDragPoints(objectId, delta) {
       const mesh = meshForObject(objectId);

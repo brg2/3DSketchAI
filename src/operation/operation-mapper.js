@@ -392,3 +392,37 @@ export function createGroupingOperation({ type, objectIds, groupId, componentId 
     params: { objectIds, groupId, componentId },
   });
 }
+
+export function createPolylineOperation({
+  objectId,
+  targetId = null,
+  selection = null,
+  points,
+  closed = false,
+  plane = null,
+}) {
+  return validateOperation({
+    type: OPERATION_TYPES.POLYLINE,
+    targetId,
+    selection,
+    params: {
+      objectId,
+      points: points.map((point) => ({
+        x: round3(point.x ?? 0),
+        y: round3(point.y ?? 0),
+        z: round3(point.z ?? 0),
+      })),
+      closed: Boolean(closed),
+      ...(plane ? {
+        plane: {
+          origin: {
+            x: round3(plane.origin?.x ?? 0),
+            y: round3(plane.origin?.y ?? 0),
+            z: round3(plane.origin?.z ?? 0),
+          },
+          normal: normalizeAxis(plane.normal ?? { x: 0, y: 1, z: 0 }),
+        },
+      } : {}),
+    },
+  });
+}

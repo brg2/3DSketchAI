@@ -14,7 +14,7 @@ import { ModelExecutor } from "../modeling/model-executor.js";
 import { ModelScriptHistory } from "../modeling/model-script-history.js";
 import { AppSessionStore } from "../persistence/app-session-store.js";
 import { ModelScriptHistoryStore } from "../persistence/model-script-history-store.js";
-import { createGroupingOperation, createPrimitiveOperation, mapToolGestureToOperation } from "../operation/operation-mapper.js";
+import { createGroupingOperation, createPolylineOperation, createPrimitiveOperation, mapToolGestureToOperation } from "../operation/operation-mapper.js";
 import { OPERATION_TYPES, SELECTION_MODES } from "../operation/operation-types.js";
 import {
   GROUND_THEMES,
@@ -30,6 +30,7 @@ const TOOL_CONFIG = [
   { id: "move", label: "Move", icon: "move" },
   { id: "rotate", label: "Rotate", icon: "rotate" },
   { id: "pushPull", label: "Push/Pull", icon: "pushPull" },
+  { id: "lineDraw", label: "Line Draw", icon: "lineDraw" },
 ];
 
 const DEFAULT_GROUND_THEME = GROUND_THEMES.FOREST;
@@ -160,6 +161,7 @@ export class SketchApp {
     this.touchDebugElement = null;
 
     this.objectCounter = 1;
+    this.polylineCounter = 1;
 
     this.runtimeController = new RuntimeController({
       canonicalModel: new CanonicalModel(),
@@ -172,6 +174,7 @@ export class SketchApp {
 
     this.runtimeController.initialize({ scene: this.viewport.scene, seedSceneState: {} });
     this._initPreselectionOverlays();
+    this._initLineDrawOverlay();
     this.viewport.controls.addEventListener("change", () => {
       this._scheduleSessionPersist();
       this._requestFrame();
@@ -297,6 +300,13 @@ export class SketchApp {
       this.viewport.cancelCursorOrbit();
       this.viewport.cancelCursorPan();
 
+      if (this.tools.activeTool === "lineDraw") {
+        await this._handleLineDrawPointerDown(event);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+
       const selectionResult = this.selectionPipeline.pick({
         clientX: event.clientX,
         clientY: event.clientY,
@@ -348,6 +358,13 @@ export class SketchApp {
         return;
       }
 
+      if (this.tools.activeTool === "lineDraw" && this.lineDrawState) {
+        this._updateLineDrawPreviewFromEvent(event);
+        this._renderOverlay();
+        this._requestFrame();
+        return;
+      }
+
       if (event.buttons && (event.buttons & 1) === 0) {
         return;
       }
@@ -382,6 +399,23 @@ export class SketchApp {
     this.canvas.addEventListener("pointerleave", () => {
       this._clearHoverState();
     });
+
+    this.canvas.addEventListener("dblclick", async (event) => {
+      if (this.tools.activeTool !== "lineDraw" || !this.lineDrawState) {
+        return;
+      }
+      const point = this._lineDrawPointFromEvent(event);
+      if (point) {
+        const rounded = this._roundedVector(point);
+        const last = this.lineDrawState.points.at(-1);
+        if (!last || !this._pointsCloseForCommit(last, rounded)) {
+          this._appendLineDrawPoint(point);
+        }
+      }
+      await this._commitLineDraw({ closed: false });
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, { capture: true });
 
     this.canvas.addEventListener("contextmenu", (event) => {
       event.preventDefault();
@@ -430,6 +464,12 @@ export class SketchApp {
 
     window.addEventListener("keydown", (event) => {
       if (this._isEditableEventTarget(event.target)) {
+        return;
+      }
+
+      if (event.key === "Escape" && this.lineDrawState) {
+        event.preventDefault();
+        this._cancelLineDraw();
         return;
       }
 
@@ -488,6 +528,7 @@ export class SketchApp {
           this.hoveredObjectId = null;
           this.hoveredHit = null;
           this.objectCounter = 1;
+          this.polylineCounter = 1;
           this._setModelName(DEFAULT_MODEL_NAME);
           this._setPanelPage("script");
           this._setGridVisible(false);
@@ -497,6 +538,7 @@ export class SketchApp {
           });
           await this._persistModelHistory();
           this.objectCounter = 2;
+          this.polylineCounter = 1;
           this.selectionPipeline.selectedObjectIds = ["obj_1"];
           this._applySelectionHighlights();
           this._renderOverlay();
@@ -716,6 +758,7 @@ export class SketchApp {
       this.modelHistory.reset(graphJson, { label: "Open" });
       await this._persistModelHistory();
       this.objectCounter = 1;
+      this.polylineCounter = 1;
       this._syncObjectCounterFromOperations(this.runtimeController.canonicalModel.getOperations());
       this.selectionPipeline.selectedObjectIds = [];
       this.hoveredObjectId = null;
@@ -1325,6 +1368,246 @@ export class SketchApp {
     return (e - b * d) / denom;
   }
 
+  _initLineDrawOverlay() {
+    this.lineDrawState = null;
+    this.lineDrawPreview = new THREE.Line(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({
+        color: 0x24a148,
+        depthTest: false,
+      }),
+    );
+    this.lineDrawPreview.visible = false;
+    this.lineDrawPreview.renderOrder = 45;
+    this.lineDrawPreview.frustumCulled = false;
+    this.viewport.scene.add(this.lineDrawPreview);
+  }
+
+  async _handleLineDrawPointerDown(event) {
+    const selectionResult = this.selectionPipeline.pick({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      selectableMeshes: this.representationStore.getSelectableMeshes(),
+      multiSelect: event.shiftKey,
+    });
+    this.hoveredObjectId = selectionResult?.selection?.objectId ?? null;
+    this.hoveredHit = selectionResult?.hit ?? null;
+
+    if (!this.lineDrawState) {
+      const started = this._startLineDraw(event, selectionResult);
+      this._applySelectionHighlights();
+      this._scheduleSessionPersist();
+      return started;
+    }
+
+    const point = this._lineDrawPointFromEvent(event);
+    if (!point) {
+      return false;
+    }
+
+    if (this._lineDrawClosesLoop(point, event)) {
+      await this._commitLineDraw({ closed: true });
+      return true;
+    }
+
+    if (event.detail >= 2 && this.lineDrawState.points.length >= 2) {
+      const rounded = this._roundedVector(point);
+      const last = this.lineDrawState.points.at(-1);
+      if (!last || !this._pointsCloseForCommit(last, rounded)) {
+        this._appendLineDrawPoint(point);
+      }
+      await this._commitLineDraw({ closed: false });
+      return true;
+    }
+
+    this._appendLineDrawPoint(point);
+    this._updateLineDrawPreview(point);
+    return true;
+  }
+
+  _startLineDraw(event, selectionResult) {
+    const hit = selectionResult?.hit ?? null;
+    const hitPoint = hit?.point?.clone?.() ?? null;
+    const normalObject = selectionResult?.selection?.faceNormalWorld ?? null;
+    const normal = new THREE.Vector3(
+      normalObject?.x ?? 0,
+      normalObject?.y ?? 1,
+      normalObject?.z ?? 0,
+    );
+    if (normal.lengthSq() < 1e-8) {
+      normal.set(0, 1, 0);
+    }
+    normal.normalize();
+
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const firstPoint = hitPoint ?? this.selectionPipeline.pointOnPlane({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      plane: groundPlane,
+    });
+    if (!firstPoint) {
+      return false;
+    }
+
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, firstPoint);
+    this.lineDrawState = {
+      objectId: `polyline_${this.polylineCounter++}`,
+      targetId: selectionResult?.selection?.objectId ?? null,
+      selection: selectionResult?.selection ? structuredClone(selectionResult.selection) : null,
+      plane,
+      planeOrigin: firstPoint.clone(),
+      planeNormal: normal.clone(),
+      points: [this._roundedVector(firstPoint)],
+      previewPoint: this._roundedVector(firstPoint),
+    };
+    this._hidePreselectionOverlays();
+    this._updateLineDrawPreview(firstPoint);
+    return true;
+  }
+
+  _appendLineDrawPoint(point) {
+    if (!this.lineDrawState) {
+      return;
+    }
+    const rounded = this._roundedVector(point);
+    const last = this.lineDrawState.points.at(-1);
+    if (last && this._pointsNearlyEqual(last, rounded)) {
+      this.lineDrawState.previewPoint = rounded;
+      return;
+    }
+    this.lineDrawState.points.push(rounded);
+    this.lineDrawState.previewPoint = rounded;
+  }
+
+  _updateLineDrawPreviewFromEvent(event) {
+    const point = this._lineDrawPointFromEvent(event);
+    if (point) {
+      this._updateLineDrawPreview(point);
+    }
+  }
+
+  _lineDrawPointFromEvent(event) {
+    if (!this.lineDrawState?.plane) {
+      return null;
+    }
+    return this.selectionPipeline.pointOnPlane({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      plane: this.lineDrawState.plane,
+    });
+  }
+
+  _lineDrawClosesLoop(point, event) {
+    if (!this.lineDrawState || this.lineDrawState.points.length < 3) {
+      return false;
+    }
+    const first = this.lineDrawState.points[0];
+    const firstClient = this._clientPointForWorldPoint(new THREE.Vector3(first.x, first.y, first.z));
+    if (!firstClient) {
+      return false;
+    }
+    return Math.hypot(firstClient.x - event.clientX, firstClient.y - event.clientY) <= 12;
+  }
+
+  async _commitLineDraw({ closed }) {
+    if (!this.lineDrawState) {
+      return false;
+    }
+    const state = this.lineDrawState;
+    if (state.points.length < 2 || (closed && state.points.length < 3)) {
+      this._cancelLineDraw();
+      return false;
+    }
+
+    const operation = createPolylineOperation({
+      objectId: state.objectId,
+      targetId: state.targetId,
+      selection: state.selection,
+      points: state.points,
+      closed,
+      plane: {
+        origin: this._roundedVector(state.planeOrigin),
+        normal: this._roundedVector(state.planeNormal),
+      },
+    });
+
+    this.lineDrawState = null;
+    this._updateLineDrawPreview();
+    const result = await this.runtimeController.commitOperation(operation);
+    await this._recordModelHistory(result?.canonicalGraphJson, "Line Draw");
+    this._applySelectionHighlights();
+    this._renderOverlay();
+    this._scheduleSessionPersist();
+    return true;
+  }
+
+  _cancelLineDraw() {
+    this.lineDrawState = null;
+    this._updateLineDrawPreview();
+    this._applySelectionHighlights();
+    this._renderOverlay();
+    this._requestFrame();
+  }
+
+  _updateLineDrawPreview(previewPoint = null) {
+    if (!this.lineDrawPreview) {
+      return;
+    }
+    if (!this.lineDrawState) {
+      this.lineDrawPreview.visible = false;
+      this.lineDrawPreview.geometry.dispose();
+      this.lineDrawPreview.geometry = new THREE.BufferGeometry();
+      this._requestFrame();
+      return;
+    }
+
+    const points = [...this.lineDrawState.points];
+    const roundedPreview = previewPoint ? this._roundedVector(previewPoint) : this.lineDrawState.previewPoint;
+    const last = points.at(-1);
+    if (roundedPreview && (!last || !this._pointsNearlyEqual(last, roundedPreview))) {
+      points.push(roundedPreview);
+    }
+    const flat = new Float32Array(points.length * 3);
+    points.forEach((point, index) => {
+      flat[index * 3 + 0] = point.x;
+      flat[index * 3 + 1] = point.y;
+      flat[index * 3 + 2] = point.z;
+    });
+    this.lineDrawPreview.geometry.dispose();
+    this.lineDrawPreview.geometry = new THREE.BufferGeometry();
+    this.lineDrawPreview.geometry.setAttribute("position", new THREE.BufferAttribute(flat, 3));
+    this.lineDrawPreview.visible = points.length > 1;
+    this._requestFrame();
+  }
+
+  _clientPointForWorldPoint(point) {
+    if (!point) {
+      return null;
+    }
+    const projected = point.clone().project(this.viewport.camera);
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: rect.left + ((projected.x + 1) / 2) * rect.width,
+      y: rect.top + ((1 - projected.y) / 2) * rect.height,
+    };
+  }
+
+  _roundedVector(vector) {
+    return {
+      x: Math.round((vector?.x ?? 0) * 1000) / 1000,
+      y: Math.round((vector?.y ?? 0) * 1000) / 1000,
+      z: Math.round((vector?.z ?? 0) * 1000) / 1000,
+    };
+  }
+
+  _pointsNearlyEqual(a, b) {
+    return Math.hypot((a?.x ?? 0) - (b?.x ?? 0), (a?.y ?? 0) - (b?.y ?? 0), (a?.z ?? 0) - (b?.z ?? 0)) < 1e-5;
+  }
+
+  _pointsCloseForCommit(a, b) {
+    return Math.hypot((a?.x ?? 0) - (b?.x ?? 0), (a?.y ?? 0) - (b?.y ?? 0), (a?.z ?? 0) - (b?.z ?? 0)) < 0.05;
+  }
+
   _initPreselectionOverlays() {
     this.preselectionFaceOverlay = new THREE.Mesh(
       new THREE.BufferGeometry(),
@@ -1646,9 +1929,16 @@ export class SketchApp {
 
   _syncObjectCounterFromOperations(operations) {
     let max = 0;
+    let maxPolyline = 0;
     for (const operation of operations) {
       const objectId = operation?.params?.objectId;
       if (!objectId || !objectId.startsWith("obj_")) {
+        if (objectId?.startsWith?.("polyline_")) {
+          const serial = Number.parseInt(objectId.slice("polyline_".length), 10);
+          if (Number.isFinite(serial) && serial > maxPolyline) {
+            maxPolyline = serial;
+          }
+        }
         continue;
       }
 
@@ -1659,6 +1949,7 @@ export class SketchApp {
     }
 
     this.objectCounter = Math.max(this.objectCounter, max + 1);
+    this.polylineCounter = Math.max(this.polylineCounter, maxPolyline + 1);
   }
 
   async _restoreModelHistory() {
@@ -2415,6 +2706,9 @@ export class SketchApp {
     if (!TOOL_CONFIG.some((entry) => entry.id === tool)) {
       return;
     }
+    if (tool !== "lineDraw" && this.lineDrawState) {
+      this._cancelLineDraw();
+    }
     this.tools.setActiveTool(tool);
     this._syncToolButtons();
     if (render) {
@@ -2469,6 +2763,7 @@ export class SketchApp {
       },
       scene: {
         objectCounter: this.objectCounter,
+        polylineCounter: this.polylineCounter,
         gridVisible: this.viewport.isGridVisible(),
         groundTheme: this.viewport.getGroundThemeState(),
       },
@@ -2486,6 +2781,9 @@ export class SketchApp {
 
       if (typeof state?.scene?.objectCounter === "number" && Number.isFinite(state.scene.objectCounter)) {
         this.objectCounter = Math.max(this.objectCounter, Math.floor(state.scene.objectCounter));
+      }
+      if (typeof state?.scene?.polylineCounter === "number" && Number.isFinite(state.scene.polylineCounter)) {
+        this.polylineCounter = Math.max(this.polylineCounter, Math.floor(state.scene.polylineCounter));
       }
 
       this._setActiveTool(state?.ui?.activeTool ?? "select", { render: false });
@@ -2775,6 +3073,8 @@ function iconSvg(name) {
       return svg('<rect x="4" y="4" width="8" height="8"/><rect x="12" y="12" width="8" height="8"/><path d="M11 13l2-2"/>');
     case "pushPull":
       return svg('<rect x="4" y="13" width="16" height="7"/><path d="M12 4v10"/><path d="M9 7l3-3 3 3"/>');
+    case "lineDraw":
+      return svg('<path d="M4 17l5-8 5 5 6-8"/><circle cx="4" cy="17" r="1.8"/><circle cx="9" cy="9" r="1.8"/><circle cx="14" cy="14" r="1.8"/><circle cx="20" cy="6" r="1.8"/>');
     case "undo":
       return svg('<path d="M9 7l-5 5 5 5"/><path d="M20 18v-2a4 4 0 00-4-4H4"/>');
     case "redo":

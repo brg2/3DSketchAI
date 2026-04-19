@@ -61,6 +61,30 @@ export function validateOperation(operation) {
         throw new Error("push_pull params.mode must be move|extend");
       }
       break;
+    case OPERATION_TYPES.POLYLINE:
+      if (!params.objectId || typeof params.objectId !== "string") {
+        throw new Error("polyline requires params.objectId");
+      }
+      if (!Array.isArray(params.points) || params.points.length < 2) {
+        throw new Error("polyline requires at least two params.points");
+      }
+      for (let index = 0; index < params.points.length; index += 1) {
+        assertVector3(params.points[index], `params.points[${index}]`);
+      }
+      if (params.closed !== undefined && typeof params.closed !== "boolean") {
+        throw new Error("polyline params.closed must be a boolean");
+      }
+      if (params.closed === true && params.points.length < 3) {
+        throw new Error("closed polyline requires at least three params.points");
+      }
+      if (params.plane !== undefined && params.plane !== null) {
+        if (!params.plane || typeof params.plane !== "object") {
+          throw new Error("polyline params.plane must be an object");
+        }
+        assertVector3(params.plane.origin, "params.plane.origin");
+        assertVector3(params.plane.normal, "params.plane.normal");
+      }
+      break;
     case OPERATION_TYPES.GROUP:
       if (!params.groupId || typeof params.groupId !== "string") {
         throw new Error("group requires params.groupId");

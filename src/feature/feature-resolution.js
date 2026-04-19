@@ -53,6 +53,47 @@ export function resolveFeatureModification(features, operation) {
       modifyExistingPushPullFeature(features, validOperation)
     );
   }
+  if (validOperation.type === OPERATION_TYPES.POLYLINE) {
+    return modifyExistingPolylineFeature(features, validOperation);
+  }
+
+  return null;
+}
+
+function modifyExistingPolylineFeature(features, operation) {
+  const polylineId = operation.params?.objectId;
+  if (!polylineId) {
+    return null;
+  }
+
+  const normalized = normalizeFeatureGraph(features);
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    const feature = normalized[index];
+    if (feature.type !== OPERATION_TYPES.POLYLINE) {
+      continue;
+    }
+    if (feature.params?.objectId !== polylineId) {
+      continue;
+    }
+    if (!hasOnlySafeDownstreamFeatures(normalized, index, operation.targetId ?? polylineId)) {
+      return null;
+    }
+
+    const next = structuredClone(normalized);
+    next[index] = {
+      ...next[index],
+      target: {
+        objectId: operation.targetId ?? null,
+        selection: operation.selection ? structuredClone(operation.selection) : null,
+      },
+      params: structuredClone(operation.params),
+    };
+    return {
+      features: normalizeFeatureGraph(next),
+      reason: "modified_existing_polyline",
+      featureId: feature.id,
+    };
+  }
 
   return null;
 }

@@ -69,6 +69,10 @@ export function applyFeature(context, feature) {
       if (!current) return null;
       return setObjectValue(context, targetId, context.sai.pushPullFace(context.r, current, faceOperationFromPushPull(operation.params)));
 
+    case OPERATION_TYPES.POLYLINE:
+      applyPolylineMetadata(context, operation);
+      return null;
+
     case OPERATION_TYPES.GROUP:
     case OPERATION_TYPES.COMPONENT:
       applyGroupingMetadata(context, operation);
@@ -121,6 +125,21 @@ function applyFeatureToSceneState(sceneState, feature) {
         target.scale.z *= Math.max(0.1, operation.params.scaleFactor.z);
       }
       return;
+
+    case OPERATION_TYPES.POLYLINE: {
+      const id = operation.params.objectId;
+      if (!id) return;
+      sceneState[id] = {
+        primitive: "polyline",
+        points: operation.params.points.map((point) => ({ ...point })),
+        closed: Boolean(operation.params.closed),
+        targetId: operation.targetId ?? null,
+        position: { x: 0, y: 0, z: 0 },
+        rotation: { x: 0, y: 0, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      };
+      return;
+    }
 
     case OPERATION_TYPES.GROUP:
       for (const objectId of operation.params.objectIds ?? []) {
@@ -202,6 +221,25 @@ function applyCreatePrimitive(context, operation) {
     objectId,
     state.editable ? context.sai.makeBox(context.r, min, max) : context.r.makeBox(min, max),
   );
+}
+
+function applyPolylineMetadata(context, operation) {
+  const { objectId, points, closed } = operation.params;
+  if (!objectId) {
+    return;
+  }
+  if (!context.objectOrder.includes(objectId)) {
+    context.objectOrder.push(objectId);
+  }
+  context.objectState.set(objectId, {
+    primitive: "polyline",
+    points: points.map((point) => ({ ...point })),
+    closed: Boolean(closed),
+    targetId: operation.targetId ?? null,
+    position: { x: 0, y: 0, z: 0 },
+    scale: { x: 1, y: 1, z: 1 },
+    rotation: { x: 0, y: 0, z: 0 },
+  });
 }
 
 function applyMoveFeature(context, current, operation) {

@@ -5,6 +5,7 @@ const AXES = ["x", "y", "z"];
 export function create3dsaiModelingLibrary() {
   return {
     makeBox,
+    makePolyline,
     makeTaperedBox,
     moveBoxSubshape,
     moveBoxVertex,
@@ -17,6 +18,16 @@ export function create3dsaiModelingLibrary() {
 
 export function makeBox(r, min, max) {
   return new EditableBox(r, min, max);
+}
+
+export function makePolyline(_r, points, { closed = false } = {}) {
+  return {
+    kind: "polyline_guide",
+    points: points.map((point) => Array.isArray(point)
+      ? [point[0] ?? 0, point[1] ?? 0, point[2] ?? 0]
+      : [point?.x ?? 0, point?.y ?? 0, point?.z ?? 0]),
+    closed: Boolean(closed),
+  };
 }
 
 export function makeTaperedBox(r, { min, max, faceTilts = [], faceExtrudes = [], subshapeMoves = [], faceExtensions = [] }) {

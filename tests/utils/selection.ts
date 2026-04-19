@@ -10,7 +10,7 @@ export async function loadKnownScene(page: Page) {
   await expect(page.locator("canvas")).toBeVisible();
 }
 
-export async function activateTool(page: Page, tool: "Move" | "Rotate" | "Push/Pull" | "Select") {
+export async function activateTool(page: Page, tool: "Move" | "Rotate" | "Push/Pull" | "Line Draw" | "Select") {
   await page.getByRole("button", { name: tool }).click();
   await page.evaluate(() => window.__TEST_API__.nextFrame(2));
 }

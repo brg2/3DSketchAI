@@ -259,7 +259,30 @@ Required tools:
 - rotate
 - scale
 - primitive creation
+- line draw
 - grouping and components
+
+### 5.1 Line Draw Tool
+The line draw tool is a V1 simple polyline tool.
+
+It is used to place ordered points in feature/model space and commit them as a replayable polyline feature.
+
+Usage:
+- select or infer a drawing plane
+- click to place vertices
+- drag to preview the next segment
+- double-click or close the loop to commit the polyline
+
+Modeling rules:
+- point order is preserved
+- the committed result is deterministic and replayable
+- the tool stores geometry as a feature, not as a freeform NURBS surface
+- open polylines remain guide geometry
+- closed polylines may be used as profiles for downstream modeling operations
+
+Scope:
+- V1 uses simple polygonal/polyline drawing
+- NURBS-based line drawing is out of scope for V1 and may be considered later only as an extension of the feature graph
 
 Persistence requirement:
 - save/load Feature Graph JSON as primary model format
@@ -457,7 +480,7 @@ Test workflows MUST:
 
 #### 9.9.2 Tool Combination Matrix
 Agents MUST programmatically generate workflow tests across:
-- tools: `move`, `rotate`, `push/pull`
+- tools: `move`, `rotate`, `push/pull`, `line draw`
 - selection types: `object`, `face`
 - sequence lengths: 2-step (`A -> B`) and 3-step (`A -> B -> C`)
 
@@ -466,6 +489,7 @@ Example combinations include:
 - `push/pull(face) -> move(face)`
 - `move(object) -> push/pull(face)`
 - `rotate(face) -> move(object)`
+- `line draw(face) -> push/pull(face)`
 
 Manual hand-writing of the full combination space is disallowed.
 
@@ -496,6 +520,7 @@ Tests MUST assert all of the following after each operation:
 - `move` creates/updates transform feature behavior
 - `rotate` creates/updates transform feature behavior
 - `push/pull` creates/updates geometry-modifying feature behavior
+- `line draw` creates/updates polyline feature behavior
 
 3. Feature target stability
 - feature targets remain correctly attached to intended object/face

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { RuntimeController } from "../src/app/runtime-controller.js";
 import { CanonicalModel } from "../src/modeling/canonical-model.js";
 import { ModelExecutor } from "../src/modeling/model-executor.js";
-import { createPrimitiveOperation, mapToolGestureToOperation } from "../src/operation/operation-mapper.js";
+import { createPolylineOperation, createPrimitiveOperation, mapToolGestureToOperation } from "../src/operation/operation-mapper.js";
 import { OPERATION_TYPES } from "../src/operation/operation-types.js";
 import { parseOperationsFromCanonicalModelCode } from "../src/operation/operation-serializer.js";
 
@@ -106,6 +106,27 @@ test("canonical script serializes push_pull as direct callable geometry code wit
   assert.equal(parsed[1].targetId, "obj_1");
   assert.deepEqual(parsed[1].params.axis, { x: 1, y: 0, z: 0 });
   assert.equal(parsed[1].params.distance, 3.74);
+});
+
+test("canonical script serializes polyline guides as direct modeling library calls", () => {
+  const model = new CanonicalModel();
+  model.appendCommittedOperation(
+    createPolylineOperation({
+      objectId: "polyline_1",
+      points: [
+        { x: 0, y: 0, z: 0 },
+        { x: 1, y: 0, z: 0 },
+      ],
+      closed: false,
+    }),
+  );
+
+  const code = model.toTypeScriptModule();
+
+  assert.match(code, /const polyline_1 = sai\.makePolyline\(r,/);
+  assert.match(code, /closed: false/);
+  assert.match(code, /return null;/);
+  assertNoBehaviorComments(code);
 });
 
 test("canonical script serializes tilted face push_pull as direct face extrusion helper call", () => {

@@ -180,6 +180,11 @@ export function serializeCanonicalModelModule(operations) {
         }
         throw new Error("push_pull requires a solid modeling implementation for non-box targets");
       }
+      case "polyline": {
+        const varName = operation.params.objectId;
+        bodyLines.push(`  const ${varName} = sai.makePolyline(r, ${JSON.stringify(operation.params.points)}, { closed: ${operation.params.closed === true ? "true" : "false"} });`);
+        break;
+      }
       case "group":
       case "component":
         break;

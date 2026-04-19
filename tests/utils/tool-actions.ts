@@ -5,8 +5,8 @@ import { activateTool, selectFace, selectObject } from "./selection";
 
 export type ToolAction = {
   id: string;
-  tool: "Move" | "Rotate" | "Push/Pull";
-  toolType: "move" | "rotate" | "push_pull";
+  tool: "Move" | "Rotate" | "Push/Pull" | "Line Draw";
+  toolType: "move" | "rotate" | "push_pull" | "polyline";
   selectionType: "object" | "face";
   faceIndex?: number;
   worldDelta?: { x: number; y: number; z: number };
@@ -61,6 +61,20 @@ export const STACKED_TOOL_ACTIONS: ToolAction[] = [
     faceIndex: 0,
     worldDelta: { x: 0, y: 0.3, z: 0 },
   },
+  {
+    id: "line-draw-face",
+    tool: "Line Draw",
+    toolType: "polyline",
+    selectionType: "face",
+    faceIndex: 0,
+  },
+  {
+    id: "line-draw-object",
+    tool: "Line Draw",
+    toolType: "polyline",
+    selectionType: "object",
+    faceIndex: 0,
+  },
 ];
 
 export async function applyToolAction(page: Page, action: ToolAction) {
@@ -71,6 +85,12 @@ export async function applyToolAction(page: Page, action: ToolAction) {
   }
 
   await activateTool(page, action.tool);
+  if (action.toolType === "polyline") {
+    await performLineDraw(page, action);
+    await waitForRenderCompletion(page);
+    return expectFeatureGraphIntegrity(page);
+  }
+
   const drag = await getDragPath(page, {
     objectName: "cube",
     faceIndex: action.faceIndex,
@@ -84,6 +104,39 @@ export async function applyToolAction(page: Page, action: ToolAction) {
   });
   await waitForRenderCompletion(page);
   return expectFeatureGraphIntegrity(page);
+}
+
+async function performLineDraw(page: Page, action: ToolAction) {
+  const drawPath = await page.evaluate(
+    ({ faceIndex }) => window.__TEST_API__.getPolylineDrawPath({
+      objectName: "cube",
+      faceIndex,
+      points: [
+        { x: -0.22, y: -0.18 },
+        { x: 0.22, y: -0.18 },
+        { x: 0.22, y: 0.2 },
+      ],
+    }),
+    { faceIndex: action.faceIndex ?? 0 },
+  );
+  expect(drawPath, `line draw path for ${action.id}`).toBeTruthy();
+  expect(drawPath.length).toBe(3);
+
+  const canvas = page.locator("canvas");
+  await canvas.click({ position: await relativeCanvasPoint(page, drawPath[0].client) });
+  await page.mouse.move(drawPath[1].client.x, drawPath[1].client.y, { steps: 4 });
+  await canvas.click({ position: await relativeCanvasPoint(page, drawPath[1].client) });
+  await page.mouse.move(drawPath[2].client.x, drawPath[2].client.y, { steps: 4 });
+  await canvas.dblclick({ position: await relativeCanvasPoint(page, drawPath[2].client) });
+}
+
+async function relativeCanvasPoint(page: Page, point: { x: number; y: number }) {
+  const box = await page.locator("canvas").boundingBox();
+  expect(box).toBeTruthy();
+  return {
+    x: point.x - box!.x,
+    y: point.y - box!.y,
+  };
 }
 
 export function twoStepWorkflows() {

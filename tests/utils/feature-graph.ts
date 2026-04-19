@@ -35,7 +35,7 @@ export async function expectFeatureGraphIntegrity(page: Page) {
 
   for (const feature of graph.features) {
     expect(feature.id).toMatch(/^feature_\d+$/);
-    expect(feature.type).toMatch(/^(create_primitive|move|rotate|push_pull|group|component)$/);
+    expect(feature.type).toMatch(/^(create_primitive|move|rotate|push_pull|polyline|group|component)$/);
     expect(Array.isArray(feature.dependsOn)).toBe(true);
     expect(Array.isArray(feature.children)).toBe(true);
     for (const dependencyId of feature.dependsOn) {
@@ -46,7 +46,7 @@ export async function expectFeatureGraphIntegrity(page: Page) {
       const child = graph.features.find((entry) => entry.id === childId);
       expect(child?.dependsOn).toContain(feature.id);
     }
-    if (feature.type !== "create_primitive") {
+    if (feature.type !== "create_primitive" && feature.target.objectId !== null) {
       expect(feature.target.objectId, `${feature.id} has no object target`).toBe("cube");
     }
     const selectorFeatureId = feature.target.selection?.selector?.featureId;

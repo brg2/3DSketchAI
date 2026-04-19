@@ -4,6 +4,7 @@ export const OPERATION_TYPES = Object.freeze({
   ROTATE: "rotate",
   SCALE: "scale",
   PUSH_PULL: "push_pull",
+  POLYLINE: "polyline",
   GROUP: "group",
   COMPONENT: "component",
 });
@@ -21,6 +22,7 @@ const TOOL_TO_OPERATION = Object.freeze({
   rotate: OPERATION_TYPES.ROTATE,
   scale: OPERATION_TYPES.SCALE,
   pushPull: OPERATION_TYPES.PUSH_PULL,
+  lineDraw: OPERATION_TYPES.POLYLINE,
   group: OPERATION_TYPES.GROUP,
   component: OPERATION_TYPES.COMPONENT,
 });

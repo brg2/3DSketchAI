@@ -6,11 +6,32 @@ function createGeometryForState(state) {
     case "brep_mesh":
       geometry = createGeometryFromBrepMesh(state.meshData);
       break;
+    case "polyline":
+      geometry = createPolylineGeometry(state);
+      break;
     case "box":
     default:
       geometry = new THREE.BoxGeometry(1, 1, 1);
       break;
   }
+  return geometry;
+}
+
+function createPolylineGeometry(state) {
+  const points = state.points ?? [];
+  const vertices = [...points];
+  if (state.closed && points.length > 2) {
+    vertices.push(points[0]);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(new Float32Array(vertices.flatMap((point) => [
+      point.x ?? 0,
+      point.y ?? 0,
+      point.z ?? 0,
+    ])), 3),
+  );
   return geometry;
 }
 
@@ -37,6 +58,16 @@ function createGeometryFromBrepMesh(meshData) {
 
 function createMeshForState(state) {
   const geometry = createGeometryForState(state);
+  if (state.primitive === "polyline") {
+    const line = new THREE.Line(
+      geometry,
+      new THREE.LineBasicMaterial({ color: 0x24a148, depthTest: false }),
+    );
+    line.renderOrder = 35;
+    line.frustumCulled = false;
+    line.userData.geometrySignature = geometrySignature(state);
+    return line;
+  }
   const material = new THREE.MeshStandardMaterial({ color: 0x7aa2f7, roughness: 0.4, metalness: 0.1 });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.castShadow = true;
@@ -68,6 +99,8 @@ function geometrySignature(state) {
   return JSON.stringify({
     primitive: state.primitive,
     meshSignature: state.meshSignature ?? null,
+    points: state.primitive === "polyline" ? state.points ?? [] : null,
+    closed: state.primitive === "polyline" ? Boolean(state.closed) : null,
   });
 }
 
@@ -1056,7 +1089,7 @@ export class RepresentationStore {
       }
       updateMeshGeometry(mesh, state);
       applyTransform(mesh, state);
-      mesh.material.color.setHex(0x7aa2f7);
+      mesh.material.color.setHex(state.primitive === "polyline" ? 0x24a148 : 0x7aa2f7);
     }
   }
 
@@ -1208,6 +1241,6 @@ export class RepresentationStore {
   }
 
   getSelectableMeshes() {
-    return [...this.meshById.values()];
+    return [...this.meshById.values()].filter((object) => object.isMesh);
   }
 }

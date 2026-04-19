@@ -15,17 +15,19 @@ export class ReplicadOpenCascadeAdapter {
     const sai = create3dsaiModelingLibrary();
     const transformReplay = replayFeaturesToSceneState({ features, exactBackend: "replicad:transforms" });
     const replayed = replayFeaturesToShapes({ features, r: replicad, sai, bakeObjectRotations: false });
+    const sceneState = Object.fromEntries(
+      Object.entries(transformReplay.sceneState).filter(([, state]) => state?.primitive === "polyline"),
+    );
 
     if (!replayed.shape) {
       return {
         kind: "exact_geometry",
         exactBackend: "replicad",
-        sceneState: {},
+        sceneState,
         operationCount: features.length,
       };
     }
 
-    const sceneState = {};
     for (const [objectId, shape] of replayed.objectShapes.entries()) {
       const transformState = transformReplay.sceneState[objectId] ?? null;
       const meshData = meshDataForDisplayTransform(
