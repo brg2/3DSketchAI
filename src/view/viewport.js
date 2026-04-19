@@ -13,8 +13,9 @@ import {
 export const ZOOM_EXTENTS_ANIMATION_MS = 250;
 
 export class Viewport {
-  constructor({ canvas }) {
+  constructor({ canvas, onFrameNeeded = null }) {
     this.canvas = canvas;
+    this.onFrameNeeded = typeof onFrameNeeded === "function" ? onFrameNeeded : null;
     this._viewportWidth = 0;
     this._viewportHeight = 0;
     this._cameraTransition = null;
@@ -64,7 +65,15 @@ export class Viewport {
     this._setupGround();
     this.resize();
 
-    window.addEventListener("resize", () => this.resize());
+    window.addEventListener("resize", () => {
+      if (this.resize()) {
+        this._requestFrame();
+      }
+    });
+  }
+
+  _requestFrame() {
+    this.onFrameNeeded?.();
   }
 
   _setupLights() {
@@ -127,6 +136,7 @@ export class Viewport {
     });
     this.groundThemeGroup.visible = this.groundEffectsVisible;
     this.scene.add(this.groundThemeGroup);
+    this._requestFrame();
   }
 
   getGroundThemeState() {
@@ -145,6 +155,7 @@ export class Viewport {
     if (this.groundThemeGroup) {
       this.groundThemeGroup.visible = this.groundEffectsVisible;
     }
+    this._requestFrame();
   }
 
   areGroundEffectsVisible() {
@@ -156,6 +167,7 @@ export class Viewport {
       return;
     }
     this.gridHelper.visible = Boolean(visible);
+    this._requestFrame();
   }
 
   isGridVisible() {
@@ -232,6 +244,7 @@ export class Viewport {
       this.camera.position.copy(targetPosition);
       this.camera.updateProjectionMatrix();
       this.controls.update();
+      this._requestFrame();
       return true;
     }
 
@@ -243,6 +256,7 @@ export class Viewport {
       endPosition: targetPosition,
       endTarget: center,
     };
+    this._requestFrame();
     return true;
   }
 
@@ -370,6 +384,7 @@ export class Viewport {
       window.addEventListener("keydown", keydown);
       window.addEventListener("keyup", keyup);
     }
+    this._requestFrame();
     return true;
   }
 
@@ -437,6 +452,7 @@ export class Viewport {
     this._cursorPan = null;
     this.controls.enabled = true;
     this.controls.update();
+    this._requestFrame();
     return true;
   }
 
@@ -488,6 +504,7 @@ export class Viewport {
     window.addEventListener("pointermove", move, { passive: false });
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", end);
+    this._requestFrame();
     return true;
   }
 
@@ -610,6 +627,7 @@ export class Viewport {
     navigation.currentTargetDistance = Number.isFinite(currentPivotDistance)
       ? THREE.MathUtils.clamp(currentPivotDistance, minDistance, maxDistance)
       : nextPivotDistance;
+    this._requestFrame();
   }
 
   _releaseCursorPanOrbit() {
@@ -623,6 +641,7 @@ export class Viewport {
     this._syncControlsTargetToCameraForward(targetDistance);
     this.controls.enabled = true;
     this.controls.update();
+    this._requestFrame();
   }
 
   _handleNativeTouchPointerMove(event) {
@@ -682,6 +701,7 @@ export class Viewport {
     navigation.targetLogZoom = logZoom;
 
     this._applyNativeTouchTransform(navigation, yaw, pitch, zoomScale);
+    this._requestFrame();
   }
 
   _applyNativeTouchTransform(navigation, yaw, pitch, zoomScale) {
@@ -739,6 +759,7 @@ export class Viewport {
     this._syncControlsTargetToCameraForward();
     this.controls.enabled = true;
     this.controls.update();
+    this._requestFrame();
   }
 
   _touchPositionFromEvent(event) {
@@ -1047,6 +1068,7 @@ export class Viewport {
     this.controls.target.add(delta);
     pan.velocity.copy(delta);
     this.camera.updateMatrixWorld();
+    this._requestFrame();
   }
 
   _releaseCursorPan() {
@@ -1057,7 +1079,9 @@ export class Viewport {
     this._cursorPan.dragging = false;
     if (this._cursorPan.velocity.lengthSq() < 1e-10) {
       this._endCursorPan();
+      return;
     }
+    this._requestFrame();
   }
 
   _applyCursorPanStep() {
@@ -1103,6 +1127,7 @@ export class Viewport {
     orbit.velocityPitch = pitch - orbit.targetPitch;
     orbit.targetYaw = yaw;
     orbit.targetPitch = pitch;
+    this._requestFrame();
   }
 
   _applyCursorOrbitStep() {
@@ -1152,6 +1177,7 @@ export class Viewport {
       return;
     }
     this._cursorOrbit.dragging = false;
+    this._requestFrame();
   }
 
   _endCursorOrbit() {
@@ -1199,6 +1225,7 @@ export class Viewport {
       clientX: null,
       clientY: null,
     };
+    this._requestFrame();
   }
 
   applyTouchPinchScale({ scale, clientX, clientY } = {}) {
@@ -1212,6 +1239,7 @@ export class Viewport {
       this._touchGestureInertia.clientX = Number.isFinite(clientX) ? clientX : null;
       this._touchGestureInertia.clientY = Number.isFinite(clientY) ? clientY : null;
     }
+    this._requestFrame();
   }
 
   _applyTouchPinchScale({ scale, clientX, clientY } = {}) {
@@ -1250,6 +1278,7 @@ export class Viewport {
       this._touchGestureInertia.velocityDx = dx;
       this._touchGestureInertia.velocityDy = dy;
     }
+    this._requestFrame();
   }
 
   _applyTouchOrbitDelta({ dx, dy } = {}) {
@@ -1284,6 +1313,7 @@ export class Viewport {
     }
     this._touchGestureActive = false;
     if (this._hasTouchGestureInertia(this._touchGestureInertia)) {
+      this._requestFrame();
       return;
     }
 
@@ -1378,6 +1408,7 @@ export class Viewport {
     const wheelSensitivity = 0.0012;
     const factor = Math.exp(normalizedDeltaY * wheelSensitivity);
     this._zoomTargetDistance = THREE.MathUtils.clamp(this._zoomTargetDistance * factor, minDistance, maxDistance);
+    this._requestFrame();
   }
 
   _applySmoothZoomStep() {
@@ -1508,23 +1539,35 @@ export class Viewport {
 
   frame() {
     this.resize();
+    let needsNextFrame = false;
     if (this._nativeTouchNavigation) {
       this._applyNativeTouchNavigationStep();
+      needsNextFrame = Boolean(this._nativeTouchNavigation);
     } else if (this._touchGestureInertia) {
       this._applyTouchGestureInertiaStep();
+      needsNextFrame = Boolean(this._touchGestureInertia);
     } else if (this._cursorOrbit) {
       this._applyCursorOrbitStep();
+      needsNextFrame = Boolean(this._cursorOrbit);
     } else if (this._cursorPan) {
       this._applyCursorPanStep();
+      needsNextFrame = Boolean(this._cursorPan);
     } else if (this._touchGestureActive) {
       // Touch gesture drives camera directly; skip smooth zoom step and controls update
+      needsNextFrame = true;
     } else {
-      if (!this._applyCameraTransitionStep()) {
+      if (this._applyCameraTransitionStep()) {
+        needsNextFrame = Boolean(this._cameraTransition);
+      } else {
         this._applySmoothZoomStep();
-        this.controls.update();
+        needsNextFrame = Number.isFinite(this._zoomTargetDistance);
+        if (this.controls.update()) {
+          needsNextFrame = true;
+        }
       }
     }
     this.renderer.render(this.scene, this.camera);
+    return needsNextFrame;
   }
 }
 

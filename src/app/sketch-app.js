@@ -135,8 +135,12 @@ export class SketchApp {
     this.sessionPersistTimer = null;
     this.lastPersistedSessionSignature = "";
     this.isRestoringSession = false;
+    this.frameRequestId = null;
 
-    this.viewport = new Viewport({ canvas });
+    this.viewport = new Viewport({
+      canvas,
+      onFrameNeeded: () => this._requestFrame(),
+    });
     this.overlay = new Overlay({ element: overlayElement });
 
     this.representationStore = new RepresentationStore();
@@ -170,6 +174,7 @@ export class SketchApp {
     this._initPreselectionOverlays();
     this.viewport.controls.addEventListener("change", () => {
       this._scheduleSessionPersist();
+      this._requestFrame();
     });
 
     this._buildToolButtons(toolGrid);
@@ -217,7 +222,7 @@ export class SketchApp {
     await this._restoreModelHistory();
     this._syncHistoryButtons();
 
-    this._tick();
+    this._requestFrame();
   }
 
   _buildToolButtons(toolGrid) {
@@ -859,6 +864,7 @@ export class SketchApp {
     }
 
     this._updatePreselectionOverlays();
+    this._requestFrame();
   }
 
   _renderOverlay() {
@@ -879,11 +885,21 @@ export class SketchApp {
     });
   }
 
+  _requestFrame() {
+    if (this.frameRequestId != null || typeof requestAnimationFrame !== "function") {
+      return;
+    }
+
+    this.frameRequestId = requestAnimationFrame(() => this._tick());
+  }
+
   _tick() {
-    this._applySelectionHighlights();
-    this.viewport.frame();
+    this.frameRequestId = null;
+    const needsNextFrame = this.viewport.frame();
     this._renderOverlay();
-    requestAnimationFrame(() => this._tick());
+    if (needsNextFrame || this.tools.dragState) {
+      this._requestFrame();
+    }
   }
 
   _buildDragContext(event, selectionResult, { shiftKey = false } = {}) {
@@ -1041,6 +1057,7 @@ export class SketchApp {
       target: selectedObjectId,
       mode: context?.mode ?? null,
     });
+    this._requestFrame();
     return true;
   }
 
@@ -1059,6 +1076,7 @@ export class SketchApp {
     });
     this.runtimeController.updateManipulation(op.params);
     this._renderOverlay();
+    this._requestFrame();
     return true;
   }
 
@@ -2011,6 +2029,7 @@ export class SketchApp {
     this.activeTouchToolPointerId = null;
     this._applySelectionHighlights();
     this._renderOverlay();
+    this._requestFrame();
   }
 
   _clearHoverState() {
@@ -2238,6 +2257,7 @@ export class SketchApp {
     this._setButtonIcon(this.codeToggle, "menu", label);
     this.codeToggle.setAttribute("aria-expanded", String(!collapsed));
     this._scheduleSidebarScrollAffordanceSync();
+    this._requestFrame();
   }
 
   _scheduleSidebarScrollAffordanceSync() {
@@ -2271,6 +2291,7 @@ export class SketchApp {
       this.gridToggleButton.setAttribute("aria-pressed", String(isVisible));
       this.gridToggleButton.classList.toggle("active", isVisible);
     }
+    this._requestFrame();
   }
 
   _setGroundEffectsVisible(visible) {
@@ -2281,6 +2302,7 @@ export class SketchApp {
       this.groundEffectsToggleButton.setAttribute("aria-pressed", String(isVisible));
       this.groundEffectsToggleButton.classList.toggle("active", isVisible);
     }
+    this._requestFrame();
   }
 
   _setDevConsoleVisible(visible) {
@@ -2340,6 +2362,7 @@ export class SketchApp {
     if (this.terrainDensityValue) {
       this.terrainDensityValue.textContent = `${Math.round(normalizedDensity * 100)}%`;
     }
+    this._requestFrame();
   }
 
   _regenerateGroundTheme() {
@@ -2475,6 +2498,7 @@ export class SketchApp {
       this.viewport.camera.updateProjectionMatrix();
     }
     this.viewport.controls.update();
+    this._requestFrame();
   }
 
   _isFiniteVec3(value) {
