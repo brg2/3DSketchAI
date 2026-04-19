@@ -121,6 +121,10 @@ export function serializeCanonicalModelModule(operations) {
       }
       case "rotate": {
         const varName = getVarName(operation.targetId);
+        if (operation.params.subshapeRotate) {
+          bodyLines.push(`  sai.rotateBoxSubshape(r, ${varName}, ${JSON.stringify(operation.params.subshapeRotate)});`);
+          break;
+        }
         if (operation.selection?.mode === "face" && faceTiltsFromParams(operation.params).length > 0) {
           const state = objectState.get(operation.targetId);
           const faceTilts = faceTiltsFromParams(operation.params);
@@ -212,6 +216,7 @@ export function parseOperationsFromCanonicalModelCode(code) {
   candidates.push(..._parseDirectTranslateObject(code));
   candidates.push(..._parseDirectMoveBoxSubshape(code));
   candidates.push(..._parseDirectMoveBoxVertex(code));
+  candidates.push(..._parseDirectRotateBoxSubshape(code));
   candidates.push(..._parseDirectRotate(code));
   candidates.push(..._parseDirectRotateObjectMethod(code));
   candidates.push(..._parseDirectTaperedBox(code));
@@ -552,6 +557,33 @@ function _parseDirectMoveBoxVertex(code) {
       params: {
         delta,
         subshapeMove,
+      },
+    };
+  });
+}
+
+function _parseDirectRotateBoxSubshape(code) {
+  const regex = /sai\.rotateBoxSubshape\(\s*r\s*,\s*([A-Za-z_$][\w$]*)\s*,\s*(\{[^\n]*?\})\s*\);/g;
+  return _collectMatches(code, regex, (match) => {
+    const targetId = match[1];
+    const rotate = _safeJsonParse(match[2]);
+    if (!targetId || !rotate?.axis || !rotate?.origin || !Number.isFinite(rotate.angle)) return null;
+    const mode = rotate.mode === "edge" ? "edge" : "object";
+    return {
+      type: "rotate",
+      targetId,
+      selection: {
+        mode,
+        objectId: targetId,
+        objectIds: [targetId],
+        faceIndex: null,
+        faceNormalWorld: null,
+        edge: mode === "edge" ? rotate.edge ?? null : null,
+        vertex: null,
+      },
+      params: {
+        deltaEuler: { x: 0, y: 0, z: 0 },
+        subshapeRotate: rotate,
       },
     };
   });

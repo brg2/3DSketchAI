@@ -44,6 +44,9 @@ export function validateOperation(operation) {
       break;
     case OPERATION_TYPES.ROTATE:
       assertVector3(params.deltaEuler, "params.deltaEuler");
+      if (params.subshapeRotate !== undefined && params.subshapeRotate !== null) {
+        assertSubshapeRotate(params.subshapeRotate);
+      }
       break;
     case OPERATION_TYPES.SCALE:
       assertVector3(params.scaleFactor, "params.scaleFactor");
@@ -79,6 +82,18 @@ export function validateOperation(operation) {
   }
 
   return operation;
+}
+
+function assertSubshapeRotate(value) {
+  if (!value || typeof value !== "object") {
+    throw new Error("params.subshapeRotate must be an object");
+  }
+  if (value.mode !== "edge") {
+    throw new Error("params.subshapeRotate.mode must be edge");
+  }
+  assertNumber(value.angle, "params.subshapeRotate.angle");
+  assertVector3(value.axis, "params.subshapeRotate.axis");
+  assertVector3(value.origin, "params.subshapeRotate.origin");
 }
 
 function assertSubshapeMove(value) {

@@ -789,6 +789,83 @@ test("object rotate gesture maps shift drag to the alternate rotation axis", () 
   assert.deepEqual(accumulated.params.deltaEuler, { x: 0.3, y: 0.4, z: 0 });
 });
 
+test("edge rotate gesture maps to a subshape rotation instead of object euler", () => {
+  const operation = mapToolGestureToOperation({
+    tool: "rotate",
+    targetId: "obj_1",
+    selection: {
+      mode: "edge",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      edge: {
+        a: { x: 0.5, y: 0.5, z: -0.5 },
+        b: { x: 0.5, y: 0.5, z: 0.5 },
+        keys: ["px_py_nz", "px_py_pz"],
+      },
+    },
+    gesture: { dx: 25, dy: 0 },
+  });
+
+  assert.deepEqual(operation.params.deltaEuler, { x: 0, y: 0, z: 0 });
+  assert.deepEqual(operation.params.subshapeRotate.axis, { x: 0, y: 1, z: 0 });
+  assert.equal(operation.params.subshapeRotate.angle, 0.25);
+  assert.deepEqual(operation.params.subshapeRotate.origin, { x: 0.5, y: 0.5, z: 0 });
+});
+
+test("vertex rotate gesture does not create an operation", () => {
+  const operation = mapToolGestureToOperation({
+    tool: "rotate",
+    targetId: "obj_1",
+    selection: {
+      mode: "vertex",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      vertex: { x: 0.5, y: 0.5, z: -0.5, key: "px_py_nz" },
+    },
+    gesture: { dx: 25, dy: 0 },
+  });
+
+  assert.equal(operation, null);
+});
+
+test("edge rotate serializes as a direct subshape rotate helper call", () => {
+  const model = new CanonicalModel();
+  model.appendCommittedOperation(
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+  );
+  model.appendCommittedOperation(
+    mapToolGestureToOperation({
+      tool: "rotate",
+      targetId: "obj_1",
+      selection: {
+        mode: "edge",
+        objectId: "obj_1",
+        objectIds: ["obj_1"],
+        edge: {
+          a: { x: 0.5, y: 0.5, z: -0.5 },
+          b: { x: 0.5, y: 0.5, z: 0.5 },
+          keys: ["px_py_nz", "px_py_pz"],
+        },
+      },
+      gesture: { dx: 25, dy: 0 },
+    }),
+  );
+
+  const code = model.toTypeScriptModule();
+  assert.match(code, /sai\.rotateBoxSubshape\(r, obj_1,/);
+  assert.doesNotMatch(code, /\.rotate\(/, "Edge rotate should not serialize as whole-object rotation");
+
+  const parsed = parseOperationsFromCanonicalModelCode(code).filter((operation) => operation.type === OPERATION_TYPES.ROTATE);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].selection.mode, "edge");
+  assert.equal(parsed[0].params.subshapeRotate.angle, 0.25);
+});
+
 test("face rotate gesture derives tilt basis from the current selected face normal", () => {
   const normal = normalize({ x: 0, y: 1, z: 1 });
   const operation = mapToolGestureToOperation({

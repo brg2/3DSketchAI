@@ -227,6 +227,10 @@ function applyMoveFeature(context, current, operation) {
 
 function applyRotateFeature(context, current, operation) {
   const state = context.objectState.get(operation.targetId);
+  if (operation.params.subshapeRotate && state?.primitive === "box") {
+    return context.sai.rotateBoxSubshape(context.r, current, operation.params.subshapeRotate);
+  }
+
   const faceTilts = faceTiltsFromParams(operation.params);
   if (operation.selection?.mode === "face" && faceTilts.length > 0 && state?.primitive === "box") {
     if (typeof current.applyCenteredTapers === "function") {
@@ -298,6 +302,7 @@ function editableTargetIds(features) {
     const isEditable =
       operation.type === OPERATION_TYPES.PUSH_PULL ||
       Boolean(operation.params?.subshapeMove) ||
+      Boolean(operation.params?.subshapeRotate) ||
       (operation.type === OPERATION_TYPES.ROTATE && operation.selection?.mode === "face" && faceTiltsFromParams(operation.params).length > 0);
     if (isEditable) {
       editableTargets.add(operation.targetId);

@@ -118,7 +118,7 @@ function modifyExistingFaceRotateFeature(features, operation) {
 }
 
 function modifyExistingObjectRotateFeature(features, operation) {
-  if (operation.selection?.mode === "face" || normalizeFaceTilts(operation.params).length > 0) {
+  if (!isWholeObjectSelection(operation.selection) || operation.params?.subshapeRotate || normalizeFaceTilts(operation.params).length > 0) {
     return null;
   }
   const operationAxes = nonZeroEulerAxes(operation.params?.deltaEuler);
@@ -135,7 +135,7 @@ function modifyExistingObjectRotateFeature(features, operation) {
     if (feature.target?.objectId !== operation.targetId) {
       continue;
     }
-    if (feature.target?.selection?.mode === "face" || normalizeFaceTilts(feature.params).length > 0) {
+    if (!isWholeObjectSelection(feature.target?.selection) || feature.params?.subshapeRotate || normalizeFaceTilts(feature.params).length > 0) {
       continue;
     }
     if (!hasOnlySafeDownstreamFeatures(normalized, index, operation.targetId)) {
@@ -161,6 +161,10 @@ function modifyExistingObjectRotateFeature(features, operation) {
   }
 
   return null;
+}
+
+function isWholeObjectSelection(selection) {
+  return !selection || selection.mode === "object";
 }
 
 function modifyExistingFaceMoveFeature(features, operation) {

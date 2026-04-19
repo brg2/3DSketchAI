@@ -8,6 +8,10 @@ function round3(value) {
 
 export function mapToolGestureToOperation({ tool, targetId, selection, gesture }) {
   const operationType = operationForTool(tool);
+  if (operationType === OPERATION_TYPES.ROTATE && selection?.mode === "vertex") {
+    return null;
+  }
+
   const {
     dx = 0,
     dy = 0,
@@ -33,20 +37,28 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
         z: round3(-dy * 0.02),
       };
 
+  const angle = round3(dx * 0.01);
   const rotateParams =
     selection?.mode === "face"
       ? faceRotateParams({
           selection,
           faceNormal,
           shiftKey,
-          angle: round3(dx * 0.01),
+          angle,
           faceTiltAngles,
         })
-      : objectRotateParams({
-          shiftKey,
-          angle: round3(dx * 0.01),
-          objectRotationEuler,
-        });
+      : selection?.mode === "edge" && selection.edge
+        ? edgeRotateParams({
+            selection,
+            shiftKey,
+            angle,
+            objectRotationEuler,
+          })
+        : objectRotateParams({
+            shiftKey,
+            angle,
+            objectRotationEuler,
+          });
 
   const operation = {
     type: operationType,
@@ -90,6 +102,52 @@ function objectRotateParams({ shiftKey, angle, objectRotationEuler }) {
       y: shiftKey ? 0 : angle,
       z: 0,
     },
+  };
+}
+
+function edgeRotateParams({ selection, shiftKey, angle, objectRotationEuler }) {
+  const dominant = objectRotationEuler && typeof objectRotationEuler === "object"
+    ? dominantEulerComponent(objectRotationEuler)
+    : null;
+  const axis = dominant
+    ? dominant.axis
+    : shiftKey ? { x: 1, y: 0, z: 0 } : { x: 0, y: 1, z: 0 };
+  const resolvedAngle = dominant ? dominant.angle : angle;
+  return {
+    deltaEuler: { x: 0, y: 0, z: 0 },
+    subshapeRotate: {
+      mode: "edge",
+      edge: structuredClone(selection.edge),
+      axis,
+      angle: resolvedAngle,
+      origin: edgeCenter(selection.edge),
+    },
+  };
+}
+
+function dominantEulerComponent(deltaEuler = {}) {
+  const entries = [
+    ["x", deltaEuler.x ?? 0],
+    ["y", deltaEuler.y ?? 0],
+    ["z", deltaEuler.z ?? 0],
+  ];
+  entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const axis = entries[0][0];
+  return {
+    axis: {
+      x: axis === "x" ? 1 : 0,
+      y: axis === "y" ? 1 : 0,
+      z: axis === "z" ? 1 : 0,
+    },
+    angle: round3(entries[0][1] ?? 0),
+  };
+}
+
+function edgeCenter(edge) {
+  return {
+    x: round3(((edge?.a?.x ?? 0) + (edge?.b?.x ?? 0)) / 2),
+    y: round3(((edge?.a?.y ?? 0) + (edge?.b?.y ?? 0)) / 2),
+    z: round3(((edge?.a?.z ?? 0) + (edge?.b?.z ?? 0)) / 2),
   };
 }
 

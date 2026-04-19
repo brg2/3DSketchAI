@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { expectCanvasSnapshot, expectClose, expectGeometryChanged, expectPngImagesClose } from "../utils/assertions";
 import { getDragPath, performDrag, waitForRenderCompletion } from "../utils/interaction";
-import { activateTool, loadKnownScene, selectEdge, selectFace, selectObject } from "../utils/selection";
+import { activateTool, loadKnownScene, selectEdge, selectFace, selectObject, selectVertex } from "../utils/selection";
 
 test.beforeEach(async ({ page }) => {
   await loadKnownScene(page);
@@ -313,7 +313,7 @@ test("rotate + tilted top then front face preview matches the committed brep res
   expectPngImagesClose(committedImage, previewImage!);
 });
 
-test("rotate + edge rotates around the normal object Y axis", async ({ page }) => {
+test("rotate + edge rotates only the selected edge around the normal Y axis", async ({ page }) => {
   const before = await page.evaluate(() => window.__TEST_API__.getObjectByName("cube"));
 
   await selectEdge(page, "cube", 0);
@@ -331,25 +331,27 @@ test("rotate + edge rotates around the normal object Y axis", async ({ page }) =
   const after = await page.evaluate(() => window.__TEST_API__.getObjectByName("cube"));
   const rotateFeature = scene.featureGraph.find((feature) => feature.type === "rotate");
 
+  expectGeometryChanged(before, after);
   expectClose(after.state.rotation.x, 0);
-  expectClose(after.state.rotation.y, 0.6);
+  expectClose(after.state.rotation.y, 0);
   expectClose(after.state.rotation.z, 0);
   expectClose(after.position.x, before.position.x);
   expectClose(after.position.y, before.position.y);
   expectClose(after.position.z, before.position.z);
-  expect(after.mesh.vertexCount).toBe(before.mesh.vertexCount);
-  expect(after.mesh.triangleCount).toBe(before.mesh.triangleCount);
+  expect(after.mesh.vertexCount).toBeGreaterThanOrEqual(before.mesh.vertexCount);
+  expect(after.mesh.triangleCount).toBeGreaterThanOrEqual(before.mesh.triangleCount);
   expect(rotateFeature.target.selection.mode).toBe("edge");
-  expect(rotateFeature.params.deltaEuler).toMatchObject({
-    x: 0,
-    y: 0.6,
-    z: 0,
+  expect(rotateFeature.params.deltaEuler).toMatchObject({ x: 0, y: 0, z: 0 });
+  expect(rotateFeature.params.subshapeRotate).toMatchObject({
+    mode: "edge",
+    angle: 0.6,
+    axis: { x: 0, y: 1, z: 0 },
   });
 
   await expectCanvasSnapshot(page, "rotate-edge-top-right-cube-y-axis.png");
 });
 
-test("shift + rotate + edge rotates around the alternate object X axis", async ({ page }) => {
+test("shift + rotate + edge rotates only the selected edge around the alternate X axis", async ({ page }) => {
   const before = await page.evaluate(() => window.__TEST_API__.getObjectByName("cube"));
 
   await selectEdge(page, "cube", 0);
@@ -367,20 +369,49 @@ test("shift + rotate + edge rotates around the alternate object X axis", async (
   const after = await page.evaluate(() => window.__TEST_API__.getObjectByName("cube"));
   const rotateFeature = scene.featureGraph.find((feature) => feature.type === "rotate");
 
-  expectClose(after.state.rotation.x, 0.6);
+  expectGeometryChanged(before, after);
+  expectClose(after.state.rotation.x, 0);
   expectClose(after.state.rotation.y, 0);
   expectClose(after.state.rotation.z, 0);
   expectClose(after.position.x, before.position.x);
   expectClose(after.position.y, before.position.y);
   expectClose(after.position.z, before.position.z);
-  expect(after.mesh.vertexCount).toBe(before.mesh.vertexCount);
-  expect(after.mesh.triangleCount).toBe(before.mesh.triangleCount);
+  expect(after.mesh.vertexCount).toBeGreaterThanOrEqual(before.mesh.vertexCount);
+  expect(after.mesh.triangleCount).toBeGreaterThanOrEqual(before.mesh.triangleCount);
   expect(rotateFeature.target.selection.mode).toBe("edge");
-  expect(rotateFeature.params.deltaEuler).toMatchObject({
-    x: 0.6,
-    y: 0,
-    z: 0,
+  expect(rotateFeature.params.deltaEuler).toMatchObject({ x: 0, y: 0, z: 0 });
+  expect(rotateFeature.params.subshapeRotate).toMatchObject({
+    mode: "edge",
+    angle: 0.6,
+    axis: { x: 1, y: 0, z: 0 },
   });
 
   await expectCanvasSnapshot(page, "shift-rotate-edge-top-right-cube-x-axis.png");
+});
+
+test("rotate + vertex does not start a manipulation or create a feature", async ({ page }) => {
+  const before = await page.evaluate(() => window.__TEST_API__.getObjectByName("cube"));
+  const beforeScene = await page.evaluate(() => window.__TEST_API__.getSceneState());
+
+  await selectVertex(page, "cube", 0);
+  await activateTool(page, "Rotate");
+  const drag = await getDragPath(page, {
+    objectName: "cube",
+    vertexIndex: 0,
+    screenDelta: { x: 80, y: 0 },
+  });
+  expect(drag).toBeTruthy();
+  await performDrag(page, drag!);
+  await waitForRenderCompletion(page);
+
+  const after = await page.evaluate(() => window.__TEST_API__.getObjectByName("cube"));
+  const afterScene = await page.evaluate(() => window.__TEST_API__.getSceneState());
+
+  expect(after.mesh.geometrySignature).toBe(before.mesh.geometrySignature);
+  expect(afterScene.featureGraph).toEqual(beforeScene.featureGraph);
+  expect(afterScene.hasActiveSession).toBe(false);
+  expect(afterScene.previewFeatureGraphUpdate).toBeNull();
+  expect(afterScene.tool.dragging).toBe(false);
+
+  await expectCanvasSnapshot(page, "rotate-vertex-noop-cube.png");
 });

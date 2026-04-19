@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { makeBox, makeTaperedBox, moveBoxVertex, pushPullFace } from "../src/modeling/3dsai-modeling.js";
+import { makeBox, makeTaperedBox, moveBoxVertex, pushPullFace, rotateBoxSubshape } from "../src/modeling/3dsai-modeling.js";
 
 test("makeTaperedBox builds a solid through direct Replicad-compatible calls", () => {
   const calls = { polygons: [], solids: [] };
@@ -178,6 +178,34 @@ test("moveBoxVertex applies iterative vertex moves from editable box state", () 
   assert.equal(calls.solids.length, 1);
   const topFace = calls.solids.at(-1)[1];
   assert.deepEqual(topFace.points[2].map((value) => Math.round(value * 1000) / 1000), [0.525, 1.042, 0.514]);
+});
+
+test("rotateBoxSubshape rotates only the selected edge corners", () => {
+  const r = {
+    makePolygon(points) {
+      return { type: "face", points };
+    },
+    makeSolid(faces) {
+      return { type: "solid", faces };
+    },
+  };
+  const box = makeBox(r, [-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]);
+
+  rotateBoxSubshape(r, box, {
+    mode: "edge",
+    edge: {
+      keys: ["px_py_nz", "px_py_pz"],
+    },
+    origin: { x: 0.5, y: 0.5, z: 0 },
+    axis: { x: 0, y: 1, z: 0 },
+    angle: Math.PI / 2,
+  });
+
+  assert.deepEqual(box.corners.nx_py_pz, [-0.5, 0.5, 0.5], "Unselected corners should stay fixed");
+  assert.ok(Math.abs(box.corners.px_py_pz[0] - 1) < 1e-6);
+  assert.ok(Math.abs(box.corners.px_py_pz[2]) < 1e-6);
+  assert.ok(Math.abs(box.corners.px_py_nz[0]) < 1e-6);
+  assert.ok(Math.abs(box.corners.px_py_nz[2]) < 1e-6);
 });
 
 test("pushPullFace records a semantic face extrusion without body scale transforms", () => {

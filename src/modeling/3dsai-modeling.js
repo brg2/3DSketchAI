@@ -10,6 +10,7 @@ export function create3dsaiModelingLibrary() {
     moveBoxVertex,
     pushPull,
     pushPullFace,
+    rotateBoxSubshape,
     translateObject,
   };
 }
@@ -73,6 +74,14 @@ export function moveBoxVertex(_r, shape, vertex, delta) {
     vertex,
     delta: normalizeDelta(delta),
   });
+  return shape;
+}
+
+export function rotateBoxSubshape(_r, shape, operation) {
+  if (!shape || typeof shape.rotateSubshape !== "function") {
+    throw new Error("rotateBoxSubshape requires an editable box");
+  }
+  shape.rotateSubshape(operation);
   return shape;
 }
 
@@ -233,6 +242,26 @@ class EditableBox {
       corner[0] += vector[0];
       corner[1] += vector[1];
       corner[2] += vector[2];
+    }
+    this.refreshBoundsFromCorners();
+    return this;
+  }
+
+  rotateSubshape(operation) {
+    const angle = Number.isFinite(operation?.angle) ? operation.angle : 0;
+    if (Math.abs(angle) < 1e-8) {
+      return this;
+    }
+
+    const origin = vectorArray(operation?.origin ?? subshapeCenter(this.corners, operation));
+    const axis = normalizeVector(operation?.axis ?? { x: 0, y: 1, z: 0 });
+    this.brepCompatible = false;
+
+    for (const key of subshapeCornerKeys(this.corners, operation)) {
+      const corner = this.corners[key];
+      if (corner) {
+        rotatePointInPlace(corner, angle, origin, axis);
+      }
     }
     this.refreshBoundsFromCorners();
     return this;
@@ -642,6 +671,25 @@ function subshapeCornerKeys(corners, operation) {
   }
 
   return [];
+}
+
+function subshapeCenter(corners, operation) {
+  const keys = subshapeCornerKeys(corners, operation);
+  if (keys.length === 0) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const sum = keys.reduce((accumulator, key) => {
+    const corner = corners[key] ?? [0, 0, 0];
+    accumulator.x += corner[0] ?? 0;
+    accumulator.y += corner[1] ?? 0;
+    accumulator.z += corner[2] ?? 0;
+    return accumulator;
+  }, { x: 0, y: 0, z: 0 });
+  return {
+    x: sum.x / keys.length,
+    y: sum.y / keys.length,
+    z: sum.z / keys.length,
+  };
 }
 
 function faceCornerKeys(corners, operation, axisInput) {

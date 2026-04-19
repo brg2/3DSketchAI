@@ -1021,6 +1021,9 @@ export class SketchApp {
         selection: selectionResult.selection,
         gesture: { dx: 0, dy: 0 },
       });
+      if (!op) {
+        return null;
+      }
 
       return this.runtimeController.beginManipulation({
         type: op.type,
@@ -1031,12 +1034,23 @@ export class SketchApp {
     };
 
     try {
-      beginToolManipulation();
+      if (!beginToolManipulation()) {
+        this.tools.clearDrag();
+        this.viewport.controls.enabled = true;
+        this.runtimeController.cancelManipulation();
+        this._requestFrame();
+        return false;
+      }
     } catch (error) {
       if (error?.message === "Another manipulation session is already active") {
         this.runtimeController.cancelManipulation();
         try {
-          beginToolManipulation();
+          if (!beginToolManipulation()) {
+            this.tools.clearDrag();
+            this.viewport.controls.enabled = true;
+            this._requestFrame();
+            return false;
+          }
         } catch (retryError) {
           this.tools.clearDrag();
           this.viewport.controls.enabled = true;
@@ -1075,6 +1089,13 @@ export class SketchApp {
       selection: drag.selection,
       gesture,
     });
+    if (!op) {
+      this.runtimeController.cancelManipulation();
+      this.tools.clearDrag();
+      this.viewport.controls.enabled = true;
+      this._requestFrame();
+      return false;
+    }
     this.runtimeController.updateManipulation(op.params);
     this._renderOverlay();
     this._requestFrame();
@@ -1087,7 +1108,9 @@ export class SketchApp {
     }
 
     if (event) {
-      this._updateToolDrag(event);
+      if (!this._updateToolDrag(event) || !this.tools.dragState) {
+        return false;
+      }
     }
     this.tools.endDrag();
     this.viewport.controls.enabled = true;

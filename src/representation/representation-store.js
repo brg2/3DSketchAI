@@ -229,6 +229,50 @@ function previewFaceRotateMeshData(meshData, operation) {
   };
 }
 
+function previewSubshapeRotateMeshData(meshData, operation) {
+  if (!meshData) {
+    return null;
+  }
+
+  const vertices = [...(meshData.vertices ?? meshData.positions ?? [])];
+  const triangles = [...(meshData.triangles ?? meshData.indices ?? [])];
+  if (vertices.length === 0) {
+    return null;
+  }
+
+  const rotate = operation.params?.subshapeRotate;
+  const angle = rotate?.angle ?? 0;
+  if (!rotate || !Number.isFinite(angle) || Math.abs(angle) < 1e-8) {
+    return null;
+  }
+
+  const selectedVertices = selectedSubshapeMoveVertexIndices({
+    vertices,
+    triangles,
+    faceGroups: meshData.faceGroups ?? [],
+    faceProvenance: meshData.faceProvenance ?? [],
+    operation,
+    move: rotate,
+  });
+  if (selectedVertices.size === 0) {
+    return null;
+  }
+
+  const axis = normalizeVector(rotate.axis ?? { x: 0, y: 1, z: 0 });
+  const origin = rotate.origin ?? selectedVertexCenter(vertices, selectedVertices);
+  for (const vertexIndex of selectedVertices) {
+    rotateVertexInPlace(vertices, vertexIndex, angle, origin, axis);
+  }
+
+  return {
+    ...meshData,
+    vertices,
+    triangles,
+    normals: [],
+    faceGroups: cloneFaceGroups(meshData.faceGroups),
+  };
+}
+
 function faceTiltsFromParams(params) {
   return Array.isArray(params?.faceTilts) && params.faceTilts.length > 0
     ? params.faceTilts
@@ -672,6 +716,42 @@ function vertexPoint(vertices, vertexIndex) {
   };
 }
 
+function selectedVertexCenter(vertices, selectedVertices) {
+  const selected = [...selectedVertices];
+  if (selected.length === 0) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const sum = selected.reduce((accumulator, vertexIndex) => {
+    const point = vertexPoint(vertices, vertexIndex);
+    accumulator.x += point.x;
+    accumulator.y += point.y;
+    accumulator.z += point.z;
+    return accumulator;
+  }, { x: 0, y: 0, z: 0 });
+  return {
+    x: sum.x / selected.length,
+    y: sum.y / selected.length,
+    z: sum.z / selected.length,
+  };
+}
+
+function rotateVertexInPlace(vertices, vertexIndex, angle, origin, axis) {
+  const offset = vertexIndex * 3;
+  const x = (vertices[offset + 0] ?? 0) - (origin.x ?? 0);
+  const y = (vertices[offset + 1] ?? 0) - (origin.y ?? 0);
+  const z = (vertices[offset + 2] ?? 0) - (origin.z ?? 0);
+  const u = axis.x ?? 0;
+  const v = axis.y ?? 0;
+  const w = axis.z ?? 0;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const projection = u * x + v * y + w * z;
+
+  vertices[offset + 0] = (origin.x ?? 0) + u * projection * (1 - cos) + x * cos + (-w * y + v * z) * sin;
+  vertices[offset + 1] = (origin.y ?? 0) + v * projection * (1 - cos) + y * cos + (w * x - u * z) * sin;
+  vertices[offset + 2] = (origin.z ?? 0) + w * projection * (1 - cos) + z * cos + (-v * x + u * y) * sin;
+}
+
 function pointsNear(a, b, tolerance) {
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) <= tolerance;
 }
@@ -1047,6 +1127,29 @@ export class RepresentationStore {
       previewState.scale.x *= Math.max(0.1, params.scaleFactor.x);
       previewState.scale.y *= Math.max(0.1, params.scaleFactor.y);
       previewState.scale.z *= Math.max(0.1, params.scaleFactor.z);
+      applyTransform(mesh, previewState);
+      return;
+    }
+
+    if (type === "rotate" && params?.subshapeRotate) {
+      if (previewState.primitive !== "brep_mesh") {
+        return;
+      }
+      const meshData = previewSubshapeRotateMeshData(previewState.meshData, this.previewOperation);
+      if (!meshData) {
+        return;
+      }
+      previewState.meshData = meshData;
+      previewState.meshSignature = [
+        previewState.meshSignature ?? "mesh",
+        "subshape-rotate",
+        params.subshapeRotate.mode ?? "subshape",
+        params.subshapeRotate.angle ?? 0,
+        params.subshapeRotate.axis?.x ?? 0,
+        params.subshapeRotate.axis?.y ?? 0,
+        params.subshapeRotate.axis?.z ?? 0,
+      ].join(":");
+      updateMeshGeometry(mesh, previewState);
       applyTransform(mesh, previewState);
       return;
     }
