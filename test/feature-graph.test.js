@@ -541,6 +541,70 @@ test("whole-object move falls back when downstream transforms make creation-posi
   assert.equal(result.features[2].type, OPERATION_TYPES.MOVE);
 });
 
+test("whole-object move after a face move still modifies the originating primitive position", () => {
+  const features = featureGraphFromOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    {
+      type: OPERATION_TYPES.MOVE,
+      targetId: "obj_1",
+      selection: {
+        mode: "face",
+        objectId: "obj_1",
+        objectIds: ["obj_1"],
+        selector: {
+          featureId: "feature_1",
+          role: "face.pz",
+          hint: {
+            point: { x: -0.057884, y: 0.370144, z: 0.5 },
+            normal: { x: 0, y: 0, z: 1 },
+          },
+        },
+      },
+      params: {
+        delta: { x: -0.543, y: 0, z: 0.115 },
+        subshapeMove: {
+          mode: "face",
+          faceAxis: "z",
+          faceSign: 1,
+          delta: { x: -0.543, y: 0, z: 0.115 },
+        },
+      },
+    },
+  ]);
+
+  const result = applyOperationToFeatureGraph(features, {
+    type: OPERATION_TYPES.MOVE,
+    targetId: "obj_1",
+    selection: {
+      mode: "object",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      selector: {
+        featureId: "feature_1",
+        role: "face.px",
+        hint: {
+          point: { x: 0.126181, y: 0.397245, z: 0.267603 },
+          normal: { x: 0.899055, y: 0, z: 0.437836 },
+        },
+      },
+    },
+    params: {
+      delta: { x: 1.693, y: 0, z: -2.009 },
+    },
+  });
+
+  assert.equal(result.reason, "modified_originating_primitive_position");
+  assert.equal(result.features.length, 2);
+  assert.deepEqual(result.features[0].params.position, { x: 1.693, y: 0.6, z: -2.009 });
+  assert.equal(result.features[1].type, OPERATION_TYPES.MOVE);
+  assert.deepEqual(result.features[1].params.delta, { x: -0.543, y: 0, z: 0.115 });
+});
+
 test("repeated whole-object rotations on the same axis modify the existing rotate feature", () => {
   const features = featureGraphFromOperations([
     createPrimitiveOperation({
@@ -709,6 +773,77 @@ test("vertex move always creates its own subshape move feature", () => {
   assert.deepEqual(result.features[0].params.position, { x: 0, y: 0.6, z: 0 });
   assert.equal(result.features[1].type, OPERATION_TYPES.MOVE);
   assert.equal(result.features[1].params.subshapeMove.mode, "vertex");
+});
+
+test("repeated face moves modify the existing face move feature", () => {
+  const features = featureGraphFromOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    {
+      type: OPERATION_TYPES.MOVE,
+      targetId: "obj_1",
+      selection: {
+        mode: "face",
+        objectId: "obj_1",
+        objectIds: ["obj_1"],
+        selector: {
+          featureId: "feature_1",
+          role: "face.nx",
+          hint: {
+            point: { x: -0.5, y: 0.61064, z: 0.241734 },
+            normal: { x: -1, y: 0, z: 0 },
+          },
+        },
+      },
+      params: {
+        delta: { x: -0.122, y: 0, z: -0.679 },
+        subshapeMove: {
+          mode: "face",
+          faceAxis: "x",
+          faceSign: -1,
+          delta: { x: -0.122, y: 0, z: -0.679 },
+        },
+      },
+    },
+  ]);
+
+  const result = applyOperationToFeatureGraph(features, {
+    type: OPERATION_TYPES.MOVE,
+    targetId: "obj_1",
+    selection: {
+      mode: "face",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      selector: {
+        featureId: "feature_2",
+        role: "face.nx",
+        hint: {
+          point: { x: -0.622, y: 0.626499, z: -0.44219 },
+          normal: { x: -1, y: 0, z: 0 },
+        },
+      },
+    },
+    params: {
+      delta: { x: -0.241, y: 0, z: 1.275 },
+      subshapeMove: {
+        mode: "face",
+        faceAxis: "x",
+        faceSign: -1,
+        delta: { x: -0.241, y: 0, z: 1.275 },
+      },
+    },
+  });
+
+  assert.equal(result.reason, "modified_existing_face_move");
+  assert.equal(result.features.length, 2);
+  assert.equal(result.featureId, "feature_2");
+  assert.deepEqual(result.features[1].params.delta, { x: -0.363, y: 0, z: 0.596 });
+  assert.deepEqual(result.features[1].params.subshapeMove.delta, { x: -0.363, y: 0, z: 0.596 });
+  assert.equal(result.features[1].target.selection.selector.featureId, "feature_1");
 });
 
 test("repeated face rotation modifies the existing rotate feature", () => {

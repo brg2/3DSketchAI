@@ -36,7 +36,10 @@ export function applyOperationToFeatureGraph(features, operation) {
 export function resolveFeatureModification(features, operation) {
   const validOperation = validateOperation(structuredClone(operation));
   if (validOperation.type === OPERATION_TYPES.MOVE) {
-    return modifyOriginatingPrimitivePosition(features, validOperation);
+    return (
+      modifyExistingFaceMoveFeature(features, validOperation) ??
+      modifyOriginatingPrimitivePosition(features, validOperation)
+    );
   }
   if (validOperation.type === OPERATION_TYPES.ROTATE) {
     return (
@@ -153,6 +156,67 @@ function modifyExistingObjectRotateFeature(features, operation) {
     return {
       features: normalizeFeatureGraph(next),
       reason: "modified_existing_object_rotate",
+      featureId: feature.id,
+    };
+  }
+
+  return null;
+}
+
+function modifyExistingFaceMoveFeature(features, operation) {
+  const operationMove = operation.params?.subshapeMove;
+  if (operation.selection?.mode !== "face" || operationMove?.mode !== "face") {
+    return null;
+  }
+
+  const operationFace = selectorFaceIdentity(operation.selection?.selector) ?? faceMoveIdentity(operationMove);
+  if (!operationFace) {
+    return null;
+  }
+  const selectorFeatureId = operation.selection?.selector?.featureId ?? null;
+
+  const normalized = normalizeFeatureGraph(features);
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    const feature = normalized[index];
+    if (feature.type !== OPERATION_TYPES.MOVE) {
+      continue;
+    }
+    if (!featureMatchesSelectorFeature(feature, selectorFeatureId)) {
+      continue;
+    }
+    if (feature.target?.objectId !== operation.targetId) {
+      continue;
+    }
+    if (feature.target?.selection?.mode !== "face" || feature.params?.subshapeMove?.mode !== "face") {
+      continue;
+    }
+    const featureFace = selectorFaceIdentity(feature.target?.selection?.selector) ?? faceMoveIdentity(feature.params.subshapeMove);
+    if (!sameFaceIdentity(featureFace, operationFace)) {
+      continue;
+    }
+    if (!hasOnlySafeDownstreamFeatures(normalized, index, operation.targetId)) {
+      return null;
+    }
+
+    const next = structuredClone(normalized);
+    const current = vectorWithDefaults(next[index].params.delta, { x: 0, y: 0, z: 0 });
+    const delta = vectorWithDefaults(operation.params.delta, { x: 0, y: 0, z: 0 });
+    const mergedDelta = {
+      x: roundMillimeters(current.x + delta.x),
+      y: roundMillimeters(current.y + delta.y),
+      z: roundMillimeters(current.z + delta.z),
+    };
+    next[index].params = {
+      ...next[index].params,
+      delta: mergedDelta,
+      subshapeMove: {
+        ...next[index].params.subshapeMove,
+        delta: mergedDelta,
+      },
+    };
+    return {
+      features: normalizeFeatureGraph(next),
+      reason: "modified_existing_face_move",
       featureId: feature.id,
     };
   }
@@ -362,7 +426,11 @@ function isNonGeometryMetadataFeature(feature) {
 }
 
 function isPositionSafeDownstreamFeature(feature) {
-  return isNonGeometryMetadataFeature(feature) || feature.type === OPERATION_TYPES.PUSH_PULL;
+  return (
+    isNonGeometryMetadataFeature(feature) ||
+    feature.type === OPERATION_TYPES.PUSH_PULL ||
+    Boolean(feature.params?.subshapeMove)
+  );
 }
 
 function featureTargetsObject(feature, objectId) {
@@ -425,6 +493,17 @@ function vectorFromFaceIdentity(identity) {
 
 function sameFaceIdentity(a, b) {
   return Boolean(a && b && a.axis === b.axis && a.sign === b.sign);
+}
+
+function faceMoveIdentity(move) {
+  const faceAxis = AXES.includes(move?.faceAxis) ? move.faceAxis : null;
+  if (!faceAxis) {
+    return null;
+  }
+  return {
+    axis: faceAxis,
+    sign: Math.sign(move.faceSign ?? 1) || 1,
+  };
 }
 
 function normalizeFaceTilts(params) {

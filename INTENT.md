@@ -340,7 +340,226 @@ Rules:
 - feature graph JSON persistence
 - TypeScript export generation from feature graph
 
-## 9. Performance Requirements
+## 9. Testing and Behavioral Consistency (Non-Optional)
+The system MUST implement deterministic, automated, end-to-end testing for all user-facing modeling tools using Playwright.
+
+No feature or tool modification is complete without corresponding test coverage.
+
+### 9.1 Core Requirement
+All tool behavior MUST be validated through:
+1. UI-driven interaction (Playwright)
+2. scene-level assertions (Three.js state)
+3. visual regression (pixel comparison)
+4. geometry-level validation (topology/mesh invariants where possible)
+
+Testing objective:
+- detect silent behavioral regressions
+- enforce stable tool behavior across code changes
+
+### 9.2 Coverage Matrix Requirements
+For every tool, tests MUST cover:
+- each selection type supported by the tool (object, face, edge, vertex when supported)
+- each interaction mode (single action, drag interaction, modifier input, repeated invocation)
+- each tool state (new invocation/feature creation, existing-feature modification when applicable)
+
+This matrix MUST be explicitly defined and generated.
+Manual testing is not acceptable as primary coverage.
+
+### 9.3 Required Test Infrastructure
+The system MUST provide:
+- Playwright E2E harness that launches the full app and executes interactions through public UI only
+- scene inspection hooks via a test-only API for deterministic assertions
+- visual regression pipeline with baseline images and pixel-diff thresholding
+- geometry/topology assertion utilities where possible
+
+Required test-only API capabilities include:
+- scene graph snapshot
+- mesh/geometry summary
+- selected entity state
+- transform state
+- tool state
+
+Example shape:
+- `window.__TEST_API__.getSceneState()`
+
+### 9.4 Geometry and Invariant Assertions
+Tests SHOULD validate, where applicable:
+- vertex counts
+- face counts
+- bounding boxes
+- expected transforms
+- semantic invariants (for example, extrusion increases volume)
+
+These checks prevent visually plausible but incorrect geometry outcomes.
+
+### 9.5 Test Generation Strategy (Mandatory)
+Agents MUST NOT hand-write the full combination space manually.
+
+A structured matrix MUST drive generated Playwright tests:
+- tools x selection types x interaction modes x modifier states x invocation state
+
+Each generated case MUST define:
+- deterministic initial scene setup
+- exact interaction sequence
+- expected scene-state assertions
+- expected visual snapshot assertions
+
+### 9.6 Baselines and Failure Policy
+Baselines (scene-state and visual snapshots) MUST be versioned.
+Baselines may be updated only for intentional behavior changes.
+
+Any failing test is blocking and indicates:
+- tool behavior regression
+- cross-tool side effects
+- rendering or interaction inconsistency
+
+No feature work may be considered complete while required tests are failing.
+
+### 9.7 Prohibited Testing Anti-Patterns
+The following are explicitly disallowed:
+- relying on manual QA as tool-validation coverage
+- testing only happy paths
+- skipping modifier or repeated-use scenarios
+- omitting visual regression validation
+- omitting geometry/state validation
+
+### 9.8 Architectural Testing Contract
+The system MUST preserve this pipeline:
+- intent -> tool -> interaction -> deterministic outcome
+
+Testing is the enforcement layer for this contract and is the safety boundary for AI-driven code changes.
+
+### 9.9 Feature Graph Consistency and Evolution (Non-Optional)
+The system MUST guarantee that modeling operations produce a correct, minimal, and stable feature graph.
+
+The feature graph represents modeling intent and MUST NOT degrade over repeated tool usage.
+
+Core behavioral requirement for operation sequences (`tool A -> tool B -> tool C`):
+1. correctly update the feature graph
+2. reuse or modify existing features when appropriate
+3. avoid redundant or duplicate feature creation
+4. preserve intent relationships and dependencies between features
+
+#### 9.9.1 Mandatory E2E Coverage
+Playwright E2E tests MUST validate feature graph behavior across sequential tool usage.
+
+This is required in addition to scene/geometry/visual validation.
+
+Test workflows MUST:
+1. start from deterministic base geometry
+2. apply first operation
+3. apply second operation (different tool or variation)
+4. optionally apply a third operation
+5. after each step, assert:
+- feature graph state
+- geometry state
+- no unintended feature duplication
+
+#### 9.9.2 Tool Combination Matrix
+Agents MUST programmatically generate workflow tests across:
+- tools: `move`, `rotate`, `push/pull`
+- selection types: `object`, `face`
+- sequence lengths: 2-step (`A -> B`) and 3-step (`A -> B -> C`)
+
+Example combinations include:
+- `move(object) -> rotate(object)`
+- `push/pull(face) -> move(face)`
+- `move(object) -> push/pull(face)`
+- `rotate(face) -> move(object)`
+
+Manual hand-writing of the full combination space is disallowed.
+
+#### 9.9.3 Required Feature Graph API and Snapshot Shape
+The app MUST expose a test-only API:
+- `window.__TEST_API__.getFeatureGraph()`
+
+The returned graph MUST include:
+- feature list
+- feature types
+- feature dependencies
+- feature targets (object/face references)
+
+Feature graph snapshot testing is mandatory after each operation step.
+Snapshots MUST include:
+- feature id
+- feature type
+- parent/child relationships
+
+#### 9.9.4 Required Assertions Per Step
+Tests MUST assert all of the following after each operation:
+
+1. Feature count correctness
+- feature count increases only when required
+- compatible repeated operations SHOULD modify existing features rather than create duplicates
+
+2. Feature type correctness
+- `move` creates/updates transform feature behavior
+- `rotate` creates/updates transform feature behavior
+- `push/pull` creates/updates geometry-modifying feature behavior
+
+3. Feature target stability
+- feature targets remain correctly attached to intended object/face
+- no orphaned or broken references are allowed
+
+4. Modification over creation when intent continues
+- prefer modification over creation when tool, selection target, and intent continuation are the same
+- tests MUST explicitly validate this preference path
+
+5. No redundant feature stacking
+- no identical move feature stacking on the same target when update is sufficient
+- no repeated push/pull stacking on the same face without explicit need
+- no transform stacking when a single transform feature should be updated
+
+#### 9.9.5 Sequence Validation Examples (Required)
+Required baseline example:
+1. `move(object: cube)`
+2. `move(object: cube)`
+
+Assertion:
+- feature count is `1` if modification semantics are defined for this case
+- feature count may be `2` only when explicitly defined by intent and asserted by tests
+
+Required complex example:
+1. `push/pull(face: top)`
+2. `move(object: cube)`
+3. `push/pull(face: top again)`
+
+Assertions:
+- second push/pull references updated geometry correctly
+- dependency chain remains valid
+- no broken references
+- no unnecessary duplicate features
+
+#### 9.9.6 Failure Conditions and Forbidden Anti-Patterns
+Tests MUST fail when:
+- feature graph grows unnecessarily
+- features are duplicated incorrectly
+- references break
+- wrong feature is modified
+- dependency chain is invalid
+
+The following are explicitly forbidden:
+- always creating new features instead of modifying existing ones
+- losing reference to original faces after modification
+- rebuilding geometry without updating the feature graph
+- treating the feature graph as secondary to geometry
+
+#### 9.9.7 Architectural Requirement
+The system MUST behave as:
+- intent -> feature graph -> geometry
+
+The following model is invalid:
+- geometry -> guessed feature graph
+
+Feature graph remains the source of truth.
+
+Long-term requirements for the feature graph:
+- minimal (no unnecessary redundancy)
+- stable (predictable updates)
+- editable (supports safe modification)
+- testable (fully asserted through E2E workflows)
+
+## 10. Performance Requirements
 System requirements:
 - interaction remains responsive during normal editing load
 - preview updates run at interactive frame rates
@@ -352,7 +571,7 @@ Execution policy:
 - defer/batch expensive recomputes
 - run exact geometry recompute asynchronously from input handling
 
-## 10. Open Source and Licensing
+## 11. Open Source and Licensing
 Project license: Apache License 2.0.
 
 Repository requirements:
@@ -363,20 +582,20 @@ Repository requirements:
 Contribution rule:
 - all contributions and dependencies must be Apache-2.0-compatible for redistribution
 
-## 11. Non-Goals (V1)
+## 12. Non-Goals (V1)
 - parametric-first CAD workflow
 - enterprise CAD feature completeness
 - mesh sculpting workflow
 - AI-first automatic modeling workflow
 - proprietary product cloning
 
-## 12. Exclusions (V1)
+## 13. Exclusions (V1)
 - feature tree UI
 - parametric editing UI
 - advanced snapping/inference systems
 - AI-driven automatic geometry modifications
 
-## 13. Long-Term Direction
+## 14. Long-Term Direction
 Possible future evolution:
 - structured introspection over feature graph operations
 - optional parametric editing interfaces above the same model core
@@ -385,7 +604,7 @@ Possible future evolution:
 
 Not a V1 commitment.
 
-## 14. Design Principles
+## 15. Design Principles
 All architecture and product decisions prioritize:
 - interaction first
 - minimal latency
@@ -393,7 +612,7 @@ All architecture and product decisions prioritize:
 - direct manipulation over abstraction
 - internal feature determinism with simple user-facing interaction
 
-## 15. Intent Governance
+## 16. Intent Governance
 `INTENT.md` is the authoritative definition of system intent.
 
 When intent changes, development workflow must:
