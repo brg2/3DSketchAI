@@ -118,7 +118,7 @@ export function selectorFromIntersection(intersection) {
     role: provenance.role,
     hint: {
       point: vecToRoundedObject(point),
-      normal: provenance.hint?.normal ?? (normal ? vecToRoundedObject(normal) : null),
+      normal: normal ? vecToRoundedObject(normal) : provenance.hint?.normal ?? null,
     },
   };
 }

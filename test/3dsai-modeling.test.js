@@ -109,6 +109,39 @@ test("vector face tilt replays along the current face normal instead of a world 
   assert.notEqual(box.corners.px_py_pz[2], before[2], "Tilted-normal replay should move in the normal's z component");
 });
 
+test("sequential face tilts center each replay on the selected face", () => {
+  const r = {
+    makePolygon(points) {
+      return { type: "face", points };
+    },
+    makeSolid(faces) {
+      return { type: "solid", faces };
+    },
+  };
+  const box = makeBox(r, [0, 0, 0], [1, 1, 1]);
+
+  box.applyCenteredTapers([
+    {
+      faceAxis: "y",
+      faceSign: 1,
+      hingeSideAxis: "z",
+      angle: -0.6,
+    },
+  ]);
+  box.applyCenteredTapers([
+    {
+      faceAxis: "z",
+      faceSign: 1,
+      hingeSideAxis: "y",
+      angle: 0.6,
+    },
+  ]);
+
+  assert.ok(box.corners.px_py_pz[2] > 1.2, "Front-face tilt should center on the already tilted front face");
+  assert.ok(box.corners.px_ny_pz[2] < 0.8, "Opposite side of the front face should move inward by the matching amount");
+  assert.equal(box.corners.px_py_nz[2], 0, "Back top corner should not be used to center the front-face tilt");
+});
+
 function normalize(vector) {
   const length = Math.hypot(vector.x, vector.y, vector.z);
   return {

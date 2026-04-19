@@ -278,9 +278,11 @@ class EditableBox {
       const faceCoordinate = faceSign > 0
         ? maxCoordinate(Object.values(sourceCorners), faceIndex)
         : minCoordinate(Object.values(sourceCorners), faceIndex);
+      const selectedSources = Object.values(sourceCorners)
+        .filter((source) => Math.abs(source[faceIndex] - faceCoordinate) <= 1e-6);
       const sideCenter = (
-        minCoordinate(Object.values(sourceCorners), sideIndex) +
-        maxCoordinate(Object.values(sourceCorners), sideIndex)
+        minCoordinate(selectedSources, sideIndex) +
+        maxCoordinate(selectedSources, sideIndex)
       ) / 2;
       const slope = Math.tan(tilt.angle);
 
@@ -309,11 +311,14 @@ class EditableBox {
       Object.entries(this.corners).map(([key, point]) => [key, [...point]]),
     );
     const sourcePoints = Object.values(sourceCorners);
-    const faceProjection = maxProjection(sourcePoints, normal);
     const tolerance = Math.max(boxDiagonal(sourcePoints) * 1e-6, 1e-6);
-    const selectedKeys = Object.entries(sourceCorners)
-      .filter(([, point]) => Math.abs(dotArray(point, normal) - faceProjection) <= tolerance)
-      .map(([key]) => key);
+    const selectedKeys = semanticFaceCornerKeys(sourceCorners, tilt);
+    if (selectedKeys.length === 0) {
+      const faceProjection = maxProjection(sourcePoints, normal);
+      selectedKeys.push(...Object.entries(sourceCorners)
+        .filter(([, point]) => Math.abs(dotArray(point, normal) - faceProjection) <= tolerance)
+        .map(([key]) => key));
+    }
     if (selectedKeys.length === 0) {
       return this;
     }
@@ -894,6 +899,16 @@ function projectOntoPlane(vector, normal) {
 function fallbackPerpendicular(normal) {
   const seed = Math.abs(normal.y) < 0.9 ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 };
   return normalizeVector(projectOntoPlane(seed, normal));
+}
+
+function semanticFaceCornerKeys(corners, tilt) {
+  if (!AXES.includes(tilt?.faceAxis)) {
+    return [];
+  }
+  const axisIndexByName = { x: 0, y: 1, z: 2 };
+  const signToken = (Math.sign(tilt.faceSign ?? 1) || 1) > 0 ? `p${tilt.faceAxis}` : `n${tilt.faceAxis}`;
+  const axisIndexForKey = axisIndexByName[tilt.faceAxis];
+  return Object.keys(corners).filter((key) => key.split("_")[axisIndexForKey] === signToken);
 }
 
 function maxProjection(points, vector) {

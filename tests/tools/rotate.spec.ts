@@ -252,6 +252,67 @@ test("rotate + opposite faces preview matches the committed brep result", async 
   expectPngImagesClose(committedImage, previewImage!);
 });
 
+test("rotate + tilted top then front face preview matches the committed brep result", async ({ page }) => {
+  await selectFace(page, "cube", 0);
+  await activateTool(page, "Rotate");
+  const topDrag = await getDragPath(page, {
+    objectName: "cube",
+    faceIndex: 0,
+    screenDelta: { x: -60, y: 0 },
+  });
+  expect(topDrag).toBeTruthy();
+  await performDrag(page, topDrag!);
+  await waitForRenderCompletion(page);
+
+  await selectFace(page, "cube", 2);
+  await activateTool(page, "Rotate");
+  const frontDrag = await getDragPath(page, {
+    objectName: "cube",
+    faceIndex: 2,
+    screenDelta: { x: 60, y: 0 },
+  });
+  expect(frontDrag).toBeTruthy();
+
+  await page.mouse.move(frontDrag!.start.x, frontDrag!.start.y);
+  await page.mouse.down();
+  let previewImage: Buffer | null = null;
+  try {
+    await page.mouse.move(frontDrag!.end.x, frontDrag!.end.y, { steps: 10 });
+    await waitForRenderCompletion(page);
+    previewImage = await page.locator("canvas").screenshot();
+
+    const previewScene = await page.evaluate(() => window.__TEST_API__.getSceneState());
+    const previewMesh = previewScene.meshes.find((mesh) => mesh.objectId === "cube");
+    expect(previewScene.tool.dragging).toBe(true);
+    expect(previewScene.previewFeatureGraphUpdate).toMatchObject({
+      created: true,
+      reason: "fallback_new_feature",
+      featureId: "feature_3",
+    });
+    expect(previewScene.featureGraph).toHaveLength(2);
+    expect(previewMesh.worldBounds.max.z).toBeGreaterThan(0.7);
+  } finally {
+    await page.mouse.up();
+  }
+  await waitForRenderCompletion(page);
+  const canvasBox = await page.locator("canvas").boundingBox();
+  expect(canvasBox).toBeTruthy();
+  await page.mouse.move(canvasBox!.x + 10, canvasBox!.y + 10);
+  await waitForRenderCompletion(page);
+  const committedImage = await page.locator("canvas").screenshot();
+  expect(previewImage).toBeTruthy();
+
+  const committedScene = await page.evaluate(() => window.__TEST_API__.getSceneState());
+  const committedMesh = committedScene.meshes.find((mesh) => mesh.objectId === "cube");
+  const rotateFeatures = committedScene.featureGraph.filter((feature) => feature.type === "rotate");
+  expect(committedScene.tool.dragging).toBe(false);
+  expect(rotateFeatures).toHaveLength(2);
+  expect(rotateFeatures[0].target.selection.selector.role).toBe("face.py");
+  expect(rotateFeatures[1].target.selection.selector.role).toBe("face.pz");
+  expect(committedMesh.worldBounds.max.z).toBeGreaterThan(0.7);
+  expectPngImagesClose(committedImage, previewImage!);
+});
+
 test("rotate + edge rotates around the normal object Y axis", async ({ page }) => {
   const before = await page.evaluate(() => window.__TEST_API__.getObjectByName("cube"));
 
