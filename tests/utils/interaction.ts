@@ -37,6 +37,8 @@ export async function getDragPath(
   options: {
     objectName?: string;
     faceIndex?: number;
+    edgeIndex?: number;
+    vertexIndex?: number;
     worldDelta?: { x: number; y: number; z: number };
     screenDelta?: Point;
   },

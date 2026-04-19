@@ -1098,6 +1098,187 @@ test("face rotation preview uses the resolved final tilt delta", () => {
   assert.equal(previewTilt.hingeSideVector, undefined);
 });
 
+test("preview updates record feature-graph resolution for primitive position edits", () => {
+  const canonicalModel = new CanonicalModel();
+  canonicalModel.appendCommittedOperation(
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+  );
+
+  let previewOperation = null;
+  const controller = new RuntimeController({
+    canonicalModel,
+    representationStore: {
+      setPreviewOperation(operation) {
+        previewOperation = operation;
+      },
+      snapshot() {
+        return {};
+      },
+    },
+  });
+
+  controller.beginManipulation({
+    type: OPERATION_TYPES.MOVE,
+    targetId: "obj_1",
+    selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] },
+    params: { delta: { x: 0, y: 0, z: 0 } },
+  });
+  controller.updateManipulation({ delta: { x: 1.25, y: 0, z: -0.5 } });
+
+  assert.equal(controller.getSnapshot().previewFeatureGraphUpdate.reason, "modified_originating_primitive_position");
+  assert.equal(controller.getSnapshot().previewFeatureGraphUpdate.featureId, "feature_1");
+  assert.deepEqual(previewOperation.params.delta, { x: 1.25, y: 0, z: -0.5 });
+});
+
+test("push-pull preview for primitive box edits carries the resolved primitive state", () => {
+  const canonicalModel = new CanonicalModel();
+  canonicalModel.appendCommittedOperation(
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+  );
+
+  let previewOperation = null;
+  const controller = new RuntimeController({
+    canonicalModel,
+    representationStore: {
+      setPreviewOperation(operation) {
+        previewOperation = operation;
+      },
+      snapshot() {
+        return {};
+      },
+    },
+  });
+
+  controller.beginManipulation({
+    type: OPERATION_TYPES.PUSH_PULL,
+    targetId: "obj_1",
+    selection: {
+      mode: "face",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      selector: {
+        featureId: "feature_1",
+        role: "face.pz",
+        hint: { normal: { x: 0, y: 0, z: 1 } },
+      },
+    },
+    params: {
+      axis: { x: 0, y: 0, z: 1 },
+      distance: 0,
+      mode: "move",
+    },
+  });
+  controller.updateManipulation({
+    axis: { x: 0, y: 0, z: 1 },
+    distance: 0.562,
+    mode: "move",
+  });
+
+  assert.equal(controller.getSnapshot().previewFeatureGraphUpdate.reason, "modified_originating_primitive");
+  assert.deepEqual(previewOperation.params.previewPrimitiveState, {
+    primitive: "box",
+    position: { x: 0, y: 0.6, z: 0.281 },
+    size: { x: 1, y: 1, z: 1.562 },
+  });
+});
+
+test("preview updates use incremental feature diffs for repeated face moves", () => {
+  const canonicalModel = new CanonicalModel();
+  canonicalModel.appendCommittedOperation(
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+  );
+  canonicalModel.appendCommittedOperation({
+    type: OPERATION_TYPES.MOVE,
+    targetId: "obj_1",
+    selection: {
+      mode: "face",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      selector: {
+        featureId: "feature_1",
+        role: "face.nx",
+        hint: { normal: { x: -1, y: 0, z: 0 } },
+      },
+    },
+    params: {
+      delta: { x: -0.122, y: 0, z: -0.679 },
+      subshapeMove: {
+        mode: "face",
+        faceAxis: "x",
+        faceSign: -1,
+        delta: { x: -0.122, y: 0, z: -0.679 },
+      },
+    },
+  });
+
+  let previewOperation = null;
+  const controller = new RuntimeController({
+    canonicalModel,
+    representationStore: {
+      setPreviewOperation(operation) {
+        previewOperation = operation;
+      },
+      snapshot() {
+        return {};
+      },
+    },
+  });
+  const selection = {
+    mode: "face",
+    objectId: "obj_1",
+    objectIds: ["obj_1"],
+    selector: {
+      featureId: "feature_2",
+      role: "face.nx",
+      hint: { normal: { x: -1, y: 0, z: 0 } },
+    },
+  };
+
+  controller.beginManipulation({
+    type: OPERATION_TYPES.MOVE,
+    targetId: "obj_1",
+    selection,
+    params: {
+      delta: { x: 0, y: 0, z: 0 },
+      subshapeMove: {
+        mode: "face",
+        faceAxis: "x",
+        faceSign: -1,
+        delta: { x: 0, y: 0, z: 0 },
+      },
+    },
+  });
+  controller.updateManipulation({
+    delta: { x: -0.241, y: 0, z: 1.275 },
+    subshapeMove: {
+      mode: "face",
+      faceAxis: "x",
+      faceSign: -1,
+      delta: { x: -0.241, y: 0, z: 1.275 },
+    },
+  });
+
+  assert.equal(controller.getSnapshot().previewFeatureGraphUpdate.reason, "modified_existing_face_move");
+  assert.equal(controller.getSnapshot().previewFeatureGraphUpdate.featureId, "feature_2");
+  assert.deepEqual(previewOperation.params.delta, { x: -0.241, y: 0, z: 1.275 });
+  assert.deepEqual(previewOperation.params.subshapeMove.delta, { x: -0.241, y: 0, z: 1.275 });
+});
+
 test("face rotation merge preserves alternate centered tilt axes", () => {
   const model = new CanonicalModel();
   model.appendCommittedOperation(

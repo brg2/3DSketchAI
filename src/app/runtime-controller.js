@@ -17,6 +17,7 @@ export class RuntimeController {
     this.onCanonicalCodeChanged = onCanonicalCodeChanged || (() => {});
     this._activeSession = null;
     this._lastExactBackend = "not-run";
+    this._lastPreviewFeatureGraphUpdate = null;
   }
 
   initialize({ scene, seedSceneState }) {
@@ -47,6 +48,7 @@ export class RuntimeController {
     const session = this._requireActiveSession();
     const operation = session.commitOperation();
     this._activeSession = null;
+    this._lastPreviewFeatureGraphUpdate = null;
     return this.commitOperation(operation);
   }
 
@@ -55,6 +57,7 @@ export class RuntimeController {
       this._activeSession.cancel();
       this._activeSession = null;
     }
+    this._lastPreviewFeatureGraphUpdate = null;
     this.representationStore.clearPreview();
   }
 
@@ -189,6 +192,7 @@ export class RuntimeController {
       featureGraph: this.canonicalModel.getFeatures(),
       representation: this.representationStore.snapshot(),
       exactBackend: this._lastExactBackend,
+      previewFeatureGraphUpdate: this._lastPreviewFeatureGraphUpdate ? structuredClone(this._lastPreviewFeatureGraphUpdate) : null,
     };
   }
 
@@ -204,53 +208,187 @@ export class RuntimeController {
   }
 
   _operationForDisplayPreview(operation) {
-    if (operation?.type !== OPERATION_TYPES.ROTATE || operation.selection?.mode !== "face") {
-      return structuredClone(operation);
-    }
-
+    const rawOperation = structuredClone(operation);
     let featureGraphUpdate;
     try {
       featureGraphUpdate = applyOperationToFeatureGraph(this.canonicalModel.getFeatures(), operation);
     } catch {
-      return structuredClone(operation);
+      this._lastPreviewFeatureGraphUpdate = null;
+      return rawOperation;
     }
+    this._lastPreviewFeatureGraphUpdate = previewFeatureGraphUpdateSummary(featureGraphUpdate);
 
-    if (!featureGraphUpdate.modified || featureGraphUpdate.reason !== "modified_existing_face_rotate") {
-      return structuredClone(operation);
+    if (!featureGraphUpdate.modified) {
+      return rawOperation;
     }
 
     const currentFeature = this.canonicalModel.getFeatures().find((feature) => feature.id === featureGraphUpdate.featureId);
     const nextFeature = featureGraphUpdate.features.find((feature) => feature.id === featureGraphUpdate.featureId);
-    const currentTilts = faceTiltsFromParams(currentFeature?.params);
-    const nextTilts = faceTiltsFromParams(nextFeature?.params);
-    if (nextTilts.length === 0) {
-      return structuredClone(operation);
-    }
-
-    const incrementalTilts = [];
-    for (const nextTilt of nextTilts) {
-      const currentTilt = currentTilts.find((tilt) => faceTiltMergeKey(tilt) === faceTiltMergeKey(nextTilt));
-      const angle = currentTilt
-        ? incrementalTiltAngle(currentTilt.angle ?? 0, nextTilt.angle ?? 0)
-        : nextTilt.angle ?? 0;
-      if (Math.abs(angle) < 1e-8) {
-        continue;
-      }
-      incrementalTilts.push({
-        ...structuredClone(nextTilt),
-        angle: roundMillimeters(angle),
-      });
-    }
-
-    const displayOperation = structuredClone(operation);
-    displayOperation.params = {
-      ...displayOperation.params,
-      deltaEuler: { x: 0, y: 0, z: 0 },
-      faceTilts: incrementalTilts,
-    };
-    delete displayOperation.params.faceTilt;
-    return displayOperation;
+    const incrementalOperation = incrementalPreviewOperation(rawOperation, currentFeature, nextFeature, featureGraphUpdate.reason);
+    return incrementalOperation ?? rawOperation;
   }
+}
+
+function previewFeatureGraphUpdateSummary(update) {
+  if (!update) {
+    return null;
+  }
+  return {
+    modified: Boolean(update.modified),
+    created: Boolean(update.created),
+    reason: update.reason ?? null,
+    featureId: update.featureId ?? null,
+  };
+}
+
+function incrementalPreviewOperation(operation, currentFeature, nextFeature, reason) {
+  if (!currentFeature || !nextFeature) {
+    return null;
+  }
+
+  if (reason === "modified_existing_face_rotate") {
+    return incrementalFaceRotatePreviewOperation(operation, currentFeature, nextFeature);
+  }
+
+  if (reason === "modified_existing_object_rotate") {
+    const currentEuler = vectorWithDefaults(currentFeature.params?.deltaEuler, { x: 0, y: 0, z: 0 });
+    const nextEuler = vectorWithDefaults(nextFeature.params?.deltaEuler, { x: 0, y: 0, z: 0 });
+    return {
+      ...structuredClone(operation),
+      params: {
+        ...structuredClone(operation.params ?? {}),
+        deltaEuler: subtractVectors(nextEuler, currentEuler),
+      },
+    };
+  }
+
+  if (reason === "modified_existing_face_move") {
+    const currentDelta = vectorWithDefaults(currentFeature.params?.delta, { x: 0, y: 0, z: 0 });
+    const nextDelta = vectorWithDefaults(nextFeature.params?.delta, { x: 0, y: 0, z: 0 });
+    const delta = subtractVectors(nextDelta, currentDelta);
+    const previewOperation = structuredClone(operation);
+    previewOperation.params = {
+      ...previewOperation.params,
+      delta,
+      subshapeMove: {
+        ...previewOperation.params.subshapeMove,
+        delta,
+      },
+    };
+    return previewOperation;
+  }
+
+  if (reason === "modified_existing_push_pull") {
+    const previewOperation = structuredClone(operation);
+    previewOperation.params = {
+      ...previewOperation.params,
+      distance: roundMillimeters((nextFeature.params?.distance ?? 0) - (currentFeature.params?.distance ?? 0)),
+    };
+    return previewOperation;
+  }
+
+  if (reason === "modified_originating_primitive_position") {
+    const currentPosition = vectorWithDefaults(currentFeature.params?.position, { x: 0, y: 0, z: 0 });
+    const nextPosition = vectorWithDefaults(nextFeature.params?.position, { x: 0, y: 0, z: 0 });
+    const previewOperation = structuredClone(operation);
+    previewOperation.params = {
+      ...previewOperation.params,
+      delta: subtractVectors(nextPosition, currentPosition),
+    };
+    delete previewOperation.params.subshapeMove;
+    return previewOperation;
+  }
+
+  if (reason === "modified_originating_primitive") {
+    const previewOperation = structuredClone(operation);
+    if (previewOperation.type === OPERATION_TYPES.PUSH_PULL) {
+      const faceAxis = dominantAxis(previewOperation.params?.axis ?? { x: 0, y: 0, z: 1 });
+      const currentSize = vectorWithDefaults(currentFeature.params?.size, { x: 1, y: 1, z: 1 });
+      const nextSize = vectorWithDefaults(nextFeature.params?.size, { x: 1, y: 1, z: 1 });
+      previewOperation.params = {
+        ...previewOperation.params,
+        distance: roundMillimeters((nextSize[faceAxis] ?? 0) - (currentSize[faceAxis] ?? 0)),
+        previewPrimitiveState: primitivePreviewState(nextFeature),
+      };
+    }
+    return previewOperation;
+  }
+
+  return null;
+}
+
+function incrementalFaceRotatePreviewOperation(operation, currentFeature, nextFeature) {
+  if (operation?.type !== OPERATION_TYPES.ROTATE || operation.selection?.mode !== "face") {
+    return null;
+  }
+
+  const currentTilts = faceTiltsFromParams(currentFeature?.params);
+  const nextTilts = faceTiltsFromParams(nextFeature?.params);
+  if (nextTilts.length === 0) {
+    return null;
+  }
+
+  const incrementalTilts = [];
+  for (const nextTilt of nextTilts) {
+    const currentTilt = currentTilts.find((tilt) => faceTiltMergeKey(tilt) === faceTiltMergeKey(nextTilt));
+    const angle = currentTilt
+      ? incrementalTiltAngle(currentTilt.angle ?? 0, nextTilt.angle ?? 0)
+      : nextTilt.angle ?? 0;
+    if (Math.abs(angle) < 1e-8) {
+      continue;
+    }
+    incrementalTilts.push({
+      ...structuredClone(nextTilt),
+      angle: roundMillimeters(angle),
+    });
+  }
+
+  const displayOperation = structuredClone(operation);
+  displayOperation.params = {
+    ...displayOperation.params,
+    deltaEuler: { x: 0, y: 0, z: 0 },
+    faceTilts: incrementalTilts,
+  };
+  delete displayOperation.params.faceTilt;
+  return displayOperation;
+}
+
+function vectorWithDefaults(value, defaults) {
+  return {
+    x: Number.isFinite(value?.x) ? value.x : defaults.x,
+    y: Number.isFinite(value?.y) ? value.y : defaults.y,
+    z: Number.isFinite(value?.z) ? value.z : defaults.z,
+  };
+}
+
+function subtractVectors(next, current) {
+  return {
+    x: roundMillimeters(next.x - current.x),
+    y: roundMillimeters(next.y - current.y),
+    z: roundMillimeters(next.z - current.z),
+  };
+}
+
+function dominantAxis(vector) {
+  const axes = ["x", "y", "z"];
+  let best = "x";
+  for (const axis of axes) {
+    if (Math.abs(vector?.[axis] ?? 0) > Math.abs(vector?.[best] ?? 0)) {
+      best = axis;
+    }
+  }
+  return best;
+}
+
+function primitivePreviewState(feature) {
+  if (feature?.type !== OPERATION_TYPES.CREATE_PRIMITIVE) {
+    return null;
+  }
+  return {
+    primitive: feature.params?.primitive ?? "box",
+    position: vectorWithDefaults(feature.params?.position, { x: 0, y: 0, z: 0 }),
+    size: vectorWithDefaults(feature.params?.size, { x: 1, y: 1, z: 1 }),
+  };
 }
 
 function faceTiltsFromParams(params) {
@@ -269,6 +407,10 @@ function faceTiltMergeKey(tilt) {
 
 function incrementalTiltAngle(currentAngle, nextAngle) {
   return Math.atan(Math.tan(nextAngle) - Math.tan(currentAngle));
+}
+
+function roundMillimeters(value) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function createDefaultBoxOperation() {
@@ -391,6 +533,7 @@ function addToTransformRun(run, operation) {
     run.hasScale = true;
   }
 }
+
 function flushTransformRun(compressed, run) {
   if (!run) {
     return;
@@ -422,7 +565,6 @@ function flushTransformRun(compressed, run) {
       params: { scaleFactor: { ...run.scaleFactor } },
     });
   }
-
   if (run.hasMove && !isZeroDelta(run.delta)) {
     compressed.push({
       type: "move",
@@ -433,18 +575,14 @@ function flushTransformRun(compressed, run) {
   }
 }
 
-function isZeroDelta(delta) {
-  return delta.x === 0 && delta.y === 0 && delta.z === 0;
+function effectiveScaleFactor(value) {
+  return Math.max(0.1, Number.isFinite(value) ? value : 1);
 }
 
 function isIdentityScale(scale) {
   return scale.x === 1 && scale.y === 1 && scale.z === 1;
 }
 
-function effectiveScaleFactor(value) {
-  return Math.max(0.1, Number.isFinite(value) ? value : 1);
-}
-
-function roundMillimeters(value) {
-  return Math.round(value * 1000) / 1000;
+function isZeroDelta(delta) {
+  return delta.x === 0 && delta.y === 0 && delta.z === 0;
 }

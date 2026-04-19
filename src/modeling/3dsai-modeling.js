@@ -98,9 +98,10 @@ export function pushPull(shape, faceSelector, distance) {
   const extrusionVec = normal.multiply(distance);
   const tool = basicFaceExtrusion(face, extrusionVec);
 
-  return distance > 0
-    ? shape.fuse(tool)
-    : shape.cut(tool);
+  const result = distance > 0
+    ? shape.fuse(tool, { optimisation: "sameFace" })
+    : shape.cut(tool, { optimisation: "sameFace" });
+  return simplifyBooleanResult(result);
 }
 
 class EditableBox {
@@ -112,6 +113,7 @@ class EditableBox {
     this.max = [...max];
     this.corners = createBoxCorners(min, max);
     this.extraFaces = [];
+    this.hiddenBaseFaces = new Set();
     this.brepOperations = [];
     this.brepCompatible = true;
   }
@@ -201,18 +203,7 @@ class EditableBox {
       max: [...this.max],
     });
 
-    if (operation?.mode === "extend") {
-      this.addFaceExtension(operation, { recordBrep: false });
-      return this;
-    }
-
-    const delta = [axis.x * distance, axis.y * distance, axis.z * distance];
-    for (const key of faceCornerKeys(this.corners, operation, axis)) {
-      const corner = this.corners[key];
-      corner[0] += delta[0];
-      corner[1] += delta[1];
-      corner[2] += delta[2];
-    }
+    this.addFaceExtension({ ...operation, axis, distance }, { recordBrep: false });
     this.refreshBoundsFromCorners();
     return this;
   }
@@ -359,6 +350,7 @@ class EditableBox {
       });
     }
 
+    this.hiddenBaseFaces.add(faceKeyFromOperation(operation, axis));
     const delta = [axis.x * distance, axis.y * distance, axis.z * distance];
     const outer = loop.map((point) => [point[0] + delta[0], point[1] + delta[1], point[2] + delta[2]]);
     this.extraFaces.push(outer);
@@ -417,16 +409,25 @@ class EditableBox {
   }
 
   toLegacyPolygonShape() {
-    const faces = [
-      this.r.makePolygon([this.corners.nx_ny_nz, this.corners.px_ny_nz, this.corners.px_ny_pz, this.corners.nx_ny_pz]),
-      this.r.makePolygon([this.corners.nx_py_nz, this.corners.nx_py_pz, this.corners.px_py_pz, this.corners.px_py_nz]),
-      this.r.makePolygon([this.corners.nx_ny_nz, this.corners.nx_py_nz, this.corners.px_py_nz, this.corners.px_ny_nz]),
-      this.r.makePolygon([this.corners.px_ny_nz, this.corners.px_py_nz, this.corners.px_py_pz, this.corners.px_ny_pz]),
-      this.r.makePolygon([this.corners.px_ny_pz, this.corners.px_py_pz, this.corners.nx_py_pz, this.corners.nx_ny_pz]),
-      this.r.makePolygon([this.corners.nx_ny_pz, this.corners.nx_py_pz, this.corners.nx_py_nz, this.corners.nx_ny_nz]),
-      ...this.extraFaces.map((points) => this.r.makePolygon(points)),
-    ];
+    const faces = baseBoxFaces(this.corners)
+      .filter((entry) => !this.hiddenBaseFaces.has(entry.key))
+      .flatMap((entry) => this.makePolygonFaces(entry.points));
+    faces.push(...this.extraFaces.flatMap((points) => this.makePolygonFaces(points)));
     return this.r.makeSolid(faces);
+  }
+
+  makePolygonFaces(points) {
+    if (!Array.isArray(points) || points.length < 3) {
+      return [];
+    }
+    if (points.length === 3 || pointsArePlanar(points)) {
+      return [this.r.makePolygon(points)];
+    }
+    const faces = [];
+    for (let index = 1; index < points.length - 1; index += 1) {
+      faces.push(this.r.makePolygon([points[0], points[index], points[index + 1]]));
+    }
+    return faces;
   }
 }
 
@@ -440,6 +441,17 @@ function canUseBrepKernel(r) {
 
 function pushPullFaceOnShape(r, shape, operation) {
   return pushPullFace(r, shape, operation);
+}
+
+function simplifyBooleanResult(shape) {
+  if (!shape || typeof shape.simplify !== "function") {
+    return shape;
+  }
+  try {
+    return shape.simplify();
+  } catch {
+    return shape;
+  }
 }
 
 function moveBoxFaceWithBooleans(r, shape, min, max, operation) {
@@ -545,6 +557,54 @@ function pointFromAxisValues(firstIndex, firstValue, secondIndex, secondValue, t
   return point;
 }
 
+function pointsArePlanar(points) {
+  const origin = points[0];
+  let normal = null;
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const a = subtractArray(points[i], origin);
+    const b = subtractArray(points[i + 1], origin);
+    const candidate = crossArray(a, b);
+    if (lengthArray(candidate) > 1e-10) {
+      normal = candidate;
+      break;
+    }
+  }
+  if (!normal) {
+    return true;
+  }
+  const normalLength = lengthArray(normal);
+  const tolerance = 1e-7;
+  return points.every((point) => Math.abs(dotArrays(subtractArray(point, origin), normal)) / normalLength <= tolerance);
+}
+
+function subtractArray(a, b) {
+  return [
+    (a?.[0] ?? 0) - (b?.[0] ?? 0),
+    (a?.[1] ?? 0) - (b?.[1] ?? 0),
+    (a?.[2] ?? 0) - (b?.[2] ?? 0),
+  ];
+}
+
+function crossArray(a, b) {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+function lengthArray(vector) {
+  return Math.hypot(vector?.[0] ?? 0, vector?.[1] ?? 0, vector?.[2] ?? 0);
+}
+
+function dotArrays(a, b) {
+  return (
+    (a?.[0] ?? 0) * (b?.[0] ?? 0) +
+    (a?.[1] ?? 0) * (b?.[1] ?? 0) +
+    (a?.[2] ?? 0) * (b?.[2] ?? 0)
+  );
+}
+
 function createBoxCorners(min, max) {
   return {
     nx_ny_nz: [min[0], min[1], min[2]],
@@ -605,6 +665,24 @@ function faceLoop(corners, operation, axisInput) {
   return faceSign > 0
     ? [corners.nx_ny_pz, corners.px_ny_pz, corners.px_py_pz, corners.nx_py_pz]
     : [corners.nx_ny_nz, corners.nx_py_nz, corners.px_py_nz, corners.px_ny_nz];
+}
+
+function baseBoxFaces(corners) {
+  return [
+    { key: "y:-1", points: [corners.nx_ny_nz, corners.px_ny_nz, corners.px_ny_pz, corners.nx_ny_pz] },
+    { key: "y:1", points: [corners.nx_py_nz, corners.nx_py_pz, corners.px_py_pz, corners.px_py_nz] },
+    { key: "z:-1", points: [corners.nx_ny_nz, corners.nx_py_nz, corners.px_py_nz, corners.px_ny_nz] },
+    { key: "x:1", points: [corners.px_ny_nz, corners.px_py_nz, corners.px_py_pz, corners.px_ny_pz] },
+    { key: "z:1", points: [corners.px_ny_pz, corners.px_py_pz, corners.nx_py_pz, corners.nx_ny_pz] },
+    { key: "x:-1", points: [corners.nx_ny_pz, corners.nx_py_pz, corners.nx_py_nz, corners.nx_ny_nz] },
+  ];
+}
+
+function faceKeyFromOperation(operation, axisInput) {
+  const axis = normalizeVector(axisInput ?? axisFromFaceIdentity(operation));
+  const faceAxis = AXES.includes(operation?.faceAxis) ? operation.faceAxis : dominantAxis(axis);
+  const faceSign = Math.sign(operation?.faceSign ?? axis[faceAxis] ?? 1) || 1;
+  return `${faceAxis}:${faceSign}`;
 }
 
 function cornerKeyFromPoint(point) {

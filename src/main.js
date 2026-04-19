@@ -267,6 +267,7 @@ function createTestApi(app) {
         operationCount: snapshot.operationCount,
         exactBackend: snapshot.exactBackend,
         hasActiveSession: snapshot.hasActiveSession,
+        previewFeatureGraphUpdate: snapshot.previewFeatureGraphUpdate ? structuredClone(snapshot.previewFeatureGraphUpdate) : null,
         featureGraph: structuredClone(snapshot.featureGraph),
         objects: objectTransformState(snapshot.representation.exactSceneState),
         meshes: meshSummaries(app.representationStore.getSelectableMeshes(), vector),
@@ -294,6 +295,14 @@ function createTestApi(app) {
         mode: app.selectionPipeline.selectionMode,
         objectIds: [...app.selectionPipeline.selectedObjectIds],
         hoveredObjectId: app.hoveredObjectId,
+      };
+    },
+    getPreselectionState() {
+      return {
+        faceVisible: Boolean(app.preselectionFaceOverlay?.visible),
+        edgeVisible: Boolean(app.preselectionEdgeOverlay?.visible),
+        vertexVisible: Boolean(app.preselectionVertexOverlay?.visible),
+        dragging: Boolean(app.tools.dragState),
       };
     },
     getCamera() {
@@ -341,6 +350,38 @@ function createTestApi(app) {
         click: clientPointForWorldPoint(face.center),
       }));
     },
+    getEdgeData(objectName) {
+      const objectId = objectIdForName(objectName);
+      const mesh = meshForObject(objectId);
+      if (!mesh) {
+        return [];
+      }
+      mesh.updateMatrixWorld(true);
+      const bounds = new THREE.Box3().setFromObject(mesh);
+      return deterministicBoxEdges(bounds).map((edge) => ({
+        ...edge,
+        a: vector(edge.a),
+        b: vector(edge.b),
+        center: vector(edge.center),
+        clickWorld: vector(edge.clickWorld),
+        click: clientPointForWorldPoint(edge.clickWorld),
+      }));
+    },
+    getVertexData(objectName) {
+      const objectId = objectIdForName(objectName);
+      const mesh = meshForObject(objectId);
+      if (!mesh) {
+        return [];
+      }
+      mesh.updateMatrixWorld(true);
+      const bounds = new THREE.Box3().setFromObject(mesh);
+      return deterministicBoxVertices(bounds).map((vertex) => ({
+        ...vertex,
+        world: vector(vertex.world),
+        clickWorld: vector(vertex.clickWorld),
+        click: clientPointForWorldPoint(vertex.clickWorld),
+      }));
+    },
     getTransformState(objectId) {
       const state = app.runtimeController.getSnapshot().representation.exactSceneState?.[objectId];
       if (!state) {
@@ -369,6 +410,14 @@ function createTestApi(app) {
       const face = this.getFaceData(objectName).find((entry) => entry.faceIndex === faceIndex);
       return face?.click ?? null;
     },
+    getCanvasPointForEdge(objectName, edgeIndex) {
+      const edge = this.getEdgeData(objectName).find((entry) => entry.edgeIndex === edgeIndex);
+      return edge?.click ?? null;
+    },
+    getCanvasPointForVertex(objectName, vertexIndex) {
+      const vertex = this.getVertexData(objectName).find((entry) => entry.vertexIndex === vertexIndex);
+      return vertex?.click ?? null;
+    },
     getMoveDragPoints(objectId, delta) {
       const mesh = meshForObject(objectId);
       if (!mesh) {
@@ -394,11 +443,15 @@ function createTestApi(app) {
         delta: vector(delta),
       };
     },
-    getDragPath({ objectName = "cube", faceIndex = null, worldDelta = null, screenDelta = null } = {}) {
+    getDragPath({ objectName = "cube", faceIndex = null, edgeIndex = null, vertexIndex = null, worldDelta = null, screenDelta = null } = {}) {
       const objectId = objectIdForName(objectName);
       let start = null;
       if (Number.isInteger(faceIndex)) {
         start = this.getCanvasPointForFace(objectName, faceIndex);
+      } else if (Number.isInteger(edgeIndex)) {
+        start = this.getCanvasPointForEdge(objectName, edgeIndex);
+      } else if (Number.isInteger(vertexIndex)) {
+        start = this.getCanvasPointForVertex(objectName, vertexIndex);
       } else {
         start = this.getObjectClientPoint(objectId);
       }
@@ -419,9 +472,23 @@ function createTestApi(app) {
       const face = Number.isInteger(faceIndex)
         ? this.getFaceData(objectName).find((entry) => entry.faceIndex === faceIndex)
         : null;
-      const worldPoint = face
-        ? new THREE.Vector3(face.center.x, face.center.y, face.center.z)
-        : hitPointAtClient(meshForObject(objectId), start, app);
+      const vertex = Number.isInteger(vertexIndex)
+        ? this.getVertexData(objectName).find((entry) => entry.vertexIndex === vertexIndex)
+        : null;
+      let worldPoint = null;
+      if (face) {
+        worldPoint = new THREE.Vector3(face.center.x, face.center.y, face.center.z);
+      } else if (vertex) {
+        const anchor = new THREE.Vector3(vertex.world.x, vertex.world.y, vertex.world.z);
+        const movePlane = screenMovePlaneFromPoint(anchor, app.viewport.camera);
+        worldPoint = app.selectionPipeline.pointOnPlane({
+          clientX: start.x,
+          clientY: start.y,
+          plane: movePlane,
+        }) ?? anchor;
+      } else {
+        worldPoint = hitPointAtClient(meshForObject(objectId), start, app);
+      }
       if (!worldPoint || !worldDelta) {
         return null;
       }
@@ -551,6 +618,60 @@ function deterministicBoxFaces(bounds, mesh = null) {
   }));
 }
 
+function deterministicBoxEdges(bounds) {
+  const center = bounds.getCenter(new THREE.Vector3());
+  const inset = Math.max(0.01, Math.min(bounds.max.x - bounds.min.x, bounds.max.y - bounds.min.y, bounds.max.z - bounds.min.z) * 0.02);
+  return [
+    {
+      edgeIndex: 0,
+      role: "top-right",
+      keys: ["px_py_nz", "px_py_pz"],
+      a: new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.min.z),
+      b: new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+      center: new THREE.Vector3(bounds.max.x, bounds.max.y, center.z),
+      clickWorld: new THREE.Vector3(bounds.max.x - inset, bounds.max.y, center.z),
+    },
+    {
+      edgeIndex: 1,
+      role: "top-front",
+      keys: ["nx_py_pz", "px_py_pz"],
+      a: new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+      b: new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+      center: new THREE.Vector3(center.x, bounds.max.y, bounds.max.z),
+      clickWorld: new THREE.Vector3(center.x, bounds.max.y, bounds.max.z - inset),
+    },
+    {
+      edgeIndex: 2,
+      role: "front-right",
+      keys: ["px_ny_pz", "px_py_pz"],
+      a: new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+      b: new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+      center: new THREE.Vector3(bounds.max.x, center.y, bounds.max.z),
+      clickWorld: new THREE.Vector3(bounds.max.x, center.y, bounds.max.z - inset),
+    },
+  ];
+}
+
+function deterministicBoxVertices(bounds) {
+  const inset = Math.max(0.01, Math.min(bounds.max.x - bounds.min.x, bounds.max.y - bounds.min.y, bounds.max.z - bounds.min.z) * 0.02);
+  return [
+    {
+      vertexIndex: 0,
+      role: "top-right-front",
+      key: "px_py_pz",
+      world: new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+      clickWorld: new THREE.Vector3(bounds.max.x - inset, bounds.max.y, bounds.max.z - inset),
+    },
+    {
+      vertexIndex: 1,
+      role: "top-left-front",
+      key: "nx_py_pz",
+      world: new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+      clickWorld: new THREE.Vector3(bounds.min.x + inset, bounds.max.y, bounds.max.z - inset),
+    },
+  ];
+}
+
 function provenanceFaceCenters(mesh) {
   const centers = new Map();
   const geometry = mesh.geometry;
@@ -601,6 +722,14 @@ function hitPointAtClient(mesh, point, app) {
   app.selectionPipeline.rayFromClient(point.x, point.y);
   const hit = app.selectionPipeline.raycaster.intersectObject(mesh, false)[0] ?? null;
   return hit?.point?.clone?.() ?? worldCenterForObject(mesh);
+}
+
+function screenMovePlaneFromPoint(point, camera) {
+  const normal = camera.getWorldDirection(new THREE.Vector3()).normalize();
+  if (normal.lengthSq() < 1e-8) {
+    normal.set(0, 0, -1);
+  }
+  return new THREE.Plane().setFromNormalAndCoplanarPoint(normal, point);
 }
 
 function normalizedFeatureGraphSnapshot(features = []) {

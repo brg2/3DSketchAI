@@ -37,9 +37,9 @@ test("makeTaperedBox builds a solid through direct Replicad-compatible calls", (
   });
 
   assert.equal(solid.type, "solid");
-  assert.equal(calls.polygons.length, 6);
+  assert.equal(calls.polygons.length, 10);
   assert.equal(calls.solids.length, 1);
-  assert.equal(calls.solids[0].length, 6);
+  assert.equal(calls.solids[0].length, 10);
 });
 
 test("makeTaperedBox can add extension faces from a source face", () => {
@@ -69,8 +69,8 @@ test("makeTaperedBox can add extension faces from a source face", () => {
   });
 
   assert.equal(solid.type, "solid");
-  assert.equal(calls.polygons.length, 11);
-  assert.equal(calls.solids[0].length, 11);
+  assert.equal(calls.polygons.length, 10);
+  assert.equal(calls.solids[0].length, 10);
 });
 
 test("vector face tilt replays along the current face normal instead of a world axis", () => {
@@ -177,8 +177,14 @@ test("pushPullFace records a semantic face extrusion without body scale transfor
   assert.equal(solid.type, "solid");
   assert.equal(calls.boxes.length, 0);
   assert.equal(calls.solids.length, 1);
-  const positiveXFace = calls.solids[0][3];
-  assert.deepEqual(positiveXFace.points.map((point) => point[0]), [0.75, 0.75, 0.75, 0.75]);
+  assert.equal(calls.solids[0].length, 10);
+  assert.equal(
+    calls.solids[0].filter((face) => face.points.every((point) => point[0] === 0.5)).length,
+    0,
+    "Source face should become internal and not render as an exterior face",
+  );
+  const extrudedCap = calls.solids[0][5];
+  assert.deepEqual(extrudedCap.points.map((point) => point[0]), [0.75, 0.75, 0.75, 0.75]);
 });
 
 test("editable box object translation replays to the BREP kernel with array vectors", () => {

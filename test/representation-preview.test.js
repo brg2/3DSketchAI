@@ -323,7 +323,7 @@ test("face move preview translates selected brep face vertices", () => {
   assert.equal(positions.getZ(2), 0);
 });
 
-test("push-pull preview moves coincident side-boundary vertices with provenance face", () => {
+test("push-pull preview extrudes the provenance face without moving its source vertices", () => {
   const store = new RepresentationStore();
   store.bindScene(new THREE.Scene());
   const meshData = {
@@ -392,10 +392,172 @@ test("push-pull preview moves coincident side-boundary vertices with provenance 
   });
 
   const positions = store.getSelectableMeshes()[0].geometry.getAttribute("position");
-  assert.equal(positions.getZ(0), 2, "Selected top face should move");
-  assert.equal(positions.getZ(6), 2, "Coincident side top vertex should move with selected face");
-  assert.equal(positions.getZ(10), 2, "Adjacent side top vertex should move with selected face");
+  assert.equal(positions.count, 32, "Preview should split cap and wall vertices so generated normals stay flat");
+  assert.equal(positions.getZ(0), 1, "Selected source face should stay at its original position");
+  assert.equal(positions.getZ(6), 1, "Coincident side top vertex should stay at the source boundary");
+  assert.equal(positions.getZ(10), 1, "Adjacent side top vertex should stay at the source boundary");
+  assert.equal(positions.getZ(12), 2, "Extruded cap should move along the push-pull axis");
+  assert.equal(positions.getZ(13), 2, "Extruded cap should include all selected face corners");
   assert.equal(positions.getZ(4), 0, "Side bottom vertex should remain fixed");
+  assert.equal(store.getSelectableMeshes()[0].geometry.index.count, 42, "Preview should replace the source face with cap and side-wall triangles");
+  const indices = [...store.getSelectableMeshes()[0].geometry.index.array];
+  assert.deepEqual(indices.slice(0, 6), [4, 5, 6, 4, 6, 7], "Source face triangles should be removed from the exterior preview mesh");
+});
+
+test("push-pull preview uses the picked face group before broad provenance roles", () => {
+  const store = new RepresentationStore();
+  store.bindScene(new THREE.Scene());
+  const meshData = {
+    vertices: [
+      0, 0, 1,
+      1, 0, 1,
+      1, 1, 1,
+      0, 1, 1,
+      2, 0, 1,
+      3, 0, 1,
+      3, 1, 1,
+      2, 1, 1,
+    ],
+    triangles: [
+      0, 1, 2, 0, 2, 3,
+      4, 5, 6, 4, 6, 7,
+    ],
+    normals: [],
+    faceProvenance: [
+      { featureId: "feature_1", role: "face.pz" },
+      { featureId: "feature_1", role: "face.pz" },
+      { featureId: "feature_1", role: "face.pz" },
+      { featureId: "feature_1", role: "face.pz" },
+    ],
+    faceGroups: [
+      { start: 0, count: 6, provenance: { featureId: "feature_1", role: "face.pz" } },
+      { start: 6, count: 6, provenance: { featureId: "feature_1", role: "face.pz" } },
+    ],
+  };
+
+  store.setInitialSceneState({
+    obj_1: {
+      primitive: "brep_mesh",
+      meshData,
+      meshSignature: meshDataSignature(meshData),
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+  });
+
+  store.setPreviewOperation({
+    type: "push_pull",
+    targetId: "obj_1",
+    selection: {
+      mode: "face",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      faceIndex: 2,
+      selector: {
+        featureId: "feature_1",
+        role: "face.pz",
+        hint: {
+          point: { x: 2.5, y: 0.5, z: 1 },
+          normal: { x: 0, y: 0, z: 1 },
+        },
+      },
+    },
+    params: {
+      axis: { x: 0, y: 0, z: 1 },
+      distance: 1,
+      mode: "move",
+    },
+  });
+
+  const positions = store.getSelectableMeshes()[0].geometry.getAttribute("position");
+  assert.equal(positions.count, 28, "Only the picked face group should be extruded");
+  for (let index = 0; index < 4; index += 1) {
+    assert.equal(positions.getZ(index), 1, "Unpicked coplanar face should stay in place");
+  }
+  for (let index = 8; index < positions.count; index += 1) {
+    assert.ok(
+      positions.getX(index) >= 2,
+      "Extruded preview vertices should come from the picked face, not every face with the same role",
+    );
+  }
+});
+
+test("primitive push-pull preview renders the resolved box instead of an extrusion shell", () => {
+  const store = new RepresentationStore();
+  store.bindScene(new THREE.Scene());
+  const meshData = {
+    vertices: [
+      -0.5, -0.5, -0.5,
+      0.5, -0.5, -0.5,
+      0.5, 0.5, -0.5,
+      -0.5, 0.5, -0.5,
+      -0.5, -0.5, 0.5,
+      0.5, -0.5, 0.5,
+      0.5, 0.5, 0.5,
+      -0.5, 0.5, 0.5,
+    ],
+    triangles: [
+      0, 1, 2, 0, 2, 3,
+      4, 6, 5, 4, 7, 6,
+      0, 4, 5, 0, 5, 1,
+      3, 2, 6, 3, 6, 7,
+      1, 5, 6, 1, 6, 2,
+      0, 3, 7, 0, 7, 4,
+    ],
+    normals: [],
+  };
+
+  store.setInitialSceneState({
+    obj_1: {
+      primitive: "brep_mesh",
+      meshData,
+      meshSignature: meshDataSignature(meshData),
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+  });
+
+  store.setPreviewOperation({
+    type: "push_pull",
+    targetId: "obj_1",
+    selection: {
+      mode: "face",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      selector: {
+        featureId: "feature_1",
+        role: "face.pz",
+        hint: { normal: { x: 0, y: 0, z: 1 } },
+      },
+    },
+    params: {
+      axis: { x: 0, y: 0, z: 1 },
+      distance: 0.562,
+      mode: "move",
+      previewPrimitiveState: {
+        primitive: "box",
+        position: { x: 0, y: 0, z: 0.281 },
+        size: { x: 1, y: 1, z: 1.562 },
+      },
+    },
+  });
+
+  const mesh = store.getSelectableMeshes()[0];
+  const positions = mesh.geometry.getAttribute("position");
+  const index = mesh.geometry.index;
+  const bounds = new THREE.Box3().setFromObject(mesh);
+
+  assert.equal(positions.count, 24, "Resolved primitive preview should use a clean box mesh");
+  assert.equal(index.count, 36, "Resolved primitive preview should not generate extra extrusion shell triangles");
+  assert.deepEqual(
+    {
+      minZ: Math.round(bounds.min.z * 1000) / 1000,
+      maxZ: Math.round(bounds.max.z * 1000) / 1000,
+    },
+    { minZ: -0.5, maxZ: 1.062 },
+  );
 });
 
 test("face rotate preview tapers the selected brep face", () => {

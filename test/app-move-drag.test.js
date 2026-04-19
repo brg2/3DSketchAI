@@ -99,6 +99,43 @@ test("tool drag commit samples the release pointer before committing", async () 
   assert.deepEqual(calls, ["update:240,180", "end", "commit"]);
 });
 
+test("tool drag start hides stale preselection after drag state is active", () => {
+  const app = Object.create(SketchApp.prototype);
+  const calls = [];
+
+  app.tools = {
+    activeTool: "move",
+    dragState: null,
+    startDrag({ selection, context }) {
+      this.dragState = { selection, context };
+    },
+  };
+  app.viewport = { controls: { enabled: true } };
+  app.runtimeController = {
+    beginManipulation() {
+      calls.push("begin");
+      return {};
+    },
+  };
+  app._buildDragContext = () => ({ mode: "move" });
+  app._debugTouch = () => {};
+  app._requestFrame = () => {
+    calls.push("frame");
+  };
+  app._hidePreselectionOverlays = () => {
+    assert.ok(app.tools.dragState, "preselection refresh must happen after drag state starts");
+    calls.push("hide-preselection");
+  };
+
+  const started = app._startToolDrag(
+    { clientX: 100, clientY: 120, shiftKey: false },
+    { selection: { mode: "object", objectId: "obj_1", objectIds: ["obj_1"] } },
+  );
+
+  assert.equal(started, true);
+  assert.deepEqual(calls, ["begin", "hide-preselection", "frame"]);
+});
+
 test("object rotate drag can switch to the alternate axis mid-drag", () => {
   const app = Object.create(SketchApp.prototype);
   app.tools = { activeTool: "rotate", dragState: null };

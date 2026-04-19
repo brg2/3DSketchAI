@@ -148,7 +148,10 @@ test("canonical script serializes tilted face push_pull as direct face extrusion
   });
 
   const code = model.toTypeScriptModule();
+  assert.match(code, /const obj_1 = sai\.makeBox\(r,/);
+  assert.match(code, /obj_1\.applyCenteredTapers\(/);
   assert.match(code, /sai\.pushPullFace\(r, obj_1,/);
+  assert.doesNotMatch(code, /obj_1 = sai\.makeTaperedBox/);
   assert.match(code, /"mode":"move"/);
   assert.doesNotMatch(code, /\.scale\(\[1,\s*[\d.]+,\s*1\]\)/, "Tilted face extrusion should not flatten to Y scale");
   assertNoBehaviorComments(code);

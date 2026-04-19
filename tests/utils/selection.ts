@@ -42,6 +42,36 @@ export async function selectFace(page: Page, objectName: string, faceIndex: numb
   });
 }
 
+export async function selectEdge(page: Page, objectName: string, edgeIndex: number) {
+  await activateTool(page, "Select");
+  await page.getByRole("button", { name: "Edge" }).click();
+  const point = await page.evaluate(
+    ({ name, index }) => window.__TEST_API__.getCanvasPointForEdge(name, index),
+    { name: objectName, index: edgeIndex },
+  );
+  expect(point).toBeTruthy();
+  await clickCanvasAtClientPoint(page, point);
+  await expect.poll(async () => page.evaluate(() => window.__TEST_API__.getSelected())).toMatchObject({
+    mode: "edge",
+    objectIds: ["cube"],
+  });
+}
+
+export async function selectVertex(page: Page, objectName: string, vertexIndex: number) {
+  await activateTool(page, "Select");
+  await page.getByRole("button", { name: "Vertex" }).click();
+  const point = await page.evaluate(
+    ({ name, index }) => window.__TEST_API__.getCanvasPointForVertex(name, index),
+    { name: objectName, index: vertexIndex },
+  );
+  expect(point).toBeTruthy();
+  await clickCanvasAtClientPoint(page, point);
+  await expect.poll(async () => page.evaluate(() => window.__TEST_API__.getSelected())).toMatchObject({
+    mode: "vertex",
+    objectIds: ["cube"],
+  });
+}
+
 async function clickCanvasAtClientPoint(page: Page, point: Point) {
   const box = await page.locator("canvas").boundingBox();
   expect(box).toBeTruthy();

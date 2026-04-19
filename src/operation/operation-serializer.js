@@ -126,7 +126,11 @@ export function serializeCanonicalModelModule(operations) {
           const faceTilts = faceTiltsFromParams(operation.params);
           if (state?.primitive === "box") {
             state.faceTilts.push(...faceTilts.map((tilt) => structuredClone(tilt)));
-            bodyLines.push(`  ${varName} = sai.makeTaperedBox(r, ${_boxConfigLiteral(state)});`);
+            if (state.editable) {
+              bodyLines.push(`  ${varName}.applyCenteredTapers(${JSON.stringify(faceTilts)});`);
+            } else {
+              bodyLines.push(`  ${varName} = sai.makeTaperedBox(r, ${_boxConfigLiteral(state)});`);
+            }
           }
           break;
         }

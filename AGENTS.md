@@ -41,7 +41,15 @@ Agents must use tools to inspect the repo before changing it. For each task:
 - avoid unrelated refactors
 - verify the result
 
+Verification must include browser evidence for every user-visible change:
+- run the app in a browser and validate the changed behavior
+- capture at least one screenshot showing the change working
+- use MCP, CDP, or Playwright (any is acceptable)
+- treat missing screenshot proof as failed verification
+
 Agents must not assume codebase behavior without tool use, rewrite broad areas without intent requirement, or introduce speculative features.
+
+Agents must act as if other agents may be working in the codebase at the same time and may modify files at any moment. Before editing, committing, or drawing conclusions from prior reads, agents must account for possible concurrent changes by checking current file and git state as needed. Agents must not overwrite, revert, or silently discard changes they did not make; if concurrent changes overlap with the task, inspect them and integrate with them deliberately.
 
 If dependencies exist, complete prerequisites first. If blocked, report the issue clearly and avoid unsafe guesses.
 
@@ -114,6 +122,7 @@ Completion requires:
 - architecture remains aligned
 - unrelated areas are untouched
 - verification passes
+- screenshot evidence of the working change in the browser (captured via MCP, CDP, or Playwright)
 
 ## Loop Prevention
 

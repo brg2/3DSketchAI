@@ -1057,6 +1057,7 @@ export class SketchApp {
       target: selectedObjectId,
       mode: context?.mode ?? null,
     });
+    this._hidePreselectionOverlays();
     this._requestFrame();
     return true;
   }
@@ -1349,9 +1350,7 @@ export class SketchApp {
       return;
     }
 
-    this.preselectionFaceOverlay.visible = false;
-    this.preselectionEdgeOverlay.visible = false;
-    this.preselectionVertexOverlay.visible = false;
+    this._hidePreselectionOverlays();
 
     if (!this.hoveredHit || this.tools.dragState) {
       return;
@@ -1386,6 +1385,18 @@ export class SketchApp {
       }
       this._setOverlayGeometry(this.preselectionVertexOverlay, [vertex]);
       this.preselectionVertexOverlay.visible = true;
+    }
+  }
+
+  _hidePreselectionOverlays() {
+    if (this.preselectionFaceOverlay) {
+      this.preselectionFaceOverlay.visible = false;
+    }
+    if (this.preselectionEdgeOverlay) {
+      this.preselectionEdgeOverlay.visible = false;
+    }
+    if (this.preselectionVertexOverlay) {
+      this.preselectionVertexOverlay.visible = false;
     }
   }
 
