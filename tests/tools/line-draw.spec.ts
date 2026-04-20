@@ -37,12 +37,38 @@ function averageWorld(points) {
 }
 
 async function dragCanvasBetweenClientPoints(page, start, end) {
-  const box = await page.locator("canvas").boundingBox();
-  expect(box).toBeTruthy();
+  await startCanvasDragBetweenClientPoints(page, start, end);
+  await page.mouse.up();
+}
+
+async function startCanvasDragBetweenClientPoints(page, start, end) {
   await page.mouse.move(start.x, start.y);
   await page.mouse.down();
   await page.mouse.move(end.x, end.y, { steps: 10 });
-  await page.mouse.up();
+}
+
+async function drawSplitRectangleOnTopFace(page) {
+  await page.getByRole("button", { name: "Face" }).click();
+  await activateTool(page, "Line Draw");
+
+  const path = await page.evaluate(() => window.__TEST_API__.getPolylineDrawPath({
+    objectName: "cube",
+    faceIndex: 0,
+    points: [
+      { x: -0.22, y: -0.2 },
+      { x: 0.22, y: -0.2 },
+      { x: 0.22, y: 0.22 },
+      { x: -0.22, y: 0.22 },
+    ],
+  }));
+  expect(path).toBeTruthy();
+
+  for (const point of path) {
+    await clickCanvasAtClientPoint(page, point.client);
+  }
+  await clickCanvasAtClientPoint(page, path[0].client);
+  await page.evaluate(() => window.__TEST_API__.nextFrame(3));
+  return path;
 }
 
 test.describe("line draw tool", () => {
@@ -124,27 +150,7 @@ test.describe("line draw tool", () => {
   });
 
   test("push/pull extrudes a split face region independently", async ({ page }) => {
-    await page.getByRole("button", { name: "Face" }).click();
-    await activateTool(page, "Line Draw");
-
-    const path = await page.evaluate(() => window.__TEST_API__.getPolylineDrawPath({
-      objectName: "cube",
-      faceIndex: 0,
-      points: [
-        { x: -0.22, y: -0.2 },
-        { x: 0.22, y: -0.2 },
-        { x: 0.22, y: 0.22 },
-        { x: -0.22, y: 0.22 },
-      ],
-    }));
-    expect(path).toBeTruthy();
-
-    for (const point of path) {
-      await clickCanvasAtClientPoint(page, point.client);
-    }
-    await clickCanvasAtClientPoint(page, path[0].client);
-    await page.evaluate(() => window.__TEST_API__.nextFrame(3));
-
+    const path = await drawSplitRectangleOnTopFace(page);
     const splitCenter = averageWorld(path);
     const beforePush = await page.evaluate(() => window.__TEST_API__.getSceneState());
     const beforeCube = beforePush.meshes.find((mesh) => mesh.objectId === "cube" && mesh.vertexCount > 3);
@@ -172,5 +178,29 @@ test.describe("line draw tool", () => {
     const cubeMesh = scene.meshes.find((mesh) => mesh.objectId === "cube" && mesh.vertexCount > 3);
     expect(cubeMesh.worldBounds.max.y).toBeGreaterThan(beforeCube.worldBounds.max.y + 0.2);
     await expectCanvasSnapshot(page, "line-draw-split-pushpull.png");
+  });
+
+  test("split face pull preview moves the selected region instead of drawing a prism tool", async ({ page }) => {
+    const path = await drawSplitRectangleOnTopFace(page);
+    const splitCenter = averageWorld(path);
+    const start = await page.evaluate((point) => window.__TEST_API__.getCanvasPointForWorldPoint(point), splitCenter);
+    const end = await page.evaluate(
+      (point) => window.__TEST_API__.getCanvasPointForWorldPoint({ x: point.x, y: point.y - 0.26, z: point.z }),
+      splitCenter,
+    );
+    expect(start).toBeTruthy();
+    expect(end).toBeTruthy();
+
+    await activateTool(page, "Push/Pull");
+    await startCanvasDragBetweenClientPoints(page, start, end);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+    await expectCanvasSnapshot(page, "line-draw-split-pull-preview.png");
+
+    await page.mouse.up();
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+    const graph = await expectFeatureGraphIntegrity(page);
+    expect(graph.features[2].type).toBe("push_pull");
+    expect(graph.features[2].params.profile.objectId).toBe("polyline_1");
+    expect(graph.features[2].params.distance).toBeLessThan(0);
   });
 });

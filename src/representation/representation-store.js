@@ -114,11 +114,10 @@ function createMeshForState(state) {
   if (isSplitProfileState(state)) {
     const mesh = new THREE.Mesh(
       geometry,
-      new THREE.MeshBasicMaterial({
-        color: 0x24a148,
-        transparent: true,
-        opacity: 0.42,
-        depthTest: false,
+      new THREE.MeshStandardMaterial({
+        color: 0x7aa2f7,
+        roughness: 0.4,
+        metalness: 0.1,
         side: THREE.DoubleSide,
       }),
     );
@@ -126,7 +125,7 @@ function createMeshForState(state) {
     mesh.frustumCulled = false;
     mesh.userData.geometrySignature = geometrySignature(state);
     mesh.userData.meshKind = meshKindForState(state);
-    mesh.userData.baseColor = 0x24a148;
+    mesh.userData.baseColor = 0x7aa2f7;
     return mesh;
   }
   const material = new THREE.MeshStandardMaterial({ color: 0x7aa2f7, roughness: 0.4, metalness: 0.1 });
@@ -1277,8 +1276,13 @@ export class RepresentationStore {
       mesh.userData.profile = profileForState(objectId, state);
       updateMeshGeometry(mesh, state);
       applyTransform(mesh, state);
-      mesh.userData.baseColor = isSplitProfileState(state) || state.primitive === "polyline" ? 0x24a148 : 0x7aa2f7;
+      mesh.userData.baseColor = state.primitive === "polyline" && !isSplitProfileState(state) ? 0x24a148 : 0x7aa2f7;
       mesh.material.color?.setHex(mesh.userData.baseColor);
+      if (isSplitProfileState(state)) {
+        mesh.material.depthTest = true;
+        mesh.material.transparent = false;
+        mesh.material.opacity = 1;
+      }
     }
   }
 
@@ -1413,19 +1417,42 @@ export class RepresentationStore {
       return;
     }
 
+    if (params?.profile) {
+      const profileMesh = this.meshById.get(params.profile.objectId);
+      const meshData = previewProfilePushPullMeshData(this.previewOperation);
+      if (!profileMesh || !meshData) {
+        return;
+      }
+      const profilePreviewState = {
+        primitive: "brep_mesh",
+        meshData,
+        meshSignature: [
+          "profile-preview",
+          params.profile.objectId,
+          params.distance ?? 0,
+        ].join(":"),
+        position: { x: 0, y: 0, z: 0 },
+        rotation: { x: 0, y: 0, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      };
+      updateMeshGeometry(profileMesh, profilePreviewState);
+      applyTransform(profileMesh, profilePreviewState);
+      profileMesh.userData.baseColor = 0x7aa2f7;
+      profileMesh.material.color?.setHex(0x7aa2f7);
+      profileMesh.material.depthTest = false;
+      profileMesh.material.transparent = false;
+      profileMesh.material.opacity = 1;
+      return;
+    }
+
     if (previewState.primitive === "brep_mesh") {
-      const meshData = params?.profile
-        ? previewProfilePushPullMeshData(this.previewOperation)
-        : previewPushPullMeshData(previewState.meshData, this.previewOperation);
+      const meshData = previewPushPullMeshData(previewState.meshData, this.previewOperation);
       if (!meshData) {
         return;
       }
-      previewState.meshData = params?.profile
-        ? mergeMeshData(previewState.meshData, meshData)
-        : meshData;
+      previewState.meshData = meshData;
       previewState.meshSignature = [
         previewState.meshSignature ?? "mesh",
-        params?.profile?.objectId ?? null,
         this.previewOperation.selection?.faceIndex ?? "face",
         this.previewOperation.params?.distance ?? 0,
       ].join(":");
@@ -1437,20 +1464,4 @@ export class RepresentationStore {
   getSelectableMeshes() {
     return [...this.meshById.values()].filter((object) => object.isMesh);
   }
-}
-
-function mergeMeshData(baseMeshData, additionMeshData) {
-  const vertices = [...(baseMeshData?.vertices ?? baseMeshData?.positions ?? [])];
-  const triangles = [...(baseMeshData?.triangles ?? baseMeshData?.indices ?? [])];
-  const vertexOffset = vertices.length / 3;
-  vertices.push(...(additionMeshData?.vertices ?? []));
-  triangles.push(...(additionMeshData?.triangles ?? []).map((index) => index + vertexOffset));
-  return {
-    ...baseMeshData,
-    vertices,
-    triangles,
-    normals: [],
-    faceProvenance: cloneFaceProvenance(baseMeshData?.faceProvenance),
-    faceGroups: cloneFaceGroups(baseMeshData?.faceGroups),
-  };
 }

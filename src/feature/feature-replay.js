@@ -129,6 +129,12 @@ function applyFeatureToSceneState(sceneState, feature) {
       }
       return;
 
+    case OPERATION_TYPES.PUSH_PULL:
+      if (operation.params?.profile?.objectId && sceneState[operation.params.profile.objectId]) {
+        translateProfileState(sceneState[operation.params.profile.objectId], operation.params);
+      }
+      return;
+
     case OPERATION_TYPES.POLYLINE: {
       const id = operation.params.objectId;
       if (!id) return;
@@ -161,6 +167,31 @@ function applyFeatureToSceneState(sceneState, feature) {
 
     default:
       return;
+  }
+}
+
+function translateProfileState(state, params) {
+  const axis = normalizeVector(params.axis ?? state.plane?.normal ?? { x: 0, y: 1, z: 0 });
+  const distance = params.distance ?? 0;
+  if (!Number.isFinite(distance) || Math.abs(distance) < 1e-8) {
+    return;
+  }
+  const delta = {
+    x: axis.x * distance,
+    y: axis.y * distance,
+    z: axis.z * distance,
+  };
+  state.points = (state.points ?? []).map((point) => ({
+    x: (point.x ?? 0) + delta.x,
+    y: (point.y ?? 0) + delta.y,
+    z: (point.z ?? 0) + delta.z,
+  }));
+  if (state.plane?.origin) {
+    state.plane.origin = {
+      x: (state.plane.origin.x ?? 0) + delta.x,
+      y: (state.plane.origin.y ?? 0) + delta.y,
+      z: (state.plane.origin.z ?? 0) + delta.z,
+    };
   }
 }
 
