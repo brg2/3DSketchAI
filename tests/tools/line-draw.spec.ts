@@ -36,6 +36,23 @@ function averageWorld(points) {
   );
 }
 
+function offsetWorld(point, axis, distance) {
+  return {
+    x: point.x + (axis?.x ?? 0) * distance,
+    y: point.y + (axis?.y ?? 0) * distance,
+    z: point.z + (axis?.z ?? 0) * distance,
+  };
+}
+
+function expectNoLargePreviewSheets(scene, limit = 1.25) {
+  for (const mesh of scene.meshes) {
+    const bounds = mesh.worldBounds;
+    expect(bounds.max.x - bounds.min.x).toBeLessThanOrEqual(limit);
+    expect(bounds.max.y - bounds.min.y).toBeLessThanOrEqual(limit);
+    expect(bounds.max.z - bounds.min.z).toBeLessThanOrEqual(limit);
+  }
+}
+
 async function dragCanvasBetweenClientPoints(page, start, end) {
   await startCanvasDragBetweenClientPoints(page, start, end);
   await page.mouse.up();
@@ -59,6 +76,52 @@ async function drawSplitRectangleOnTopFace(page) {
       { x: 0.22, y: -0.2 },
       { x: 0.22, y: 0.22 },
       { x: -0.22, y: 0.22 },
+    ],
+  }));
+  expect(path).toBeTruthy();
+
+  for (const point of path) {
+    await clickCanvasAtClientPoint(page, point.client);
+  }
+  await clickCanvasAtClientPoint(page, path[0].client);
+  await page.evaluate(() => window.__TEST_API__.nextFrame(3));
+  return path;
+}
+
+async function drawSplitTriangleOnRightFace(page) {
+  await page.getByRole("button", { name: "Face" }).click();
+  await activateTool(page, "Line Draw");
+
+  const path = await page.evaluate(() => window.__TEST_API__.getPolylineDrawPath({
+    objectName: "cube",
+    faceIndex: 1,
+    points: [
+      { x: -0.18, y: 0.22 },
+      { x: 0.12, y: 0.22 },
+      { x: -0.02, y: -0.08 },
+    ],
+  }));
+  expect(path).toBeTruthy();
+
+  for (const point of path) {
+    await clickCanvasAtClientPoint(page, point.client);
+  }
+  await clickCanvasAtClientPoint(page, path[0].client);
+  await page.evaluate(() => window.__TEST_API__.nextFrame(3));
+  return path;
+}
+
+async function drawBoundarySplitTriangleOnRightFace(page) {
+  await page.getByRole("button", { name: "Face" }).click();
+  await activateTool(page, "Line Draw");
+
+  const path = await page.evaluate(() => window.__TEST_API__.getPolylineDrawPath({
+    objectName: "cube",
+    faceIndex: 1,
+    points: [
+      { x: -0.16, y: 0.5 },
+      { x: 0.16, y: 0.5 },
+      { x: 0, y: 0.14 },
     ],
   }));
   expect(path).toBeTruthy();
@@ -194,6 +257,7 @@ test.describe("line draw tool", () => {
     await activateTool(page, "Push/Pull");
     await startCanvasDragBetweenClientPoints(page, start, end);
     await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+    expectNoLargePreviewSheets(await page.evaluate(() => window.__TEST_API__.getSceneState()));
     await expectCanvasSnapshot(page, "line-draw-split-pull-preview.png");
 
     await page.mouse.up();
@@ -202,5 +266,165 @@ test.describe("line draw tool", () => {
     expect(graph.features[2].type).toBe("push_pull");
     expect(graph.features[2].params.profile.objectId).toBe("polyline_1");
     expect(graph.features[2].params.distance).toBeLessThan(0);
+  });
+
+  test("side-face split pull preview hides the source shell", async ({ page }) => {
+    const path = await drawSplitTriangleOnRightFace(page);
+    const splitCenter = averageWorld(path);
+    const start = await page.evaluate((point) => window.__TEST_API__.getCanvasPointForWorldPoint(point), splitCenter);
+    const end = await page.evaluate(
+      (point) => window.__TEST_API__.getCanvasPointForWorldPoint({ x: point.x - 0.2, y: point.y, z: point.z }),
+      splitCenter,
+    );
+    expect(start).toBeTruthy();
+    expect(end).toBeTruthy();
+
+    await activateTool(page, "Push/Pull");
+    await startCanvasDragBetweenClientPoints(page, start, end);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+    expectNoLargePreviewSheets(await page.evaluate(() => window.__TEST_API__.getSceneState()));
+    await expectCanvasSnapshot(page, "line-draw-side-split-pull-preview.png");
+
+    await page.mouse.up();
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+    const graph = await expectFeatureGraphIntegrity(page);
+    expect(graph.features[2].type).toBe("push_pull");
+    expect(graph.features[2].params.profile.objectId).toBe("polyline_1");
+    expect(graph.features[2].params.distance).toBeLessThan(0);
+  });
+
+  test("boundary-touching side-face split pull preview does not leave z-fighting on adjacent face", async ({ page }) => {
+    const path = await drawBoundarySplitTriangleOnRightFace(page);
+    const splitCenter = averageWorld(path);
+    const start = await page.evaluate((point) => window.__TEST_API__.getCanvasPointForWorldPoint(point), splitCenter);
+    const end = { x: start.x, y: start.y + 40 };
+    expect(start).toBeTruthy();
+    expect(end).toBeTruthy();
+
+    await activateTool(page, "Push/Pull");
+    await startCanvasDragBetweenClientPoints(page, start, end);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+    expectNoLargePreviewSheets(await page.evaluate(() => window.__TEST_API__.getSceneState()));
+    await expectCanvasSnapshot(page, "line-draw-boundary-side-split-pull-preview.png");
+
+    await page.mouse.up();
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+    const graph = await expectFeatureGraphIntegrity(page);
+    expect(graph.features[2].type).toBe("push_pull");
+    expect(graph.features[2].params.profile.objectId).toBe("polyline_1");
+    expect(graph.features[2].params.distance).toBeLessThan(0);
+  });
+
+  test("split face pull commits a clean pocket", async ({ page }) => {
+    const path = await drawSplitRectangleOnTopFace(page);
+    const splitCenter = averageWorld(path);
+    const start = await page.evaluate((point) => window.__TEST_API__.getCanvasPointForWorldPoint(point), splitCenter);
+    const end = await page.evaluate(
+      (point) => window.__TEST_API__.getCanvasPointForWorldPoint({ x: point.x, y: point.y - 0.26, z: point.z }),
+      splitCenter,
+    );
+    expect(start).toBeTruthy();
+    expect(end).toBeTruthy();
+
+    await activateTool(page, "Push/Pull");
+    await dragCanvasBetweenClientPoints(page, start, end);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+
+    const graph = await expectFeatureGraphIntegrity(page);
+    expect(graph.features[2].type).toBe("push_pull");
+    expect(graph.features[2].params.profile.objectId).toBe("polyline_1");
+    expect(graph.features[2].params.distance).toBeLessThan(0);
+
+    const scene = await page.evaluate(() => window.__TEST_API__.getSceneState());
+    const cubeMesh = scene.meshes.find((mesh) => mesh.objectId === "cube" && mesh.vertexCount > 3);
+    const splitMesh = scene.meshes.find((mesh) => mesh.objectId === "cube" && mesh.vertexCount === 4);
+    expect(cubeMesh.worldBounds.max.y).toBeCloseTo(0.5, 3);
+    expect(splitMesh.worldBounds.max.y).toBeLessThan(0.5);
+    await expectCanvasSnapshot(page, "line-draw-split-pull-commit.png");
+  });
+
+  test("side-face split pull commits visible cut geometry", async ({ page }) => {
+    const path = await drawSplitTriangleOnRightFace(page);
+    const splitCenter = averageWorld(path);
+    const start = await page.evaluate((point) => window.__TEST_API__.getCanvasPointForWorldPoint(point), splitCenter);
+    const end = await page.evaluate(
+      (point) => window.__TEST_API__.getCanvasPointForWorldPoint({ x: point.x - 0.2, y: point.y, z: point.z }),
+      splitCenter,
+    );
+    expect(start).toBeTruthy();
+    expect(end).toBeTruthy();
+
+    await activateTool(page, "Push/Pull");
+    await dragCanvasBetweenClientPoints(page, start, end);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+
+    const graph = await expectFeatureGraphIntegrity(page);
+    expect(graph.features[2].type).toBe("push_pull");
+    expect(graph.features[2].params.profile.objectId).toBe("polyline_1");
+    expect(graph.features[2].params.distance).toBeLessThan(0);
+
+    const scene = await page.evaluate(() => window.__TEST_API__.getSceneState());
+    const cubeMesh = scene.meshes.find((mesh) => mesh.objectId === "cube" && mesh.vertexCount > 3);
+    const splitMesh = scene.meshes.find((mesh) => mesh.objectId === "cube" && mesh.vertexCount === 3);
+    expect(cubeMesh.vertexCount).toBeGreaterThan(24);
+    expect(splitMesh.worldBounds.max.x).toBeLessThan(0.5);
+    await expectCanvasSnapshot(page, "line-draw-side-split-pull-commit.png");
+  });
+
+  test("reverse-extruding a committed profile pull replays from the original split face", async ({ page }) => {
+    const path = await drawSplitRectangleOnTopFace(page);
+    const splitCenter = averageWorld(path);
+    const firstStart = await page.evaluate((point) => window.__TEST_API__.getCanvasPointForWorldPoint(point), splitCenter);
+    const firstEnd = await page.evaluate(
+      (point) => window.__TEST_API__.getCanvasPointForWorldPoint({ x: point.x, y: point.y - 0.26, z: point.z }),
+      splitCenter,
+    );
+    expect(firstStart).toBeTruthy();
+    expect(firstEnd).toBeTruthy();
+
+    await activateTool(page, "Push/Pull");
+    await dragCanvasBetweenClientPoints(page, firstStart, firstEnd);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+
+    const afterFirst = await page.evaluate(() => window.__TEST_API__.getFeatureGraph());
+    expect(afterFirst.features[2].type).toBe("push_pull");
+    expect(afterFirst.features[2].params.distance).toBeLessThan(0);
+
+    const axis = afterFirst.features[2].params.axis;
+    const movedProfilePoints = afterFirst.features[2].params.profile.points.map((point) => (
+      offsetWorld(point, axis, afterFirst.features[2].params.distance)
+    ));
+    const movedCenter = averageWorld(movedProfilePoints.map((world) => ({ world })));
+    const secondStart = await page.evaluate((point) => window.__TEST_API__.getCanvasPointForWorldPoint(point), movedCenter);
+    const secondEnd = await page.evaluate(
+      ({ point, axis }) => window.__TEST_API__.getCanvasPointForWorldPoint({
+        x: point.x + (axis?.x ?? 0) * 0.62,
+        y: point.y + (axis?.y ?? 0) * 0.62,
+        z: point.z + (axis?.z ?? 0) * 0.62,
+      }),
+      { point: movedCenter, axis },
+    );
+    expect(secondStart).toBeTruthy();
+    expect(secondEnd).toBeTruthy();
+
+    await activateTool(page, "Push/Pull");
+    await dragCanvasBetweenClientPoints(page, secondStart, secondEnd);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+
+    const graph = await expectFeatureGraphIntegrity(page);
+    expect(graph.featureCount).toBe(3);
+    expect(graph.features[2].type).toBe("push_pull");
+    expect(graph.features[2].params.distance).toBeGreaterThan(0.2);
+    expect(graph.features[2].params.profile.points[0].y).toBeCloseTo(0.5, 3);
+
+    const scene = await page.evaluate(() => window.__TEST_API__.getSceneState());
+    const cubeMesh = scene.meshes.find((mesh) => mesh.objectId === "cube" && mesh.vertexCount > 3);
+    expect(cubeMesh.worldBounds.max.y).toBeGreaterThan(0.6);
+    expect(cubeMesh.worldBounds.max.y).toBeLessThan(1.1);
+    expect(cubeMesh.worldBounds.min.x).toBeCloseTo(-0.5, 3);
+    expect(cubeMesh.worldBounds.max.x).toBeCloseTo(0.5, 3);
+    expect(cubeMesh.worldBounds.min.z).toBeCloseTo(-0.5, 3);
+    expect(cubeMesh.worldBounds.max.z).toBeCloseTo(0.5, 3);
+    await expectCanvasSnapshot(page, "line-draw-reverse-profile-pushpull-commit.png");
   });
 });

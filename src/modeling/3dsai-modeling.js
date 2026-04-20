@@ -1,6 +1,7 @@
 import { basicFaceExtrusion, Vector } from "replicad";
 
 const AXES = ["x", "y", "z"];
+const PROFILE_BOOLEAN_EPSILON = 1e-4;
 
 export function create3dsaiModelingLibrary() {
   return {
@@ -84,17 +85,26 @@ export function pushPullProfile(r, shape, operation) {
   }
 
   const axis = normalizeVector(operation?.axis ?? operation?.plane?.normal ?? operation?.profile?.plane?.normal ?? { x: 0, y: 1, z: 0 });
+  const effectiveDistance = distance < 0 ? distance - PROFILE_BOOLEAN_EPSILON : distance;
+  const facePoints = distance < 0
+    // Start cuts slightly outside the source face so the boolean removes the interface cap.
+    ? points.map(([x, y, z]) => [
+      x + axis.x * PROFILE_BOOLEAN_EPSILON,
+      y + axis.y * PROFILE_BOOLEAN_EPSILON,
+      z + axis.z * PROFILE_BOOLEAN_EPSILON,
+    ])
+    : points;
   const targetShape = typeof shape?.toShape === "function" ? shape.toShape() : shape;
   if (!targetShape || typeof targetShape.fuse !== "function" || typeof targetShape.cut !== "function") {
     throw new Error("pushPullProfile requires a BREP solid target");
   }
 
-  const face = r.makePolygon(points);
-  const extrusionVec = new Vector([axis.x * distance, axis.y * distance, axis.z * distance]);
+  const face = r.makePolygon(facePoints);
+  const extrusionVec = new Vector([axis.x * effectiveDistance, axis.y * effectiveDistance, axis.z * effectiveDistance]);
   const tool = basicFaceExtrusion(face, extrusionVec);
   const result = distance > 0
     ? targetShape.fuse(tool, { optimisation: "sameFace" })
-    : targetShape.cut(tool, { optimisation: "sameFace" });
+    : targetShape.cut(tool);
   return simplifyBooleanResult(result);
 }
 

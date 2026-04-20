@@ -89,15 +89,22 @@ function modifyExistingProfilePushPullFeature(features, operation) {
     }
 
     const next = structuredClone(normalized);
+    const existingProfile = structuredClone(next[index].params.profile);
+    const nextSelection = operation.selection ? structuredClone(operation.selection) : null;
+    if (nextSelection?.profile && existingProfile) {
+      nextSelection.profile = structuredClone(existingProfile);
+    }
     next[index].params = {
       ...next[index].params,
       axis: structuredClone(operation.params.axis),
       distance: roundMillimeters((next[index].params.distance ?? 0) + (operation.params.distance ?? 0)),
-      profile: structuredClone(operation.params.profile),
+      // Keep the canonical profile anchored to its original split face so replay from scratch
+      // matches continuous drag edits on the already-moved face.
+      profile: existingProfile,
     };
     next[index].target = {
       objectId: operation.targetId,
-      selection: operation.selection ? structuredClone(operation.selection) : null,
+      selection: nextSelection,
     };
     return {
       features: normalizeFeatureGraph(next),

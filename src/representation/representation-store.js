@@ -224,48 +224,30 @@ function applyTransform(mesh, state) {
   mesh.scale.set(state.scale.x, state.scale.y, state.scale.z);
 }
 
-function previewProfilePushPullMeshData(operation) {
-  const profile = operation.params?.profile;
-  const points = profile?.points ?? [];
-  if (!Array.isArray(points) || points.length < 3) {
+function previewProfilePushPullSceneState(exactSceneState, operation) {
+  const profileId = operation?.params?.profile?.objectId;
+  if (!profileId) {
     return null;
   }
 
-  const axis = normalizeVector(operation.params?.axis ?? profile?.plane?.normal ?? { x: 0, y: 1, z: 0 });
-  const distance = operation.params?.distance ?? 0;
-  if (!Number.isFinite(distance) || Math.abs(distance) < 1e-8) {
+  const nextSceneState = structuredClone(exactSceneState ?? {});
+  const profileState = nextSceneState[profileId];
+  if (profileState?.primitive !== "polyline") {
     return null;
   }
 
-  const vertices = [];
-  const triangles = [];
-  for (const point of points) {
-    vertices.push(point.x ?? 0, point.y ?? 0, point.z ?? 0);
-  }
-  for (const point of points) {
-    vertices.push(
-      (point.x ?? 0) + axis.x * distance,
-      (point.y ?? 0) + axis.y * distance,
-      (point.z ?? 0) + axis.z * distance,
-    );
-  }
+  translateProfilePreviewState(profileState, operation.params);
+  return nextSceneState;
+}
 
-  const topOffset = points.length;
-  for (let index = 1; index < points.length - 1; index += 1) {
-    triangles.push(topOffset, topOffset + index, topOffset + index + 1);
+function translateProfilePreviewState(state, params) {
+  const axis = normalizeVector(params.axis ?? state.plane?.normal ?? { x: 0, y: 1, z: 0 });
+  const distance = params.distance ?? 0;
+  const delta = scaleVector(axis, distance);
+  state.points = (state.points ?? []).map((point) => addVector(point, delta));
+  if (state.plane?.origin) {
+    state.plane.origin = addVector(state.plane.origin, delta);
   }
-  for (let index = 0; index < points.length; index += 1) {
-    const next = (index + 1) % points.length;
-    triangles.push(index, next, topOffset + next, index, topOffset + next, topOffset + index);
-  }
-
-  return {
-    vertices,
-    triangles,
-    normals: [],
-    faceProvenance: [],
-    faceGroups: [],
-  };
 }
 
 function previewPushPullMeshData(meshData, operation) {
@@ -1142,6 +1124,22 @@ function vectorLength(vector) {
   return Math.hypot(vector?.x ?? 0, vector?.y ?? 0, vector?.z ?? 0);
 }
 
+function addVector(a, b) {
+  return {
+    x: (a?.x ?? 0) + (b?.x ?? 0),
+    y: (a?.y ?? 0) + (b?.y ?? 0),
+    z: (a?.z ?? 0) + (b?.z ?? 0),
+  };
+}
+
+function scaleVector(vector, scalar) {
+  return {
+    x: (vector?.x ?? 0) * scalar,
+    y: (vector?.y ?? 0) * scalar,
+    z: (vector?.z ?? 0) * scalar,
+  };
+}
+
 function subtractVector(a, b) {
   return {
     x: (a?.x ?? 0) - (b?.x ?? 0),
@@ -1245,11 +1243,15 @@ export class RepresentationStore {
   }
 
   applyExactStateToScene() {
+    this._applySceneStateToScene(this.exactSceneState);
+  }
+
+  _applySceneStateToScene(sceneState) {
     if (!this.scene) {
       return;
     }
 
-    const liveIds = new Set(Object.keys(this.exactSceneState));
+    const liveIds = new Set(Object.keys(sceneState));
     for (const [objectId, mesh] of this.meshById.entries()) {
       if (!liveIds.has(objectId)) {
         this.scene.remove(mesh);
@@ -1257,7 +1259,7 @@ export class RepresentationStore {
       }
     }
 
-    for (const [objectId, state] of Object.entries(this.exactSceneState)) {
+    for (const [objectId, state] of Object.entries(sceneState)) {
       let mesh = this.meshById.get(objectId);
       if (mesh && mesh.userData.meshKind !== meshKindForState(state)) {
         this.scene.remove(mesh);
@@ -1276,6 +1278,8 @@ export class RepresentationStore {
       mesh.userData.profile = profileForState(objectId, state);
       updateMeshGeometry(mesh, state);
       applyTransform(mesh, state);
+      mesh.castShadow = state.primitive === "brep_mesh";
+      mesh.receiveShadow = state.primitive === "brep_mesh";
       mesh.userData.baseColor = state.primitive === "polyline" && !isSplitProfileState(state) ? 0x24a148 : 0x7aa2f7;
       mesh.material.color?.setHex(mesh.userData.baseColor);
       if (isSplitProfileState(state)) {
@@ -1287,12 +1291,35 @@ export class RepresentationStore {
   }
 
   applyPreviewToScene() {
-    this.applyExactStateToScene();
     if (!this.previewOperation) {
+      this.applyExactStateToScene();
       return;
     }
 
     const { type, targetId, params } = this.previewOperation;
+
+    if (params?.profile) {
+      const previewSceneState = previewProfilePushPullSceneState(this.exactSceneState, this.previewOperation);
+      if (previewSceneState) {
+        this._applySceneStateToScene(previewSceneState);
+        const previewMesh = targetId ? this.meshById.get(targetId) : null;
+        if (previewMesh) {
+          previewMesh.receiveShadow = false;
+        }
+        const profileMesh = this.meshById.get(params.profile.objectId);
+        if (profileMesh) {
+          profileMesh.material.depthTest = false;
+          profileMesh.material.transparent = false;
+          profileMesh.material.opacity = 1;
+          profileMesh.renderOrder = 60;
+        }
+        return;
+      }
+      this.applyExactStateToScene();
+      return;
+    }
+
+    this.applyExactStateToScene();
     const mesh = targetId ? this.meshById.get(targetId) : null;
     const exactState = targetId ? this.exactSceneState[targetId] : null;
     if (!mesh || !exactState) {
@@ -1418,30 +1445,6 @@ export class RepresentationStore {
     }
 
     if (params?.profile) {
-      const profileMesh = this.meshById.get(params.profile.objectId);
-      const meshData = previewProfilePushPullMeshData(this.previewOperation);
-      if (!profileMesh || !meshData) {
-        return;
-      }
-      const profilePreviewState = {
-        primitive: "brep_mesh",
-        meshData,
-        meshSignature: [
-          "profile-preview",
-          params.profile.objectId,
-          params.distance ?? 0,
-        ].join(":"),
-        position: { x: 0, y: 0, z: 0 },
-        rotation: { x: 0, y: 0, z: 0 },
-        scale: { x: 1, y: 1, z: 1 },
-      };
-      updateMeshGeometry(profileMesh, profilePreviewState);
-      applyTransform(profileMesh, profilePreviewState);
-      profileMesh.userData.baseColor = 0x7aa2f7;
-      profileMesh.material.color?.setHex(0x7aa2f7);
-      profileMesh.material.depthTest = false;
-      profileMesh.material.transparent = false;
-      profileMesh.material.opacity = 1;
       return;
     }
 
