@@ -26,6 +26,7 @@ export {
   moveBoxSubshape,
   moveBoxVertex,
   pushPullFace,
+  pushPullProfile,
   rotateBoxSubshape,
   translateObject,
 } from "./modeling/3dsai-modeling.js";

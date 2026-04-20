@@ -21,7 +21,11 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
     faceTiltAngles = null,
     objectRotationEuler = null,
   } = gesture ?? {};
-  const faceNormal = selection?.selector?.hint?.normal ?? selection?.faceNormalWorld ?? { x: 0, y: 0, z: 1 };
+  const faceNormal =
+    selection?.profile?.plane?.normal ??
+    selection?.selector?.hint?.normal ??
+    selection?.faceNormalWorld ??
+    { x: 0, y: 0, z: 1 };
   const pushPullAxis = normalizeAxis(faceNormal);
   const nextPushPullDistance =
     typeof pushPullDistance === "number" ? round3(pushPullDistance) : round3(dy * -0.02);
@@ -78,11 +82,39 @@ export function mapToolGestureToOperation({ tool, targetId, selection, gesture }
         axis: pushPullAxis,
         distance: nextPushPullDistance,
         mode: shiftKey ? "extend" : "move",
+        ...(selection?.profile ? { profile: sanitizeProfileForOperation(selection.profile) } : {}),
       },
     }[operationType] ?? {},
   };
 
   return validateOperation(operation);
+}
+
+function sanitizeProfileForOperation(profile) {
+  if (!profile || typeof profile !== "object" || !Array.isArray(profile.points)) {
+    return null;
+  }
+  return {
+    objectId: profile.objectId,
+    ...(typeof profile.featureId === "string" ? { featureId: profile.featureId } : {}),
+    targetId: profile.targetId,
+    closed: true,
+    points: profile.points.map((point) => ({
+      x: round3(point.x ?? 0),
+      y: round3(point.y ?? 0),
+      z: round3(point.z ?? 0),
+    })),
+    ...(profile.plane ? {
+      plane: {
+        origin: {
+          x: round3(profile.plane.origin?.x ?? 0),
+          y: round3(profile.plane.origin?.y ?? 0),
+          z: round3(profile.plane.origin?.z ?? 0),
+        },
+        normal: normalizeAxis(profile.plane.normal ?? { x: 0, y: 1, z: 0 }),
+      },
+    } : {}),
+  };
 }
 
 function objectRotateParams({ shiftKey, angle, objectRotationEuler }) {

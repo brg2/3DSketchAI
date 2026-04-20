@@ -86,6 +86,14 @@ function distancePointToSegmentSquared(point, a, b) {
 }
 
 function pickFaceNormalWorld(intersection) {
+  const profileNormal = intersection?.object?.userData?.profile?.plane?.normal;
+  if (profileNormal) {
+    return {
+      x: profileNormal.x ?? 0,
+      y: profileNormal.y ?? 0,
+      z: profileNormal.z ?? 0,
+    };
+  }
   if (!intersection?.face || !intersection?.object) {
     return null;
   }
@@ -96,6 +104,11 @@ function pickFaceNormalWorld(intersection) {
     y: normal.y,
     z: normal.z,
   };
+}
+
+function profileFromIntersection(intersection) {
+  const profile = intersection?.object?.userData?.profile;
+  return profile ? structuredClone(profile) : null;
 }
 
 export function selectorFromIntersection(intersection) {
@@ -194,6 +207,7 @@ export class SelectionPipeline {
       faceIndex: hit.faceIndex ?? null,
       faceNormalWorld: pickFaceNormalWorld(hit),
       selector: selectorFromIntersection(hit),
+      profile: profileFromIntersection(hit),
     };
   }
 
@@ -231,6 +245,7 @@ export class SelectionPipeline {
       faceIndex: hit.faceIndex ?? null,
       faceNormalWorld: pickFaceNormalWorld(hit),
       selector: selectorFromIntersection(hit),
+      profile: profileFromIntersection(hit),
       edge: this.selectionMode === SELECTION_MODES.EDGE ? pickFaceEdge(hit) : null,
       vertex: this.selectionMode === SELECTION_MODES.VERTEX ? pickFaceVertex(hit) : null,
     };

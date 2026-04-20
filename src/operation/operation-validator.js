@@ -60,6 +60,9 @@ export function validateOperation(operation) {
       if (params.mode !== undefined && params.mode !== "move" && params.mode !== "extend") {
         throw new Error("push_pull params.mode must be move|extend");
       }
+      if (params.profile !== undefined && params.profile !== null) {
+        assertProfile(params.profile, "params.profile");
+      }
       break;
     case OPERATION_TYPES.POLYLINE:
       if (!params.objectId || typeof params.objectId !== "string") {
@@ -106,6 +109,34 @@ export function validateOperation(operation) {
   }
 
   return operation;
+}
+
+function assertProfile(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  if (!value.objectId || typeof value.objectId !== "string") {
+    throw new Error(`${label}.objectId must be a string`);
+  }
+  if (value.targetId !== undefined && value.targetId !== null && typeof value.targetId !== "string") {
+    throw new Error(`${label}.targetId must be a string`);
+  }
+  if (!Array.isArray(value.points) || value.points.length < 3) {
+    throw new Error(`${label}.points requires at least three points`);
+  }
+  for (let index = 0; index < value.points.length; index += 1) {
+    assertVector3(value.points[index], `${label}.points[${index}]`);
+  }
+  if (value.closed !== undefined && value.closed !== true) {
+    throw new Error(`${label}.closed must be true`);
+  }
+  if (value.plane !== undefined && value.plane !== null) {
+    if (!value.plane || typeof value.plane !== "object") {
+      throw new Error(`${label}.plane must be an object`);
+    }
+    assertVector3(value.plane.origin, `${label}.plane.origin`);
+    assertVector3(value.plane.normal, `${label}.plane.normal`);
+  }
 }
 
 function assertSubshapeRotate(value) {

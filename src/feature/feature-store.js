@@ -184,6 +184,9 @@ function featureTargetsObject(feature, objectId) {
   if (feature.target?.objectId === objectId) {
     return true;
   }
+  if (feature.params?.objectId === objectId) {
+    return true;
+  }
   const objectIds = feature.params?.objectIds;
   return Array.isArray(objectIds) && objectIds.includes(objectId);
 }
@@ -195,6 +198,9 @@ function objectIdsForOperation(operation) {
   }
   if (validOperation.type === OPERATION_TYPES.GROUP || validOperation.type === OPERATION_TYPES.COMPONENT) {
     return [...(validOperation.params.objectIds ?? [])];
+  }
+  if (validOperation.type === OPERATION_TYPES.PUSH_PULL && validOperation.params.profile?.objectId) {
+    return [validOperation.targetId, validOperation.params.profile.objectId].filter(Boolean);
   }
   return validOperation.targetId ? [validOperation.targetId] : [];
 }

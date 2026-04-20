@@ -167,6 +167,11 @@ export function serializeCanonicalModelModule(operations) {
 
       case "push_pull": {
         const varName = getVarName(operation.targetId);
+        if (operation.params?.profile) {
+          const profileOperation = _profileOperationFromPushPull(operation.params);
+          bodyLines.push(`  ${varName} = sai.pushPullProfile(r, ${varName}, ${JSON.stringify(profileOperation)});`);
+          break;
+        }
         const state = objectState.get(operation.targetId);
         if (state?.primitive === "box") {
           const faceOperation = _faceOperationFromPushPull(operation.params);
@@ -226,6 +231,7 @@ export function parseOperationsFromCanonicalModelCode(code) {
   candidates.push(..._parseDirectRotateObjectMethod(code));
   candidates.push(..._parseDirectTaperedBox(code));
   candidates.push(..._parseDirectPushPullFace(code));
+  candidates.push(..._parseDirectPushPullProfile(code));
   candidates.push(..._parseDirectScale(code));
   candidates.push(..._parseCreatePrimitiveBox(code));
   candidates.push(..._parseCreatePrimitiveSphere(code));
@@ -691,6 +697,41 @@ function _parseDirectPushPullFace(code) {
       },
     };
   });
+}
+
+function _parseDirectPushPullProfile(code) {
+  const regex = /(?:([A-Za-z_$][\w$]*)\s*=\s*)?sai\.pushPullProfile\(\s*r\s*,\s*([A-Za-z_$][\w$]*)\s*,\s*(\{[^\n]*\})\s*\);/g;
+  return _collectMatches(code, regex, (match) => {
+    const targetId = match[2];
+    const operation = _safeJsonParse(match[3]);
+    if (!targetId || !operation?.profile) return null;
+    return {
+      type: "push_pull",
+      targetId,
+      selection: {
+        mode: "face",
+        objectId: targetId,
+        objectIds: [targetId],
+        faceNormalWorld: operation.axis ?? operation.profile?.plane?.normal ?? null,
+        profile: operation.profile,
+      },
+      params: {
+        axis: operation.axis ?? operation.profile?.plane?.normal ?? { x: 0, y: 1, z: 0 },
+        distance: operation.distance ?? 0,
+        mode: operation.mode === "extend" ? "extend" : "move",
+        profile: operation.profile,
+      },
+    };
+  });
+}
+
+function _profileOperationFromPushPull(params) {
+  return {
+    axis: params.axis ?? params.profile?.plane?.normal ?? { x: 0, y: 1, z: 0 },
+    distance: params.distance ?? 0,
+    mode: params.mode ?? "move",
+    profile: structuredClone(params.profile),
+  };
 }
 
 function _parseDirectScale(code) {

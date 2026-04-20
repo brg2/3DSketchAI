@@ -67,6 +67,9 @@ export function applyFeature(context, feature) {
 
     case OPERATION_TYPES.PUSH_PULL:
       if (!current) return null;
+      if (operation.params?.profile) {
+        return setObjectValue(context, targetId, context.sai.pushPullProfile(context.r, current, profileOperationFromPushPull(operation.params)));
+      }
       return setObjectValue(context, targetId, context.sai.pushPullFace(context.r, current, faceOperationFromPushPull(operation.params)));
 
     case OPERATION_TYPES.POLYLINE:
@@ -131,9 +134,12 @@ function applyFeatureToSceneState(sceneState, feature) {
       if (!id) return;
       sceneState[id] = {
         primitive: "polyline",
+        objectId: id,
+        featureId: feature.id,
         points: operation.params.points.map((point) => ({ ...point })),
         closed: Boolean(operation.params.closed),
         targetId: operation.targetId ?? null,
+        plane: operation.params.plane ? structuredClone(operation.params.plane) : null,
         position: { x: 0, y: 0, z: 0 },
         rotation: { x: 0, y: 0, z: 0 },
         scale: { x: 1, y: 1, z: 1 },
@@ -233,13 +239,26 @@ function applyPolylineMetadata(context, operation) {
   }
   context.objectState.set(objectId, {
     primitive: "polyline",
+    objectId,
     points: points.map((point) => ({ ...point })),
     closed: Boolean(closed),
     targetId: operation.targetId ?? null,
+    plane: operation.params.plane ? structuredClone(operation.params.plane) : null,
     position: { x: 0, y: 0, z: 0 },
     scale: { x: 1, y: 1, z: 1 },
     rotation: { x: 0, y: 0, z: 0 },
   });
+}
+
+function profileOperationFromPushPull(params) {
+  return {
+    axis: params.axis,
+    distance: params.distance,
+    mode: params.mode ?? "move",
+    profile: structuredClone(params.profile),
+    points: (params.profile?.points ?? []).map((point) => ({ ...point })),
+    plane: params.profile?.plane ? structuredClone(params.profile.plane) : null,
+  };
 }
 
 function applyMoveFeature(context, current, operation) {

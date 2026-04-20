@@ -119,6 +119,10 @@ function redundantStackSignature(feature: FeatureGraphSnapshot["features"][numbe
   }
 
   if (feature.type === "push_pull") {
+    const profile = feature.params.profile as undefined | { objectId?: string };
+    if (profile?.objectId) {
+      return `push_pull:profile:${objectId}:${profile.objectId}`;
+    }
     return `push_pull:${objectId}:${feature.params.faceAxis}:${Math.sign((feature.params.faceSign as number | undefined) ?? 1) || 1}`;
   }
 

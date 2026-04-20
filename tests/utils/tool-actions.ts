@@ -127,7 +127,8 @@ async function performLineDraw(page: Page, action: ToolAction) {
   await page.mouse.move(drawPath[1].client.x, drawPath[1].client.y, { steps: 4 });
   await canvas.click({ position: await relativeCanvasPoint(page, drawPath[1].client) });
   await page.mouse.move(drawPath[2].client.x, drawPath[2].client.y, { steps: 4 });
-  await canvas.dblclick({ position: await relativeCanvasPoint(page, drawPath[2].client) });
+  await canvas.click({ position: await relativeCanvasPoint(page, drawPath[2].client) });
+  await canvas.click({ position: await relativeCanvasPoint(page, drawPath[0].client) });
 }
 
 async function relativeCanvasPoint(page: Page, point: { x: number; y: number }) {

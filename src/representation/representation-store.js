@@ -7,7 +7,7 @@ function createGeometryForState(state) {
       geometry = createGeometryFromBrepMesh(state.meshData);
       break;
     case "polyline":
-      geometry = createPolylineGeometry(state);
+      geometry = isSplitProfileState(state) ? createSplitProfileGeometry(state) : createPolylineGeometry(state);
       break;
     case "box":
     default:
@@ -15,6 +15,10 @@ function createGeometryForState(state) {
       break;
   }
   return geometry;
+}
+
+function isSplitProfileState(state) {
+  return state?.primitive === "polyline" && state.closed === true && Boolean(state.targetId) && (state.points?.length ?? 0) >= 3;
 }
 
 function createPolylineGeometry(state) {
@@ -32,6 +36,43 @@ function createPolylineGeometry(state) {
       point.z ?? 0,
     ])), 3),
   );
+  return geometry;
+}
+
+function createSplitProfileGeometry(state) {
+  const normal = profileNormalFromState(state);
+  const points = (state.points ?? []).map((point) => ({
+    x: (point.x ?? 0) + normal.x * 0.002,
+    y: (point.y ?? 0) + normal.y * 0.002,
+    z: (point.z ?? 0) + normal.z * 0.002,
+  }));
+  const vertices = points.flatMap((point) => [point.x, point.y, point.z]);
+  const triangles = [];
+  for (let index = 1; index < points.length - 1; index += 1) {
+    triangles.push(0, index, index + 1);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(vertices), 3));
+  geometry.setIndex(new THREE.Uint32BufferAttribute(new Uint32Array(triangles), 1));
+  geometry.computeVertexNormals();
+  geometry.userData.faceProvenance = Array.from({ length: triangles.length / 3 }, () => ({
+    objectId: state.targetId,
+    featureId: state.featureId ?? state.objectId ?? null,
+    role: `split.${state.objectId}`,
+    hint: {
+      point: state.plane?.origin ? { ...state.plane.origin } : { ...points[0] },
+      normal,
+    },
+  }));
+  geometry.userData.faceGroups = [{
+    start: 0,
+    count: triangles.length,
+    provenance: {
+      featureId: state.featureId ?? state.objectId ?? null,
+      role: `split.${state.objectId}`,
+    },
+  }];
   return geometry;
 }
 
@@ -58,7 +99,7 @@ function createGeometryFromBrepMesh(meshData) {
 
 function createMeshForState(state) {
   const geometry = createGeometryForState(state);
-  if (state.primitive === "polyline") {
+  if (state.primitive === "polyline" && !isSplitProfileState(state)) {
     const line = new THREE.Line(
       geometry,
       new THREE.LineBasicMaterial({ color: 0x24a148, depthTest: false }),
@@ -66,13 +107,35 @@ function createMeshForState(state) {
     line.renderOrder = 35;
     line.frustumCulled = false;
     line.userData.geometrySignature = geometrySignature(state);
+    line.userData.meshKind = meshKindForState(state);
+    line.userData.baseColor = 0x24a148;
     return line;
+  }
+  if (isSplitProfileState(state)) {
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshBasicMaterial({
+        color: 0x24a148,
+        transparent: true,
+        opacity: 0.42,
+        depthTest: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    mesh.renderOrder = 36;
+    mesh.frustumCulled = false;
+    mesh.userData.geometrySignature = geometrySignature(state);
+    mesh.userData.meshKind = meshKindForState(state);
+    mesh.userData.baseColor = 0x24a148;
+    return mesh;
   }
   const material = new THREE.MeshStandardMaterial({ color: 0x7aa2f7, roughness: 0.4, metalness: 0.1 });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   mesh.userData.geometrySignature = geometrySignature(state);
+  mesh.userData.meshKind = meshKindForState(state);
+  mesh.userData.baseColor = 0x7aa2f7;
   return mesh;
 }
 
@@ -101,13 +164,109 @@ function geometrySignature(state) {
     meshSignature: state.meshSignature ?? null,
     points: state.primitive === "polyline" ? state.points ?? [] : null,
     closed: state.primitive === "polyline" ? Boolean(state.closed) : null,
+    targetId: state.primitive === "polyline" ? state.targetId ?? null : null,
+    featureId: state.primitive === "polyline" ? state.featureId ?? null : null,
+    plane: state.primitive === "polyline" ? state.plane ?? null : null,
   });
+}
+
+function meshKindForState(state) {
+  if (isSplitProfileState(state)) {
+    return "split-profile";
+  }
+  return state?.primitive ?? "mesh";
+}
+
+function selectableObjectIdForState(objectId, state) {
+  return isSplitProfileState(state) ? state.targetId : objectId;
+}
+
+function profileForState(objectId, state) {
+  if (!isSplitProfileState(state)) {
+    return null;
+  }
+  return {
+    objectId,
+    featureId: state.featureId ?? null,
+    targetId: state.targetId,
+    closed: true,
+    points: (state.points ?? []).map((point) => ({ ...point })),
+    plane: state.plane ? structuredClone(state.plane) : {
+      origin: state.points?.[0] ? { ...state.points[0] } : { x: 0, y: 0, z: 0 },
+      normal: profileNormalFromState(state),
+    },
+  };
+}
+
+function profileNormalFromState(state) {
+  const normal = normalizeVector(state?.plane?.normal ?? polygonNormal(state?.points ?? []));
+  return vectorLength(normal) > 1e-8 ? normal : { x: 0, y: 1, z: 0 };
+}
+
+function polygonNormal(points) {
+  if (!Array.isArray(points) || points.length < 3) {
+    return { x: 0, y: 1, z: 0 };
+  }
+  const origin = points[0];
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const a = subtractVector(points[index], origin);
+    const b = subtractVector(points[index + 1], origin);
+    const normal = crossVector(a, b);
+    if (vectorLength(normal) > 1e-8) {
+      return normal;
+    }
+  }
+  return { x: 0, y: 1, z: 0 };
 }
 
 function applyTransform(mesh, state) {
   mesh.position.set(state.position.x, state.position.y, state.position.z);
   mesh.rotation.set(state.rotation.x, state.rotation.y, state.rotation.z);
   mesh.scale.set(state.scale.x, state.scale.y, state.scale.z);
+}
+
+function previewProfilePushPullMeshData(operation) {
+  const profile = operation.params?.profile;
+  const points = profile?.points ?? [];
+  if (!Array.isArray(points) || points.length < 3) {
+    return null;
+  }
+
+  const axis = normalizeVector(operation.params?.axis ?? profile?.plane?.normal ?? { x: 0, y: 1, z: 0 });
+  const distance = operation.params?.distance ?? 0;
+  if (!Number.isFinite(distance) || Math.abs(distance) < 1e-8) {
+    return null;
+  }
+
+  const vertices = [];
+  const triangles = [];
+  for (const point of points) {
+    vertices.push(point.x ?? 0, point.y ?? 0, point.z ?? 0);
+  }
+  for (const point of points) {
+    vertices.push(
+      (point.x ?? 0) + axis.x * distance,
+      (point.y ?? 0) + axis.y * distance,
+      (point.z ?? 0) + axis.z * distance,
+    );
+  }
+
+  const topOffset = points.length;
+  for (let index = 1; index < points.length - 1; index += 1) {
+    triangles.push(topOffset, topOffset + index, topOffset + index + 1);
+  }
+  for (let index = 0; index < points.length; index += 1) {
+    const next = (index + 1) % points.length;
+    triangles.push(index, next, topOffset + next, index, topOffset + next, topOffset + index);
+  }
+
+  return {
+    vertices,
+    triangles,
+    normals: [],
+    faceProvenance: [],
+    faceGroups: [],
+  };
 }
 
 function previewPushPullMeshData(meshData, operation) {
@@ -980,6 +1139,26 @@ function normalizeVector(vector) {
   };
 }
 
+function vectorLength(vector) {
+  return Math.hypot(vector?.x ?? 0, vector?.y ?? 0, vector?.z ?? 0);
+}
+
+function subtractVector(a, b) {
+  return {
+    x: (a?.x ?? 0) - (b?.x ?? 0),
+    y: (a?.y ?? 0) - (b?.y ?? 0),
+    z: (a?.z ?? 0) - (b?.z ?? 0),
+  };
+}
+
+function crossVector(a, b) {
+  return {
+    x: (a?.y ?? 0) * (b?.z ?? 0) - (a?.z ?? 0) * (b?.y ?? 0),
+    y: (a?.z ?? 0) * (b?.x ?? 0) - (a?.x ?? 0) * (b?.z ?? 0),
+    z: (a?.x ?? 0) * (b?.y ?? 0) - (a?.y ?? 0) * (b?.x ?? 0),
+  };
+}
+
 function normalizeVectorOrNull(vector) {
   if (!vector || typeof vector !== "object") {
     return null;
@@ -1081,15 +1260,25 @@ export class RepresentationStore {
 
     for (const [objectId, state] of Object.entries(this.exactSceneState)) {
       let mesh = this.meshById.get(objectId);
+      if (mesh && mesh.userData.meshKind !== meshKindForState(state)) {
+        this.scene.remove(mesh);
+        mesh.geometry?.dispose?.();
+        mesh.material?.dispose?.();
+        this.meshById.delete(objectId);
+        mesh = null;
+      }
       if (!mesh) {
         mesh = createMeshForState(state);
-        mesh.userData.objectId = objectId;
         this.meshById.set(objectId, mesh);
         this.scene.add(mesh);
       }
+      mesh.userData.objectId = selectableObjectIdForState(objectId, state);
+      mesh.userData.sourceObjectId = objectId;
+      mesh.userData.profile = profileForState(objectId, state);
       updateMeshGeometry(mesh, state);
       applyTransform(mesh, state);
-      mesh.material.color.setHex(state.primitive === "polyline" ? 0x24a148 : 0x7aa2f7);
+      mesh.userData.baseColor = isSplitProfileState(state) || state.primitive === "polyline" ? 0x24a148 : 0x7aa2f7;
+      mesh.material.color?.setHex(mesh.userData.baseColor);
     }
   }
 
@@ -1225,13 +1414,18 @@ export class RepresentationStore {
     }
 
     if (previewState.primitive === "brep_mesh") {
-      const meshData = previewPushPullMeshData(previewState.meshData, this.previewOperation);
+      const meshData = params?.profile
+        ? previewProfilePushPullMeshData(this.previewOperation)
+        : previewPushPullMeshData(previewState.meshData, this.previewOperation);
       if (!meshData) {
         return;
       }
-      previewState.meshData = meshData;
+      previewState.meshData = params?.profile
+        ? mergeMeshData(previewState.meshData, meshData)
+        : meshData;
       previewState.meshSignature = [
         previewState.meshSignature ?? "mesh",
+        params?.profile?.objectId ?? null,
         this.previewOperation.selection?.faceIndex ?? "face",
         this.previewOperation.params?.distance ?? 0,
       ].join(":");
@@ -1243,4 +1437,20 @@ export class RepresentationStore {
   getSelectableMeshes() {
     return [...this.meshById.values()].filter((object) => object.isMesh);
   }
+}
+
+function mergeMeshData(baseMeshData, additionMeshData) {
+  const vertices = [...(baseMeshData?.vertices ?? baseMeshData?.positions ?? [])];
+  const triangles = [...(baseMeshData?.triangles ?? baseMeshData?.indices ?? [])];
+  const vertexOffset = vertices.length / 3;
+  vertices.push(...(additionMeshData?.vertices ?? []));
+  triangles.push(...(additionMeshData?.triangles ?? []).map((index) => index + vertexOffset));
+  return {
+    ...baseMeshData,
+    vertices,
+    triangles,
+    normals: [],
+    faceProvenance: cloneFaceProvenance(baseMeshData?.faceProvenance),
+    faceGroups: cloneFaceGroups(baseMeshData?.faceGroups),
+  };
 }

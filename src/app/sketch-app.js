@@ -902,7 +902,7 @@ export class SketchApp {
         mesh.material.color.setHex(0x7dc8ff);
       } else {
         mesh.material.emissive?.setHex(0x000000);
-        mesh.material.color.setHex(0x7aa2f7);
+        mesh.material.color.setHex(mesh.userData.baseColor ?? 0x7aa2f7);
       }
     }
 
@@ -1381,6 +1381,20 @@ export class SketchApp {
     this.lineDrawPreview.renderOrder = 45;
     this.lineDrawPreview.frustumCulled = false;
     this.viewport.scene.add(this.lineDrawPreview);
+
+    this.lineDrawSnapPreview = new THREE.Points(
+      new THREE.BufferGeometry(),
+      new THREE.PointsMaterial({
+        color: 0xf4d35e,
+        size: 8,
+        sizeAttenuation: false,
+        depthTest: false,
+      }),
+    );
+    this.lineDrawSnapPreview.visible = false;
+    this.lineDrawSnapPreview.renderOrder = 46;
+    this.lineDrawSnapPreview.frustumCulled = false;
+    this.viewport.scene.add(this.lineDrawSnapPreview);
   }
 
   async _handleLineDrawPointerDown(event) {
@@ -1490,11 +1504,128 @@ export class SketchApp {
     if (!this.lineDrawState?.plane) {
       return null;
     }
-    return this.selectionPipeline.pointOnPlane({
+    const point = this.selectionPipeline.pointOnPlane({
       clientX: event.clientX,
       clientY: event.clientY,
       plane: this.lineDrawState.plane,
     });
+    if (!point) {
+      this._setLineDrawSnapPreview(null);
+      return null;
+    }
+    const snap = this._snapLineDrawPoint(event, point);
+    this._setLineDrawSnapPreview(snap?.point ?? null);
+    return snap?.point ?? point;
+  }
+
+  _snapLineDrawPoint(event, planePoint) {
+    const vertexSnap = this._nearestLineDrawVertexSnap(event, planePoint);
+    if (vertexSnap) {
+      return vertexSnap;
+    }
+    return this._nearestLineDrawEdgeSnap(event, planePoint);
+  }
+
+  _nearestLineDrawVertexSnap(event, planePoint) {
+    const candidates = [
+      ...(this.lineDrawState?.points ?? []).map((point) => new THREE.Vector3(point.x, point.y, point.z)),
+      ...this._lineDrawTargetVertices(),
+    ];
+    return this._nearestScreenSnap(event, candidates, 12, "vertex");
+  }
+
+  _nearestLineDrawEdgeSnap(event, planePoint) {
+    const edgeCandidates = [];
+    for (const [a, b] of this._lineDrawTargetEdges()) {
+      edgeCandidates.push({
+        point: a.clone().add(b).multiplyScalar(0.5),
+        kind: "edge-midpoint",
+      });
+      edgeCandidates.push({
+        point: closestPointOnSegment(planePoint, a, b),
+        kind: "edge",
+      });
+    }
+    return this._nearestScreenSnap(
+      event,
+      edgeCandidates.map((candidate) => candidate.point),
+      10,
+      "edge",
+    );
+  }
+
+  _nearestScreenSnap(event, points, threshold, kind) {
+    let best = null;
+    for (const point of points) {
+      const client = this._clientPointForWorldPoint(point);
+      if (!client) {
+        continue;
+      }
+      const distance = Math.hypot(client.x - event.clientX, client.y - event.clientY);
+      if (distance > threshold || (best && distance >= best.distance)) {
+        continue;
+      }
+      best = { point: point.clone(), distance, kind };
+    }
+    return best;
+  }
+
+  _lineDrawTargetMeshes() {
+    const targetId = this.lineDrawState?.targetId;
+    if (!targetId) {
+      return [];
+    }
+    return this.representationStore.getSelectableMeshes().filter((mesh) => (
+      (mesh.userData.sourceObjectId ?? mesh.userData.objectId) === targetId &&
+      !mesh.userData.profile
+    ));
+  }
+
+  _lineDrawTargetVertices() {
+    const vertices = [];
+    for (const mesh of this._lineDrawTargetMeshes()) {
+      const position = mesh.geometry?.attributes?.position;
+      if (!position) {
+        continue;
+      }
+      const seen = new Set();
+      for (let index = 0; index < position.count; index += 1) {
+        const local = new THREE.Vector3().fromBufferAttribute(position, index);
+        const key = `${local.x.toFixed(4)}:${local.y.toFixed(4)}:${local.z.toFixed(4)}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        vertices.push(mesh.localToWorld(local.clone()));
+      }
+    }
+    return vertices;
+  }
+
+  _lineDrawTargetEdges() {
+    const edges = [];
+    for (const mesh of this._lineDrawTargetMeshes()) {
+      const position = mesh.geometry?.attributes?.position;
+      const index = mesh.geometry?.index;
+      if (!position || !index) {
+        continue;
+      }
+      const seen = new Set();
+      for (let triangle = 0; triangle < Math.floor(index.count / 3); triangle += 1) {
+        const corners = [0, 1, 2].map((corner) => index.getX(triangle * 3 + corner));
+        for (const [aIndex, bIndex] of [[corners[0], corners[1]], [corners[1], corners[2]], [corners[2], corners[0]]]) {
+          const key = aIndex < bIndex ? `${aIndex}:${bIndex}` : `${bIndex}:${aIndex}`;
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          const a = mesh.localToWorld(new THREE.Vector3().fromBufferAttribute(position, aIndex));
+          const b = mesh.localToWorld(new THREE.Vector3().fromBufferAttribute(position, bIndex));
+          edges.push([a, b]);
+        }
+      }
+    }
+    return edges;
   }
 
   _lineDrawClosesLoop(point, event) {
@@ -1532,6 +1663,7 @@ export class SketchApp {
     });
 
     this.lineDrawState = null;
+    this._setLineDrawSnapPreview(null);
     this._updateLineDrawPreview();
     const result = await this.runtimeController.commitOperation(operation);
     await this._recordModelHistory(result?.canonicalGraphJson, "Line Draw");
@@ -1543,6 +1675,7 @@ export class SketchApp {
 
   _cancelLineDraw() {
     this.lineDrawState = null;
+    this._setLineDrawSnapPreview(null);
     this._updateLineDrawPreview();
     this._applySelectionHighlights();
     this._renderOverlay();
@@ -1557,6 +1690,7 @@ export class SketchApp {
       this.lineDrawPreview.visible = false;
       this.lineDrawPreview.geometry.dispose();
       this.lineDrawPreview.geometry = new THREE.BufferGeometry();
+      this._setLineDrawSnapPreview(null);
       this._requestFrame();
       return;
     }
@@ -1578,6 +1712,25 @@ export class SketchApp {
     this.lineDrawPreview.geometry.setAttribute("position", new THREE.BufferAttribute(flat, 3));
     this.lineDrawPreview.visible = points.length > 1;
     this._requestFrame();
+  }
+
+  _setLineDrawSnapPreview(point) {
+    if (!this.lineDrawSnapPreview) {
+      return;
+    }
+    if (!point) {
+      this.lineDrawSnapPreview.visible = false;
+      this.lineDrawSnapPreview.geometry.dispose();
+      this.lineDrawSnapPreview.geometry = new THREE.BufferGeometry();
+      return;
+    }
+    this.lineDrawSnapPreview.geometry.dispose();
+    this.lineDrawSnapPreview.geometry = new THREE.BufferGeometry();
+    this.lineDrawSnapPreview.geometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array([point.x, point.y, point.z]), 3),
+    );
+    this.lineDrawSnapPreview.visible = true;
   }
 
   _clientPointForWorldPoint(point) {
@@ -3056,6 +3209,16 @@ function migrateGroundThemeState(state) {
     elevationVariation: legacyElevationVariation,
     terrainVariation,
   };
+}
+
+function closestPointOnSegment(point, a, b) {
+  const ab = b.clone().sub(a);
+  const denom = ab.lengthSq();
+  if (denom <= 1e-10) {
+    return a.clone();
+  }
+  const t = THREE.MathUtils.clamp(point.clone().sub(a).dot(ab) / denom, 0, 1);
+  return a.clone().add(ab.multiplyScalar(t));
 }
 
 function iconSvg(name) {

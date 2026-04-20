@@ -48,6 +48,9 @@ export function resolveFeatureModification(features, operation) {
     );
   }
   if (validOperation.type === OPERATION_TYPES.PUSH_PULL) {
+    if (validOperation.params?.profile) {
+      return modifyExistingProfilePushPullFeature(features, validOperation);
+    }
     return (
       modifyOriginatingPrimitiveFeature(features, validOperation) ??
       modifyExistingPushPullFeature(features, validOperation)
@@ -55,6 +58,52 @@ export function resolveFeatureModification(features, operation) {
   }
   if (validOperation.type === OPERATION_TYPES.POLYLINE) {
     return modifyExistingPolylineFeature(features, validOperation);
+  }
+
+  return null;
+}
+
+function modifyExistingProfilePushPullFeature(features, operation) {
+  const profileId = operation.params?.profile?.objectId;
+  if (!profileId) {
+    return null;
+  }
+
+  const normalized = normalizeFeatureGraph(features);
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    const feature = normalized[index];
+    if (feature.type !== OPERATION_TYPES.PUSH_PULL) {
+      continue;
+    }
+    if (feature.target?.objectId !== operation.targetId) {
+      continue;
+    }
+    if (feature.params?.profile?.objectId !== profileId) {
+      continue;
+    }
+    if ((feature.params.mode ?? "move") !== (operation.params.mode ?? "move")) {
+      continue;
+    }
+    if (!hasOnlySafeDownstreamFeatures(normalized, index, operation.targetId)) {
+      return null;
+    }
+
+    const next = structuredClone(normalized);
+    next[index].params = {
+      ...next[index].params,
+      axis: structuredClone(operation.params.axis),
+      distance: roundMillimeters((next[index].params.distance ?? 0) + (operation.params.distance ?? 0)),
+      profile: structuredClone(operation.params.profile),
+    };
+    next[index].target = {
+      objectId: operation.targetId,
+      selection: operation.selection ? structuredClone(operation.selection) : null,
+    };
+    return {
+      features: normalizeFeatureGraph(next),
+      reason: "modified_existing_push_pull",
+      featureId: feature.id,
+    };
   }
 
   return null;
@@ -480,6 +529,9 @@ function isPositionSafeDownstreamFeature(feature) {
 
 function featureTargetsObject(feature, objectId) {
   if (feature.target?.objectId === objectId) {
+    return true;
+  }
+  if (feature.params?.objectId === objectId || feature.params?.profile?.objectId === objectId) {
     return true;
   }
   const objectIds = feature.params?.objectIds;

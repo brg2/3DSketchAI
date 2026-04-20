@@ -192,6 +192,7 @@ The system must support:
 - many-to-one face mapping after merges
 
 Roles must be interpreted as semantic face groups, not single topology elements.
+After a split, face identity MUST be preserved or remapped so selectors and downstream operations reference the correct sub-face region.
 
 ## 4.1.9 Prohibited Behavior
 The following are explicitly disallowed:
@@ -263,9 +264,9 @@ Required tools:
 - grouping and components
 
 ### 5.1 Line Draw Tool
-The line draw tool is a V1 simple polyline tool.
+The line draw tool is a V1 topology-editing tool.
 
-It is used to place ordered points in feature/model space and commit them as a replayable polyline feature.
+It is used to place ordered points in feature/model space and commit them as a face-splitting feature operation when applied on an existing face.
 
 Usage:
 - select or infer a drawing plane
@@ -276,13 +277,49 @@ Usage:
 Modeling rules:
 - point order is preserved
 - the committed result is deterministic and replayable
-- the tool stores geometry as a feature, not as a freeform NURBS surface
-- open polylines remain guide geometry
-- closed polylines may be used as profiles for downstream modeling operations
+- the tool stores topology changes as features, not as sketch overlays
+- when committed on a face, the line MUST split that face into separate regions
+- the resulting sub-faces MUST be first-class selectable faces
+- the resulting sub-faces MUST support downstream direct modeling operations such as push/pull and face-level move/rotate when applicable
+- the original face is no longer treated as a single continuous surface after split
+- the line itself is not the source of truth; the split topology is the source of truth
+- split results MUST be represented in the feature graph and replayed deterministically
+
+Independent extrusion rule:
+- resulting sub-faces MUST be independently extrudable via push/pull
+- repeated direct modeling on a split region must target the split face region, not the pre-split aggregate face
 
 Scope:
-- V1 uses simple polygonal/polyline drawing
+- V1 uses simple polygonal/polyline drawing, not NURBS-based drawing
 - NURBS-based line drawing is out of scope for V1 and may be considered later only as an extension of the feature graph
+
+### 5.2 Line Draw Snapping and Inference
+Snapping is always on by default.
+
+Required snap targets:
+- vertex snapping at edge endpoints
+- edge snapping at midpoints and along-edge inference
+- face plane inference for coplanar drawing
+
+Inference rules:
+- cursor movement should lock onto existing vertices, edge midpoints, and edge directions when relevant
+- snapping must be visually indicated
+- snapping must reduce ambiguity without requiring numeric input
+- optional modifier keys may refine behavior later, but base behavior must work without them
+- priority order is vertex, then edge, then face plane
+
+Snapping must operate in feature/model space and remain stable under replay.
+
+### 5.3 System-Level Implications
+Face identity must persist or be remapped after splits so that:
+- feature graph updates correctly
+- subsequent operations reference the correct topology
+
+The modeling kernel MUST treat the split as a real BREP operation, not a visual subdivision.
+
+The Three.js layer MUST:
+- reflect updated topology immediately
+- maintain correct selection mapping between rendered mesh and kernel faces
 
 Persistence requirement:
 - save/load Feature Graph JSON as primary model format
@@ -341,7 +378,7 @@ Rules:
 ### 8.2 Interaction Layer
 - selection pipeline
 - manipulation tool state machines
-- minimal snapping and inference for V1
+- minimal snapping and inference for V1, including line-draw snapping
 - world-space input capture and transformation into feature/model space
 
 ### 8.3 Operation Layer
@@ -525,6 +562,12 @@ Tests MUST assert all of the following after each operation:
 3. Feature target stability
 - feature targets remain correctly attached to intended object/face
 - no orphaned or broken references are allowed
+
+3a. Line draw face splitting
+- when line draw is committed on a face, the face MUST split into the expected regions
+- split faces MUST remain traceable through feature-origin identity
+- split faces MUST remain independently selectable and independently extrudable
+- face split results MUST be validated in both geometry state and feature graph snapshots
 
 4. Modification over creation when intent continues
 - prefer modification over creation when tool, selection target, and intent continuation are the same

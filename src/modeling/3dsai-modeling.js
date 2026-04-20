@@ -11,6 +11,7 @@ export function create3dsaiModelingLibrary() {
     moveBoxVertex,
     pushPull,
     pushPullFace,
+    pushPullProfile,
     rotateBoxSubshape,
     translateObject,
   };
@@ -66,6 +67,35 @@ export function pushPullFace(_r, shape, operation) {
   }
 
   throw new Error("pushPullFace: cannot determine target face from operation");
+}
+
+export function pushPullProfile(r, shape, operation) {
+  const points = (operation?.points ?? operation?.profile?.points ?? [])
+    .map((point) => Array.isArray(point)
+      ? [point[0] ?? 0, point[1] ?? 0, point[2] ?? 0]
+      : [point?.x ?? 0, point?.y ?? 0, point?.z ?? 0]);
+  if (!r || typeof r.makePolygon !== "function" || points.length < 3) {
+    throw new Error("pushPullProfile requires a polygon profile and modeling runtime");
+  }
+
+  const distance = operation?.distance ?? 0;
+  if (!Number.isFinite(distance) || Math.abs(distance) < 1e-8) {
+    return shape;
+  }
+
+  const axis = normalizeVector(operation?.axis ?? operation?.plane?.normal ?? operation?.profile?.plane?.normal ?? { x: 0, y: 1, z: 0 });
+  const targetShape = typeof shape?.toShape === "function" ? shape.toShape() : shape;
+  if (!targetShape || typeof targetShape.fuse !== "function" || typeof targetShape.cut !== "function") {
+    throw new Error("pushPullProfile requires a BREP solid target");
+  }
+
+  const face = r.makePolygon(points);
+  const extrusionVec = new Vector([axis.x * distance, axis.y * distance, axis.z * distance]);
+  const tool = basicFaceExtrusion(face, extrusionVec);
+  const result = distance > 0
+    ? targetShape.fuse(tool, { optimisation: "sameFace" })
+    : targetShape.cut(tool, { optimisation: "sameFace" });
+  return simplifyBooleanResult(result);
 }
 
 export function moveBoxSubshape(_r, shape, operation) {

@@ -59,6 +59,10 @@ export function sanitizeSelectionForFeature(selection) {
   if (selector) {
     sanitized.selector = selector;
   }
+  const profile = sanitizeProfile(selection.profile);
+  if (profile) {
+    sanitized.profile = profile;
+  }
 
   if (selection.mode === "edge" && selection.edge) {
     sanitized.edge = sanitizeEdge(selection.edge);
@@ -68,6 +72,42 @@ export function sanitizeSelectionForFeature(selection) {
   }
 
   return sanitized;
+}
+
+function sanitizeProfile(profile) {
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
+    return null;
+  }
+  if (typeof profile.objectId !== "string" || typeof profile.targetId !== "string") {
+    return null;
+  }
+  const points = Array.isArray(profile.points)
+    ? profile.points.map((point) => normalizeVector(point)).filter(Boolean)
+    : [];
+  if (points.length < 3) {
+    return null;
+  }
+  const plane = sanitizeProfilePlane(profile.plane);
+  return {
+    objectId: profile.objectId,
+    ...(typeof profile.featureId === "string" ? { featureId: profile.featureId } : {}),
+    targetId: profile.targetId,
+    closed: true,
+    points,
+    ...(plane ? { plane } : {}),
+  };
+}
+
+function sanitizeProfilePlane(plane) {
+  if (!plane || typeof plane !== "object" || Array.isArray(plane)) {
+    return null;
+  }
+  const origin = normalizeVector(plane.origin);
+  const normal = normalizeVector(plane.normal);
+  if (!origin || !normal) {
+    return null;
+  }
+  return { origin, normal };
 }
 
 export function cloneSelector(selector) {

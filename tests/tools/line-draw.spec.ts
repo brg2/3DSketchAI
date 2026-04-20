@@ -25,12 +25,32 @@ async function dblclickCanvasAtClientPoint(page, point) {
   });
 }
 
+function averageWorld(points) {
+  return points.reduce(
+    (sum, entry) => ({
+      x: sum.x + entry.world.x / points.length,
+      y: sum.y + entry.world.y / points.length,
+      z: sum.z + entry.world.z / points.length,
+    }),
+    { x: 0, y: 0, z: 0 },
+  );
+}
+
+async function dragCanvasBetweenClientPoints(page, start, end) {
+  const box = await page.locator("canvas").boundingBox();
+  expect(box).toBeTruthy();
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 10 });
+  await page.mouse.up();
+}
+
 test.describe("line draw tool", () => {
   test.beforeEach(async ({ page }) => {
     await loadKnownScene(page);
   });
 
-  test("commits an open polyline guide feature on a picked face plane", async ({ page }) => {
+  test("commits a closed line draw as a selectable face split", async ({ page }) => {
     await page.getByRole("button", { name: "Face" }).click();
     await activateTool(page, "Line Draw");
 
@@ -55,7 +75,8 @@ test.describe("line draw tool", () => {
 
     await clickCanvasAtClientPoint(page, path[1].client);
     await page.mouse.move(path[2].client.x, path[2].client.y, { steps: 6 });
-    await dblclickCanvasAtClientPoint(page, path[2].client);
+    await clickCanvasAtClientPoint(page, path[2].client);
+    await clickCanvasAtClientPoint(page, path[0].client);
     await page.evaluate(() => window.__TEST_API__.nextFrame(3));
 
     const graph = await expectFeatureGraphIntegrity(page);
@@ -64,13 +85,14 @@ test.describe("line draw tool", () => {
     expect(graph.features[1].target.objectId).toBe("cube");
     expect(graph.features[1].dependsOn).toEqual(["feature_1"]);
     expect(graph.features[1].params.objectId).toBe("polyline_1");
-    expect(graph.features[1].params.closed).toBe(false);
+    expect(graph.features[1].params.closed).toBe(true);
     expect(graph.features[1].params.points).toHaveLength(3);
     expect(graph.features[1].params.plane.normal).toMatchObject({ x: 0, y: 1, z: 0 });
 
     scene = await page.evaluate(() => window.__TEST_API__.getSceneState());
     expect(scene.objects.polyline_1.primitive).toBe("polyline");
-    await expectCanvasSnapshot(page, "line-draw-open-polyline-face.png");
+    expect(scene.meshes.some((mesh) => mesh.objectId === "cube" && mesh.vertexCount === 3)).toBe(true);
+    await expectCanvasSnapshot(page, "line-draw-face-split.png");
   });
 
   test("clicking the first point closes and commits the polyline", async ({ page }) => {
@@ -99,5 +121,56 @@ test.describe("line draw tool", () => {
     expect(graph.features[1].type).toBe("polyline");
     expect(graph.features[1].params.closed).toBe(true);
     expect(graph.features[1].params.points).toHaveLength(3);
+  });
+
+  test("push/pull extrudes a split face region independently", async ({ page }) => {
+    await page.getByRole("button", { name: "Face" }).click();
+    await activateTool(page, "Line Draw");
+
+    const path = await page.evaluate(() => window.__TEST_API__.getPolylineDrawPath({
+      objectName: "cube",
+      faceIndex: 0,
+      points: [
+        { x: -0.22, y: -0.2 },
+        { x: 0.22, y: -0.2 },
+        { x: 0.22, y: 0.22 },
+        { x: -0.22, y: 0.22 },
+      ],
+    }));
+    expect(path).toBeTruthy();
+
+    for (const point of path) {
+      await clickCanvasAtClientPoint(page, point.client);
+    }
+    await clickCanvasAtClientPoint(page, path[0].client);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(3));
+
+    const splitCenter = averageWorld(path);
+    const beforePush = await page.evaluate(() => window.__TEST_API__.getSceneState());
+    const beforeCube = beforePush.meshes.find((mesh) => mesh.objectId === "cube" && mesh.vertexCount > 3);
+    const start = await page.evaluate((point) => window.__TEST_API__.getCanvasPointForWorldPoint(point), splitCenter);
+    const end = await page.evaluate(
+      (point) => window.__TEST_API__.getCanvasPointForWorldPoint({ x: point.x, y: point.y + 0.34, z: point.z }),
+      splitCenter,
+    );
+    expect(start).toBeTruthy();
+    expect(end).toBeTruthy();
+
+    await activateTool(page, "Push/Pull");
+    await dragCanvasBetweenClientPoints(page, start, end);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+
+    const graph = await expectFeatureGraphIntegrity(page);
+    expect(graph.featureCount).toBe(3);
+    expect(graph.features[2].type).toBe("push_pull");
+    expect(graph.features[2].target.objectId).toBe("cube");
+    expect(graph.features[2].dependsOn).toEqual(["feature_2"]);
+    expect(graph.features[2].params.profile.objectId).toBe("polyline_1");
+    expect(graph.features[2].target.selection.profile.objectId).toBe("polyline_1");
+
+    const scene = await page.evaluate(() => window.__TEST_API__.getSceneState());
+    const cubeMesh = scene.meshes.find((mesh) => mesh.objectId === "cube" && mesh.vertexCount > 3);
+    expect(cubeMesh.worldBounds.max.y).toBeGreaterThan(beforeCube.worldBounds.max.y + 0.2);
+    await expectCanvasSnapshot(page, "line-draw-split-pushpull.png");
   });
 });
