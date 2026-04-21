@@ -184,6 +184,31 @@ test.describe("line draw tool", () => {
     await expectCanvasSnapshot(page, "line-draw-face-split.png");
   });
 
+  test("previews the first snap point before placing the start point", async ({ page }) => {
+    await page.getByRole("button", { name: "Face" }).click();
+    await activateTool(page, "Line Draw");
+
+    const vertex = await page.evaluate(() => window.__TEST_API__.getVertexData("cube")[0]);
+    expect(vertex).toBeTruthy();
+    await page.mouse.move(vertex.click.x, vertex.click.y);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+
+    let overlay = await page.evaluate(() => window.__TEST_API__.getLineDrawOverlayState());
+    expect(overlay.active).toBe(false);
+    expect(overlay.snapVisible).toBe(true);
+    expect(overlay.snapPoint.x).toBeCloseTo(vertex.world.x, 5);
+    expect(overlay.snapPoint.y).toBeCloseTo(vertex.world.y, 5);
+    expect(overlay.snapPoint.z).toBeCloseTo(vertex.world.z, 5);
+    await expectCanvasSnapshot(page, "line-draw-start-snap-preview.png");
+
+    await clickCanvasAtClientPoint(page, vertex.click);
+    overlay = await page.evaluate(() => window.__TEST_API__.getLineDrawOverlayState());
+    expect(overlay.active).toBe(true);
+    expect(overlay.points[0].x).toBeCloseTo(vertex.world.x, 5);
+    expect(overlay.points[0].y).toBeCloseTo(vertex.world.y, 5);
+    expect(overlay.points[0].z).toBeCloseTo(vertex.world.z, 5);
+  });
+
   test("clicking the first point closes and commits the polyline", async ({ page }) => {
     await page.getByRole("button", { name: "Face" }).click();
     await activateTool(page, "Line Draw");

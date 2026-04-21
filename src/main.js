@@ -306,6 +306,18 @@ function createTestApi(app) {
         dragging: Boolean(app.tools.dragState),
       };
     },
+    getLineDrawOverlayState() {
+      const snapPosition = app.lineDrawSnapPreview?.geometry?.attributes?.position;
+      const snapPoint = snapPosition?.count
+        ? new THREE.Vector3().fromBufferAttribute(snapPosition, 0)
+        : null;
+      return {
+        active: Boolean(app.lineDrawState),
+        points: (app.lineDrawState?.points ?? []).map((point) => vector(point)),
+        snapVisible: Boolean(app.lineDrawSnapPreview?.visible),
+        snapPoint: snapPoint ? vector(snapPoint) : null,
+      };
+    },
     getCamera() {
       return {
         position: vector(app.viewport.camera.position),

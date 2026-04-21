@@ -377,6 +377,9 @@ export class SketchApp {
         });
         this.hoveredObjectId = hover.objectId;
         this.hoveredHit = hover.hit;
+        if (this.tools.activeTool === "lineDraw") {
+          this._updateLineDrawStartSnapPreview(event, hover);
+        }
         this._applySelectionHighlights();
         this._renderOverlay();
         return;
@@ -1442,6 +1445,7 @@ export class SketchApp {
   _startLineDraw(event, selectionResult) {
     const hit = selectionResult?.hit ?? null;
     const hitPoint = hit?.point?.clone?.() ?? null;
+    const targetId = selectionResult?.selection?.objectId ?? null;
     const normalObject = selectionResult?.selection?.faceNormalWorld ?? null;
     const normal = new THREE.Vector3(
       normalObject?.x ?? 0,
@@ -1463,10 +1467,18 @@ export class SketchApp {
       return false;
     }
 
+    const snap = this._snapLineDrawPoint(event, firstPoint, { targetId, includeLinePoints: false });
+    if (snap?.point) {
+      firstPoint.copy(snap.point);
+      this._setLineDrawSnapPreview(snap.point);
+    } else {
+      this._setLineDrawSnapPreview(null);
+    }
+
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, firstPoint);
     this.lineDrawState = {
       objectId: `polyline_${this.polylineCounter++}`,
-      targetId: selectionResult?.selection?.objectId ?? null,
+      targetId,
       selection: selectionResult?.selection ? structuredClone(selectionResult.selection) : null,
       plane,
       planeOrigin: firstPoint.clone(),
@@ -1477,6 +1489,21 @@ export class SketchApp {
     this._hidePreselectionOverlays();
     this._updateLineDrawPreview(firstPoint);
     return true;
+  }
+
+  _updateLineDrawStartSnapPreview(event, hover) {
+    if (this.lineDrawState || this.tools.dragState) {
+      return;
+    }
+
+    const hitPoint = hover?.hit?.point?.clone?.() ?? null;
+    if (!hitPoint || !hover?.objectId) {
+      this._setLineDrawSnapPreview(null);
+      return;
+    }
+
+    const snap = this._snapLineDrawPoint(event, hitPoint, { targetId: hover.objectId, includeLinePoints: false });
+    this._setLineDrawSnapPreview(snap?.point ?? null);
   }
 
   _appendLineDrawPoint(point) {
@@ -1518,25 +1545,25 @@ export class SketchApp {
     return snap?.point ?? point;
   }
 
-  _snapLineDrawPoint(event, planePoint) {
-    const vertexSnap = this._nearestLineDrawVertexSnap(event, planePoint);
+  _snapLineDrawPoint(event, planePoint, { targetId = this.lineDrawState?.targetId ?? null, includeLinePoints = true } = {}) {
+    const vertexSnap = this._nearestLineDrawVertexSnap(event, planePoint, { targetId, includeLinePoints });
     if (vertexSnap) {
       return vertexSnap;
     }
-    return this._nearestLineDrawEdgeSnap(event, planePoint);
+    return this._nearestLineDrawEdgeSnap(event, planePoint, { targetId });
   }
 
-  _nearestLineDrawVertexSnap(event, planePoint) {
+  _nearestLineDrawVertexSnap(event, planePoint, { targetId = this.lineDrawState?.targetId ?? null, includeLinePoints = true } = {}) {
     const candidates = [
-      ...(this.lineDrawState?.points ?? []).map((point) => new THREE.Vector3(point.x, point.y, point.z)),
-      ...this._lineDrawTargetVertices(),
+      ...(includeLinePoints ? (this.lineDrawState?.points ?? []).map((point) => new THREE.Vector3(point.x, point.y, point.z)) : []),
+      ...this._lineDrawTargetVertices(targetId),
     ];
     return this._nearestScreenSnap(event, candidates, 12, "vertex");
   }
 
-  _nearestLineDrawEdgeSnap(event, planePoint) {
+  _nearestLineDrawEdgeSnap(event, planePoint, { targetId = this.lineDrawState?.targetId ?? null } = {}) {
     const edgeCandidates = [];
-    for (const [a, b] of this._lineDrawTargetEdges()) {
+    for (const [a, b] of this._lineDrawTargetEdges(targetId)) {
       edgeCandidates.push({
         point: a.clone().add(b).multiplyScalar(0.5),
         kind: "edge-midpoint",
@@ -1570,8 +1597,7 @@ export class SketchApp {
     return best;
   }
 
-  _lineDrawTargetMeshes() {
-    const targetId = this.lineDrawState?.targetId;
+  _lineDrawTargetMeshes(targetId = this.lineDrawState?.targetId ?? null) {
     if (!targetId) {
       return [];
     }
@@ -1581,9 +1607,9 @@ export class SketchApp {
     ));
   }
 
-  _lineDrawTargetVertices() {
+  _lineDrawTargetVertices(targetId = this.lineDrawState?.targetId ?? null) {
     const vertices = [];
-    for (const mesh of this._lineDrawTargetMeshes()) {
+    for (const mesh of this._lineDrawTargetMeshes(targetId)) {
       const position = mesh.geometry?.attributes?.position;
       if (!position) {
         continue;
@@ -1602,9 +1628,9 @@ export class SketchApp {
     return vertices;
   }
 
-  _lineDrawTargetEdges() {
+  _lineDrawTargetEdges(targetId = this.lineDrawState?.targetId ?? null) {
     const edges = [];
-    for (const mesh of this._lineDrawTargetMeshes()) {
+    for (const mesh of this._lineDrawTargetMeshes(targetId)) {
       const position = mesh.geometry?.attributes?.position;
       const index = mesh.geometry?.index;
       if (!position || !index) {
@@ -1722,6 +1748,7 @@ export class SketchApp {
       this.lineDrawSnapPreview.visible = false;
       this.lineDrawSnapPreview.geometry.dispose();
       this.lineDrawSnapPreview.geometry = new THREE.BufferGeometry();
+      this._requestFrame();
       return;
     }
     this.lineDrawSnapPreview.geometry.dispose();
@@ -1731,6 +1758,7 @@ export class SketchApp {
       new THREE.BufferAttribute(new Float32Array([point.x, point.y, point.z]), 3),
     );
     this.lineDrawSnapPreview.visible = true;
+    this._requestFrame();
   }
 
   _clientPointForWorldPoint(point) {
@@ -2512,11 +2540,13 @@ export class SketchApp {
 
   _clearHoverState() {
     if (!this.hoveredObjectId && !this.hoveredHit) {
+      this._setLineDrawSnapPreview(null);
       return;
     }
 
     this.hoveredObjectId = null;
     this.hoveredHit = null;
+    this._setLineDrawSnapPreview(null);
     this._applySelectionHighlights();
     this._renderOverlay();
   }
@@ -2861,6 +2891,8 @@ export class SketchApp {
     }
     if (tool !== "lineDraw" && this.lineDrawState) {
       this._cancelLineDraw();
+    } else if (tool !== "lineDraw") {
+      this._setLineDrawSnapPreview(null);
     }
     this.tools.setActiveTool(tool);
     this._syncToolButtons();
