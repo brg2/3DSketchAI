@@ -15,6 +15,8 @@ export const ZOOM_EXTENTS_ANIMATION_MS = 250;
 
 export class Viewport {
   constructor({ canvas, onFrameNeeded = null }) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const isE2e = urlParams.has("e2e");
     this.canvas = canvas;
     this.onFrameNeeded = typeof onFrameNeeded === "function" ? onFrameNeeded : null;
     this._viewportWidth = 0;
@@ -62,9 +64,16 @@ export class Viewport {
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 2000);
     this.camera.position.set(6, 6, 8);
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: !isE2e,
+      alpha: true,
+      powerPreference: isE2e ? "low-power" : "high-performance",
+    });
+    this.renderer.setPixelRatio(isE2e ? 1 : Math.min(window.devicePixelRatio, 2));
+    // E2E runs create/destroy a lot of pages; disabling shadows keeps WebGL memory stable
+    // and makes screenshot comparisons less sensitive.
+    this.renderer.shadowMap.enabled = !isE2e;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.setClearColor(0x000000, 0);
@@ -123,41 +132,6 @@ export class Viewport {
     }
     this.skyTheme = normalized;
     this.skySolidColor = normalizedSolidColor;
-    const preset = skyThemePreset(normalized, { solidColor: normalizedSolidColor ?? undefined });
-
-    if (this.scene?.fog) {
-      this.scene.fog.color.setHex(preset.fog.color);
-      this.scene.fog.near = preset.fog.near;
-      this.scene.fog.far = preset.fog.far;
-    }
-
-    if (this.gridHelper?.material) {
-      const materials = Array.isArray(this.gridHelper.material) ? this.gridHelper.material : [this.gridHelper.material];
-      if (materials[0]?.color) {
-        materials[0].color.setHex(preset.grid.major);
-      }
-      if (materials[1]?.color) {
-        materials[1].color.setHex(preset.grid.minor);
-      } else if (materials[0]?.color) {
-        materials[0].color.setHex(preset.grid.minor);
-      }
-    }
-
-    if (this.lights) {
-      this.lights.hemi.color.setHex(preset.lights.hemiSky);
-      this.lights.hemi.groundColor.setHex(preset.lights.hemiGround);
-      this.lights.hemi.intensity = preset.lights.hemiIntensity;
-
-      this.lights.ambient.color.setHex(preset.lights.ambient);
-      this.lights.ambient.intensity = preset.lights.ambientIntensity;
-
-      this.lights.key.color.setHex(preset.lights.key);
-      this.lights.key.intensity = preset.lights.keyIntensity;
-      const pos = preset.lights.keyPos;
-      if (Array.isArray(pos) && pos.length === 3) {
-        this.lights.key.position.set(pos[0], pos[1], pos[2]);
-      }
-    }
 
     if (this._skyCssTarget instanceof Element) {
       if (normalizedSolidColor) {

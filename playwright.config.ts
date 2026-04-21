@@ -22,8 +22,9 @@ export default defineConfig({
     launchOptions: {
       slowMo,
       args: [
-        "--enable-gpu",
-        "--ignore-gpu-blocklist",
+        // WebGL-heavy screenshot tests are much more stable in software rendering.
+        "--use-angle=swiftshader",
+        "--use-gl=swiftshader",
       ],
     },
   },

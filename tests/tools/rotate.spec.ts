@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { expectCanvasSnapshot, expectClose, expectGeometryChanged, expectPngImagesClose } from "../utils/assertions";
 import { getDragPath, performDrag, waitForRenderCompletion } from "../utils/interaction";
 import { activateTool, loadKnownScene, selectEdge, selectFace, selectObject, selectVertex } from "../utils/selection";

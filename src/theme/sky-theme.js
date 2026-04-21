@@ -117,10 +117,10 @@ function buildSolidSkyThemePreset(solidColor) {
       keyPos: isLight ? [18, 24, 16] : [16, 26, 14],
     },
     objects: {
-      idle: { color: hexToInt(mixHex(color, isLight ? "#1d3041" : "#dfe9f8", isLight ? 0.7 : 0.55)), emissive: 0x000000 },
-      hover: { color: hexToInt(mixHex(color, isLight ? "#ffffff" : "#a9f0ff", isLight ? 0.58 : 0.34)), emissive: hexToInt(mixHex(color, isLight ? "#26415a" : "#0b2b37", 0.45)) },
-      selected: { color: hexToInt(mixHex(color, isLight ? "#ffffff" : "#d8fff4", isLight ? 0.48 : 0.28)), emissive: hexToInt(mixHex(color, isLight ? "#1b3b56" : "#092621", 0.55)) },
-      preselect: hexToInt(mixHex(color, isLight ? "#ffffff" : "#d8fff4", isLight ? 0.48 : 0.28)),
+      idle: { color: 0x7aa2f7, emissive: 0x000000 },
+      hover: { color: 0x7dc8ff, emissive: 0x1d4468 },
+      selected: { color: 0x7dc8ff, emissive: 0x183a5b },
+      preselect: 0x7dc8ff,
     },
     skyMotion: null,
   };

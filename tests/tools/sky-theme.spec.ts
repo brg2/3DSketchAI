@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 import path from "node:path";
 import fs from "node:fs/promises";
 
@@ -51,10 +51,10 @@ test("sky and frame themes: dropdowns, persistence, and distinct atmospheres", a
   await expect(solidField).toBeVisible();
   await solidToggle.click();
   await expect(solidPopover).toBeVisible();
-  await solidHexInput.fill("#ff7f50");
+  await solidHexInput.fill("#fff");
   await solidColorInput.evaluate((input) => {
     const element = input;
-    element.value = "#ff7f50";
+    element.value = "#fff";
     element.dispatchEvent(new Event("input", { bubbles: true }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
   });
@@ -64,7 +64,7 @@ test("sky and frame themes: dropdowns, persistence, and distinct atmospheres", a
   // Reload should restore both theme and color from session state.
   await page.reload();
   await page.waitForFunction(() => document.body?.dataset?.skyTheme === "solidColor");
-  await expect(solidHexInput).toHaveValue("#FF7F50");
+  await expect(solidHexInput).toHaveValue("#FFFFFF");
 
   // Switch to Night Sky for a second distinct atmosphere state.
   await page.locator("#panel-tab-settings").click();

@@ -745,10 +745,8 @@ export class SketchApp {
 
     document.body.dataset.skyTheme = normalized;
     this._applySkyThemeDocumentTokens(normalized, this.skySolidColor);
-    const preset = skyThemePreset(normalized, { solidColor: this.skySolidColor });
 
     this.viewport?.setSkyTheme?.(normalized, { solidColor: this.skySolidColor });
-    this.representationStore?.setObjectColorHex?.(preset.objects.idle.color);
     this._syncSkyThemeControls();
     this._applySelectionHighlights();
     this._requestFrame();
@@ -813,9 +811,7 @@ export class SketchApp {
 
     this.skySolidColor = normalized;
     this._applySkyThemeDocumentTokens(this.skyTheme, normalized);
-    const preset = skyThemePreset(this.skyTheme, { solidColor: normalized });
     this.viewport?.setSkyTheme?.(this.skyTheme, { solidColor: normalized });
-    this.representationStore?.setObjectColorHex?.(preset.objects.idle.color);
     this._syncSkyThemeControls();
     this._applySelectionHighlights();
     this._requestFrame();

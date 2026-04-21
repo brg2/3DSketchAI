@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { expectBoundsExpanded, expectCanvasSnapshot, expectClose } from "../utils/assertions";
 import { countType, expectFeatureGraphIntegrity, featureTypes, getFeatureGraph } from "../utils/feature-graph";
 import { applyToolAction, STACKED_TOOL_ACTIONS, threeStepWorkflows, twoStepWorkflows } from "../utils/tool-actions";

@@ -240,6 +240,8 @@ function createTestApi(app) {
       await app.runtimeController.clearCanonicalModel();
       await app.appSessionStore.clear().catch(() => {});
       await app.modelHistoryStore.clear().catch(() => {});
+      app._setUiThemeMode?.("light", { persist: false, force: true });
+      app._setSkyTheme?.("solidColor", { solidColor: "#fff", persist: false });
       app.selectionPipeline.selectedObjectIds = [];
       app.hoveredObjectId = null;
       app.hoveredHit = null;

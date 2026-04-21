@@ -3,8 +3,11 @@ import { expect, type Page } from "@playwright/test";
 type Point = { x: number; y: number };
 
 export async function loadKnownScene(page: Page) {
-  await page.goto("/?e2e=1");
-  await page.waitForFunction(() => Boolean(window.__TEST_API__));
+  const alreadyLoaded = await page.evaluate(() => Boolean(window.__TEST_API__)).catch(() => false);
+  if (!alreadyLoaded) {
+    await page.goto("/?e2e=1");
+    await page.waitForFunction(() => Boolean(window.__TEST_API__));
+  }
   await page.evaluate(() => window.__TEST_API__.setupDeterministicScene());
   await page.evaluate(() => window.__TEST_API__.nextFrame(3));
   await expect(page.locator("canvas")).toBeVisible();

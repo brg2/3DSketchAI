@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { expectCanvasSnapshot } from "../utils/assertions";
 import { expectFeatureGraphIntegrity } from "../utils/feature-graph";
 import { activateTool, loadKnownScene } from "../utils/selection";
