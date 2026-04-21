@@ -371,6 +371,37 @@ test.describe("line draw tool", () => {
     await expectCanvasSnapshot(page, "line-draw-side-split-pull-commit.png");
   });
 
+  test("through side-face split pull does not leave the cutter cap face", async ({ page }) => {
+    const path = await drawSplitTriangleOnRightFace(page);
+    const splitCenter = averageWorld(path);
+    const start = await page.evaluate((point) => window.__TEST_API__.getCanvasPointForWorldPoint(point), splitCenter);
+    const end = await page.evaluate(
+      (point) => window.__TEST_API__.getCanvasPointForWorldPoint({ x: point.x - 1.2, y: point.y, z: point.z }),
+      splitCenter,
+    );
+    expect(start).toBeTruthy();
+    expect(end).toBeTruthy();
+
+    await activateTool(page, "Push/Pull");
+    await startCanvasDragBetweenClientPoints(page, start, end);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+    const previewScene = await page.evaluate(() => window.__TEST_API__.getSceneState());
+    expect(previewScene.meshes.some((mesh) => mesh.geometrySignature?.includes?.("\"primitive\":\"polyline\""))).toBe(false);
+
+    await page.mouse.up();
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+
+    const graph = await expectFeatureGraphIntegrity(page);
+    expect(graph.features[2].type).toBe("push_pull");
+    expect(graph.features[2].params.profile.objectId).toBe("polyline_1");
+    expect(graph.features[2].params.distance).toBeLessThan(-1);
+
+    const scene = await page.evaluate(() => window.__TEST_API__.getSceneState());
+    expect(scene.objects.polyline_1).toBeUndefined();
+    expect(scene.meshes.some((mesh) => mesh.geometrySignature?.includes?.("\"primitive\":\"polyline\""))).toBe(false);
+    await expectCanvasSnapshot(page, "line-draw-side-split-through-pull-commit.png");
+  });
+
   test("reverse-extruding a committed profile pull replays from the original split face", async ({ page }) => {
     const path = await drawSplitRectangleOnTopFace(page);
     const splitCenter = averageWorld(path);

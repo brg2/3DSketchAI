@@ -131,6 +131,10 @@ function applyFeatureToSceneState(sceneState, feature) {
 
     case OPERATION_TYPES.PUSH_PULL:
       if (operation.params?.profile?.objectId && sceneState[operation.params.profile.objectId]) {
+        if (profilePushPullRemovesCap(sceneState[operation.params.profile.objectId], target, operation.params)) {
+          delete sceneState[operation.params.profile.objectId];
+          return;
+        }
         translateProfileState(sceneState[operation.params.profile.objectId], operation.params);
       }
       return;
@@ -193,6 +197,56 @@ function translateProfileState(state, params) {
       z: (state.plane.origin.z ?? 0) + delta.z,
     };
   }
+}
+
+function profilePushPullRemovesCap(profileState, targetState, params) {
+  const distance = params.distance ?? 0;
+  if (!Number.isFinite(distance) || distance >= -1e-8 || !profileState || !targetState) {
+    return false;
+  }
+
+  const axis = normalizeVector(params.axis ?? profileState.plane?.normal ?? { x: 0, y: 1, z: 0 });
+  const bounds = projectedTargetBounds(targetState, axis);
+  if (!bounds) {
+    return false;
+  }
+
+  const origin = profileState.plane?.origin ?? profileState.points?.[0] ?? { x: 0, y: 0, z: 0 };
+  const destination = dotVector(origin, axis) + distance;
+  const tolerance = 1e-5;
+  return destination <= bounds.min + tolerance || destination >= bounds.max - tolerance;
+}
+
+function projectedTargetBounds(state, axis) {
+  if (state.primitive !== "box") {
+    return null;
+  }
+
+  const center = state.position ?? { x: 0, y: 0, z: 0 };
+  const size = state.scale ?? { x: 1, y: 1, z: 1 };
+  const half = {
+    x: Math.abs(size.x ?? 1) / 2,
+    y: Math.abs(size.y ?? 1) / 2,
+    z: Math.abs(size.z ?? 1) / 2,
+  };
+
+  let min = Infinity;
+  let max = -Infinity;
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const projection = dotVector({
+          x: (center.x ?? 0) + sx * half.x,
+          y: (center.y ?? 0) + sy * half.y,
+          z: (center.z ?? 0) + sz * half.z,
+        }, axis);
+        min = Math.min(min, projection);
+        max = Math.max(max, projection);
+      }
+    }
+  }
+
+  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
 }
 
 function createShapeReplayContext({ features, r, sai, bakeObjectRotations = true }) {
@@ -438,6 +492,10 @@ function normalizeVector(vector) {
     return { x: 0, y: 0, z: 1 };
   }
   return { x: (vector.x ?? 0) / length, y: (vector.y ?? 0) / length, z: (vector.z ?? 0) / length };
+}
+
+function dotVector(a, b) {
+  return (a?.x ?? 0) * (b?.x ?? 0) + (a?.y ?? 0) * (b?.y ?? 0) + (a?.z ?? 0) * (b?.z ?? 0);
 }
 
 function dominantAxis(axis) {

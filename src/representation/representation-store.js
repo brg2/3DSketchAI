@@ -236,6 +236,11 @@ function previewProfilePushPullSceneState(exactSceneState, operation) {
     return null;
   }
 
+  if (profilePushPullRemovesCap(profileState, nextSceneState[profileState.targetId], operation.params)) {
+    delete nextSceneState[profileId];
+    return nextSceneState;
+  }
+
   translateProfilePreviewState(profileState, operation.params);
   return nextSceneState;
 }
@@ -248,6 +253,82 @@ function translateProfilePreviewState(state, params) {
   if (state.plane?.origin) {
     state.plane.origin = addVector(state.plane.origin, delta);
   }
+}
+
+function profilePushPullRemovesCap(profileState, targetState, params) {
+  const distance = params.distance ?? 0;
+  if (!Number.isFinite(distance) || distance >= -1e-8 || !profileState || !targetState) {
+    return false;
+  }
+
+  const axis = normalizeVector(params.axis ?? profileState.plane?.normal ?? { x: 0, y: 1, z: 0 });
+  const bounds = projectedStateBounds(targetState, axis);
+  if (!bounds) {
+    return false;
+  }
+
+  const origin = profileState.plane?.origin ?? profileState.points?.[0] ?? { x: 0, y: 0, z: 0 };
+  const destination = dotVector(origin, axis) + distance;
+  const tolerance = 1e-5;
+  return destination <= bounds.min + tolerance || destination >= bounds.max - tolerance;
+}
+
+function projectedStateBounds(state, axis) {
+  if (state.primitive === "brep_mesh") {
+    return projectedVerticesBounds(state.meshData?.vertices ?? state.meshData?.positions, axis);
+  }
+
+  if (state.primitive !== "box") {
+    return null;
+  }
+
+  const center = state.position ?? { x: 0, y: 0, z: 0 };
+  const size = state.scale ?? { x: 1, y: 1, z: 1 };
+  const half = {
+    x: Math.abs(size.x ?? 1) / 2,
+    y: Math.abs(size.y ?? 1) / 2,
+    z: Math.abs(size.z ?? 1) / 2,
+  };
+  return projectedPointsBounds([
+    { x: (center.x ?? 0) - half.x, y: (center.y ?? 0) - half.y, z: (center.z ?? 0) - half.z },
+    { x: (center.x ?? 0) - half.x, y: (center.y ?? 0) - half.y, z: (center.z ?? 0) + half.z },
+    { x: (center.x ?? 0) - half.x, y: (center.y ?? 0) + half.y, z: (center.z ?? 0) - half.z },
+    { x: (center.x ?? 0) - half.x, y: (center.y ?? 0) + half.y, z: (center.z ?? 0) + half.z },
+    { x: (center.x ?? 0) + half.x, y: (center.y ?? 0) - half.y, z: (center.z ?? 0) - half.z },
+    { x: (center.x ?? 0) + half.x, y: (center.y ?? 0) - half.y, z: (center.z ?? 0) + half.z },
+    { x: (center.x ?? 0) + half.x, y: (center.y ?? 0) + half.y, z: (center.z ?? 0) - half.z },
+    { x: (center.x ?? 0) + half.x, y: (center.y ?? 0) + half.y, z: (center.z ?? 0) + half.z },
+  ], axis);
+}
+
+function projectedVerticesBounds(vertices, axis) {
+  if (!Array.isArray(vertices) || vertices.length < 3) {
+    return null;
+  }
+
+  let min = Infinity;
+  let max = -Infinity;
+  for (let index = 0; index < vertices.length; index += 3) {
+    const projection = dotVector({
+      x: vertices[index + 0] ?? 0,
+      y: vertices[index + 1] ?? 0,
+      z: vertices[index + 2] ?? 0,
+    }, axis);
+    min = Math.min(min, projection);
+    max = Math.max(max, projection);
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
+}
+
+function projectedPointsBounds(points, axis) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const point of points) {
+    const projection = dotVector(point, axis);
+    min = Math.min(min, projection);
+    max = Math.max(max, projection);
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
 }
 
 function previewPushPullMeshData(meshData, operation) {
