@@ -761,7 +761,7 @@ body.code-collapsed .code-panel {
   display: grid;
   grid-template-columns: 1fr;
   gap: 6px;
-  color: #4f6580;
+  color: var(--muted);
   font-size: 0.74rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -775,10 +775,10 @@ body.code-collapsed .code-panel {
 
 .settings-field select {
   min-height: 34px;
-  border: 1px solid #b7c4d3;
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
-  background: #ffffff;
-  color: var(--ink);
+  background: var(--control-bg);
+  color: var(--text);
   padding: 6px 8px;
   font: inherit;
   text-transform: none;
@@ -786,7 +786,7 @@ body.code-collapsed .code-panel {
 }
 
 .settings-field output {
-  color: #1f7fc8;
+  color: var(--accent);
   font-size: 0.72rem;
   text-transform: none;
 }
