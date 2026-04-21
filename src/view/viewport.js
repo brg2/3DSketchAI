@@ -9,7 +9,7 @@ import {
   normalizeTerrainSeed,
   normalizeTerrainVariation,
 } from "../environment/ground-theme.js";
-import { normalizeSkyTheme, skyThemePreset } from "../theme/sky-theme.js";
+import { SKY_THEMES, normalizeSkyColor, normalizeSkyTheme, skyThemePreset } from "../theme/sky-theme.js";
 
 export const ZOOM_EXTENTS_ANIMATION_MS = 250;
 
@@ -115,13 +115,15 @@ export class Viewport {
     this.lights = { hemi, ambient, key };
   }
 
-  setSkyTheme(theme) {
+  setSkyTheme(theme, { solidColor = null } = {}) {
     const normalized = normalizeSkyTheme(theme);
-    if (normalized === this.skyTheme && this._skyThemeApplied) {
+    const normalizedSolidColor = normalized === SKY_THEMES.SOLID_COLOR ? normalizeSkyColor(solidColor) : null;
+    if (normalized === this.skyTheme && this._skyThemeApplied && normalizedSolidColor === this.skySolidColor) {
       return;
     }
     this.skyTheme = normalized;
-    const preset = skyThemePreset(normalized);
+    this.skySolidColor = normalizedSolidColor;
+    const preset = skyThemePreset(normalized, { solidColor: normalizedSolidColor ?? undefined });
 
     if (this.scene?.fog) {
       this.scene.fog.color.setHex(preset.fog.color);
@@ -154,6 +156,14 @@ export class Viewport {
       const pos = preset.lights.keyPos;
       if (Array.isArray(pos) && pos.length === 3) {
         this.lights.key.position.set(pos[0], pos[1], pos[2]);
+      }
+    }
+
+    if (this._skyCssTarget instanceof Element) {
+      if (normalizedSolidColor) {
+        this._skyCssTarget.style.setProperty("--sky-solid", normalizedSolidColor);
+      } else {
+        this._skyCssTarget.style.removeProperty("--sky-solid");
       }
     }
 
@@ -1605,6 +1615,10 @@ export class Viewport {
 
   _updateSkyCssFromCamera() {
     if (!(this._skyCssTarget instanceof Element)) {
+      return;
+    }
+
+    if (this.skyTheme === SKY_THEMES.SOLID_COLOR) {
       return;
     }
 

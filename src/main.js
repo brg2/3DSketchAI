@@ -20,7 +20,13 @@ const groundEffectsToggleButton = document.getElementById("ground-effects-toggle
 const devConsoleToggleButton = document.getElementById("dev-console-toggle");
 const groundRegenerateButton = document.getElementById("ground-regenerate");
 const groundThemeSelect = document.getElementById("ground-theme");
+const uiThemeSelect = document.getElementById("ui-theme");
 const skyThemeSelect = document.getElementById("sky-theme");
+const skySolidField = document.getElementById("sky-solid-field");
+const skySolidToggleButton = document.getElementById("sky-solid-toggle");
+const skySolidPopover = document.getElementById("sky-solid-popover");
+const skySolidColorInput = document.getElementById("sky-solid-color-input");
+const skySolidHexInput = document.getElementById("sky-solid-hex-input");
 const elevationVariationInput = document.getElementById("elevation-variation");
 const elevationVariationValue = document.getElementById("elevation-variation-value");
 const terrainVariationInput = document.getElementById("terrain-variation");
@@ -55,7 +61,13 @@ if (
   !devConsoleToggleButton ||
   !groundRegenerateButton ||
   !groundThemeSelect ||
+  !uiThemeSelect ||
   !skyThemeSelect ||
+  !skySolidField ||
+  !skySolidToggleButton ||
+  !skySolidPopover ||
+  !skySolidColorInput ||
+  !skySolidHexInput ||
   !elevationVariationInput ||
   !elevationVariationValue ||
   !terrainVariationInput ||
@@ -141,7 +153,13 @@ const app = new SketchApp({
   devConsoleToggleButton,
   groundRegenerateButton,
   groundThemeSelect,
+  uiThemeSelect,
   skyThemeSelect,
+  skySolidField,
+  skySolidToggleButton,
+  skySolidPopover,
+  skySolidColorInput,
+  skySolidHexInput,
   elevationVariationInput,
   elevationVariationValue,
   terrainVariationInput,

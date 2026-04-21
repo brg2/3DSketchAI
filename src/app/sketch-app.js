@@ -16,6 +16,8 @@ import { AppSessionStore } from "../persistence/app-session-store.js";
 import { ModelScriptHistoryStore } from "../persistence/model-script-history-store.js";
 import { createGroupingOperation, createPolylineOperation, createPrimitiveOperation, mapToolGestureToOperation } from "../operation/operation-mapper.js";
 import { OPERATION_TYPES, SELECTION_MODES } from "../operation/operation-types.js";
+import { SKY_THEMES, DEFAULT_SOLID_SKY_COLOR, normalizeSkyColor, normalizeSkyTheme, skyThemePreset } from "../theme/sky-theme.js";
+import { UI_THEME_MODES, normalizeUiThemeMode, resolveUiThemeMode } from "../theme/ui-theme.js";
 import {
   GROUND_THEMES,
   normalizeGroundTheme,
@@ -24,7 +26,6 @@ import {
   normalizeTerrainSeed,
   normalizeTerrainVariation,
 } from "../environment/ground-theme.js";
-import { normalizeSkyTheme, skyThemePreset } from "../theme/sky-theme.js";
 
 const TOOL_CONFIG = [
   { id: "select", label: "Select", icon: "cursor" },
@@ -88,7 +89,13 @@ export class SketchApp {
     devConsoleToggleButton,
     groundRegenerateButton,
     groundThemeSelect,
+    uiThemeSelect,
     skyThemeSelect,
+    skySolidField,
+    skySolidToggleButton,
+    skySolidPopover,
+    skySolidColorInput,
+    skySolidHexInput,
     elevationVariationInput,
     elevationVariationValue,
     terrainVariationInput,
@@ -117,7 +124,13 @@ export class SketchApp {
     this.devConsoleToggleButton = devConsoleToggleButton;
     this.groundRegenerateButton = groundRegenerateButton;
     this.groundThemeSelect = groundThemeSelect;
+    this.uiThemeSelect = uiThemeSelect;
     this.skyThemeSelect = skyThemeSelect;
+    this.skySolidField = skySolidField;
+    this.skySolidToggleButton = skySolidToggleButton;
+    this.skySolidPopover = skySolidPopover;
+    this.skySolidColorInput = skySolidColorInput;
+    this.skySolidHexInput = skySolidHexInput;
     this.elevationVariationInput = elevationVariationInput;
     this.elevationVariationValue = elevationVariationValue;
     this.terrainVariationInput = terrainVariationInput;
@@ -132,7 +145,15 @@ export class SketchApp {
     this.devConsoleVisible = false;
     this.modelName = DEFAULT_MODEL_NAME;
     this.exportMenuOpen = false;
+    this.uiThemeMode = normalizeUiThemeMode(UI_THEME_MODES.AUTO);
+    this.uiTheme = resolveUiThemeMode(this.uiThemeMode, this._prefersDarkColorScheme());
+    this._uiThemeApplied = false;
+    this._uiThemeMediaQuery = typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)")
+      : null;
     this.skyTheme = normalizeSkyTheme(null);
+    this.skySolidColor = normalizeSkyColor(DEFAULT_SOLID_SKY_COLOR);
+    this.skySolidPopoverOpen = false;
     this._skyThemeApplied = false;
     this.appSessionStore = new AppSessionStore();
     this.modelHistoryStore = new ModelScriptHistoryStore();
@@ -180,7 +201,8 @@ export class SketchApp {
     this.runtimeController.initialize({ scene: this.viewport.scene, seedSceneState: {} });
     this._initPreselectionOverlays();
     this._initLineDrawOverlay();
-    this._setSkyTheme(this.skyTheme, { persist: false });
+    this._setUiThemeMode(this.uiThemeMode, { persist: false, force: true });
+    this._setSkyTheme(this.skyTheme, { solidColor: this.skySolidColor, persist: false });
     this.viewport.controls.addEventListener("change", () => {
       this._scheduleSessionPersist();
       this._requestFrame();
@@ -588,34 +610,144 @@ export class SketchApp {
     this._attachDocumentNameHandlers();
     this._attachModelFileHandlers();
     this._attachExportHandlers();
+    this._attachUiThemeHandlers();
     this._attachSkyThemeHandlers();
   }
 
-  _attachSkyThemeHandlers() {
-    if (!this.skyThemeSelect) {
-      return;
+  _attachUiThemeHandlers() {
+    if (this.uiThemeSelect) {
+      this.uiThemeSelect.addEventListener("change", () => {
+        this._setUiThemeMode(this.uiThemeSelect.value);
+      });
     }
 
-    this.skyThemeSelect.addEventListener("change", () => {
-      this._setSkyTheme(this.skyThemeSelect.value);
-      void this._persistSessionState();
-    });
+    if (this._uiThemeMediaQuery && typeof this._uiThemeMediaQuery.addEventListener === "function") {
+      this._uiThemeMediaQuery.addEventListener("change", () => {
+        if (this.uiThemeMode === UI_THEME_MODES.AUTO) {
+          this._setUiThemeMode(this.uiThemeMode, { persist: false, force: true });
+        }
+      });
+    } else if (this._uiThemeMediaQuery && typeof this._uiThemeMediaQuery.addListener === "function") {
+      this._uiThemeMediaQuery.addListener(() => {
+        if (this.uiThemeMode === UI_THEME_MODES.AUTO) {
+          this._setUiThemeMode(this.uiThemeMode, { persist: false, force: true });
+        }
+      });
+    }
+
+    this._syncUiThemeControls();
+  }
+
+  _attachSkyThemeHandlers() {
+    if (this.skyThemeSelect) {
+      this.skyThemeSelect.addEventListener("change", () => {
+        this._setSkyTheme(this.skyThemeSelect.value);
+        void this._persistSessionState();
+      });
+    }
+
+    if (this.skySolidToggleButton && this.skySolidPopover) {
+      this.skySolidToggleButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this._setSkySolidPopoverOpen(!this.skySolidPopoverOpen);
+      });
+
+      document.addEventListener("pointerdown", (event) => {
+        if (!this.skySolidPopoverOpen) {
+          return;
+        }
+        const target = event.target;
+        if (
+          target instanceof Node &&
+          (this.skySolidPopover.contains(target) || this.skySolidToggleButton.contains(target))
+        ) {
+          return;
+        }
+        this._setSkySolidPopoverOpen(false);
+      });
+
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && this.skySolidPopoverOpen) {
+          this._setSkySolidPopoverOpen(false);
+          this.skySolidToggleButton.focus();
+        }
+      });
+    }
+
+    if (this.skySolidColorInput) {
+      const onColorInput = () => {
+        this._setSkySolidColor(this.skySolidColorInput.value);
+      };
+      this.skySolidColorInput.addEventListener("input", onColorInput);
+      this.skySolidColorInput.addEventListener("change", onColorInput);
+    }
+
+    if (this.skySolidHexInput) {
+      const onHexInput = () => {
+        this._setSkySolidColor(this.skySolidHexInput.value);
+      };
+      this.skySolidHexInput.addEventListener("input", onHexInput);
+      this.skySolidHexInput.addEventListener("change", onHexInput);
+      this.skySolidHexInput.addEventListener("blur", () => {
+        this.skySolidHexInput.value = this.skySolidColor.toUpperCase();
+      });
+    }
 
     this._syncSkyThemeControls();
   }
 
-  _setSkyTheme(theme, { persist = true } = {}) {
+  _prefersDarkColorScheme() {
+    return Boolean(this._uiThemeMediaQuery?.matches);
+  }
+
+  _setUiThemeMode(mode, { persist = true, force = false } = {}) {
+    const normalized = normalizeUiThemeMode(mode);
+    const resolved = resolveUiThemeMode(normalized, this._prefersDarkColorScheme());
+    if (!force && normalized === this.uiThemeMode && resolved === this.uiTheme && this._uiThemeApplied) {
+      return;
+    }
+
+    this.uiThemeMode = normalized;
+    this.uiTheme = resolved;
+
+    if (document.body?.dataset) {
+      document.body.dataset.uiThemeMode = normalized;
+      document.body.dataset.uiTheme = resolved;
+    }
+
+    this._syncUiThemeControls();
+    this._uiThemeApplied = true;
+    this._requestFrame();
+
+    if (persist) {
+      this._scheduleSessionPersist();
+    }
+  }
+
+  _syncUiThemeControls() {
+    if (this.uiThemeSelect) {
+      this.uiThemeSelect.value = this.uiThemeMode;
+    }
+  }
+
+  _setSkyTheme(theme, { solidColor = this.skySolidColor, persist = true } = {}) {
     const normalized = normalizeSkyTheme(theme);
-    if (normalized === this.skyTheme && this._skyThemeApplied) {
+    const normalizedSolidColor = normalizeSkyColor(solidColor, this.skySolidColor);
+    if (
+      normalized === this.skyTheme &&
+      this._skyThemeApplied &&
+      (normalized !== SKY_THEMES.SOLID_COLOR || normalizedSolidColor === this.skySolidColor)
+    ) {
       return;
     }
     this.skyTheme = normalized;
+    this.skySolidColor = normalizedSolidColor;
 
     document.body.dataset.skyTheme = normalized;
-    const preset = skyThemePreset(normalized);
-    const label = preset.uiLabel ?? "Sky Theme";
+    this._applySkyThemeDocumentTokens(normalized, this.skySolidColor);
+    const preset = skyThemePreset(normalized, { solidColor: this.skySolidColor });
 
-    this.viewport?.setSkyTheme?.(normalized);
+    this.viewport?.setSkyTheme?.(normalized, { solidColor: this.skySolidColor });
     this.representationStore?.setObjectColorHex?.(preset.objects.idle.color);
     this._syncSkyThemeControls();
     this._applySelectionHighlights();
@@ -628,10 +760,83 @@ export class SketchApp {
   }
 
   _syncSkyThemeControls() {
-    if (!this.skyThemeSelect) {
+    if (this.skyThemeSelect) {
+      this.skyThemeSelect.value = this.skyTheme;
+    }
+    const solidThemeActive = this.skyTheme === SKY_THEMES.SOLID_COLOR;
+    if (this.skySolidField) {
+      this.skySolidField.hidden = !solidThemeActive;
+    }
+    if (this.skySolidToggleButton) {
+      this.skySolidToggleButton.disabled = !solidThemeActive;
+      this.skySolidToggleButton.setAttribute("aria-expanded", String(solidThemeActive && this.skySolidPopoverOpen));
+    }
+    if (this.skySolidPopover && !solidThemeActive) {
+      this._setSkySolidPopoverOpen(false);
+    }
+    if (this.skySolidColorInput) {
+      this.skySolidColorInput.value = this.skySolidColor;
+    }
+    if (this.skySolidHexInput) {
+      this.skySolidHexInput.value = this.skySolidColor.toUpperCase();
+    }
+  }
+
+  _setSkySolidPopoverOpen(open) {
+    const shouldOpen = this.skyTheme === SKY_THEMES.SOLID_COLOR && Boolean(open);
+    this.skySolidPopoverOpen = shouldOpen;
+    if (this.skySolidPopover) {
+      this.skySolidPopover.hidden = !shouldOpen;
+    }
+    if (this.skySolidToggleButton) {
+      this.skySolidToggleButton.setAttribute("aria-expanded", String(shouldOpen));
+    }
+    if (shouldOpen && this.skySolidColorInput) {
+      window.setTimeout(() => this.skySolidColorInput?.focus(), 0);
+    }
+  }
+
+  _setSkySolidColor(value, { persist = true } = {}) {
+    const normalized = normalizeSkyColor(value, this.skySolidColor);
+    if (this.skyTheme !== SKY_THEMES.SOLID_COLOR) {
+      this.skySolidColor = normalized;
+      this._syncSkyThemeControls();
+      if (persist) {
+        this._scheduleSessionPersist();
+      }
       return;
     }
-    this.skyThemeSelect.value = this.skyTheme;
+
+    if (normalized === this.skySolidColor) {
+      return;
+    }
+
+    this.skySolidColor = normalized;
+    this._applySkyThemeDocumentTokens(this.skyTheme, normalized);
+    const preset = skyThemePreset(this.skyTheme, { solidColor: normalized });
+    this.viewport?.setSkyTheme?.(this.skyTheme, { solidColor: normalized });
+    this.representationStore?.setObjectColorHex?.(preset.objects.idle.color);
+    this._syncSkyThemeControls();
+    this._applySelectionHighlights();
+    this._requestFrame();
+
+    if (persist) {
+      this._scheduleSessionPersist();
+    }
+  }
+
+  _applySkyThemeDocumentTokens(theme, solidColor) {
+    const bodyStyle = document.body?.style;
+    if (!bodyStyle) {
+      return;
+    }
+
+    if (theme === SKY_THEMES.SOLID_COLOR) {
+      bodyStyle.setProperty("--sky-solid", normalizeSkyColor(solidColor));
+      return;
+    }
+
+    bodyStyle.removeProperty("--sky-solid");
   }
 
   _attachDocumentNameHandlers() {
@@ -942,7 +1147,7 @@ export class SketchApp {
   }
 
   _applySelectionHighlights() {
-    const preset = skyThemePreset(this.skyTheme);
+    const preset = skyThemePreset(this.skyTheme, { solidColor: this.skySolidColor });
     const colors = preset.objects;
     const selected = new Set(this.selectionPipeline.selectedObjectIds);
     const objectHoverEnabled = this.selectionPipeline.selectionMode === SELECTION_MODES.OBJECT;
@@ -3004,7 +3209,9 @@ export class SketchApp {
         panelPage: this.panelPage,
         devConsoleVisible: this.devConsoleVisible,
         modelName: this.modelName,
+        uiThemeMode: this.uiThemeMode,
         skyTheme: this.skyTheme,
+        skySolidColor: this.skySolidColor,
       },
       selection: {
         selectedObjectIds: [...this.selectionPipeline.selectedObjectIds],
@@ -3040,7 +3247,14 @@ export class SketchApp {
       this._setPanelPage(state?.ui?.panelPage ?? "script");
       this._setDevConsoleVisible(Boolean(state?.ui?.devConsoleVisible));
       this._setModelName(state?.ui?.modelName ?? DEFAULT_MODEL_NAME);
-      this._setSkyTheme(state?.ui?.skyTheme ?? this.skyTheme, { persist: false });
+      this._setUiThemeMode(state?.ui?.uiThemeMode ?? this.uiThemeMode, {
+        persist: false,
+        force: true,
+      });
+      this._setSkyTheme(state?.ui?.skyTheme ?? this.skyTheme, {
+        solidColor: state?.ui?.skySolidColor ?? this.skySolidColor,
+        persist: false,
+      });
       this._setGridVisible(Boolean(state?.scene?.gridVisible));
       this._setGroundEffectsVisible(state?.scene?.groundTheme?.groundEffectsVisible !== false);
       const savedGroundTheme = state?.scene?.groundTheme;
