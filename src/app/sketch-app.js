@@ -24,6 +24,7 @@ import {
   normalizeTerrainSeed,
   normalizeTerrainVariation,
 } from "../environment/ground-theme.js";
+import { normalizeSkyTheme, skyThemePreset } from "../theme/sky-theme.js";
 
 const TOOL_CONFIG = [
   { id: "select", label: "Select", icon: "cursor" },
@@ -87,6 +88,7 @@ export class SketchApp {
     devConsoleToggleButton,
     groundRegenerateButton,
     groundThemeSelect,
+    skyThemeSelect,
     elevationVariationInput,
     elevationVariationValue,
     terrainVariationInput,
@@ -115,6 +117,7 @@ export class SketchApp {
     this.devConsoleToggleButton = devConsoleToggleButton;
     this.groundRegenerateButton = groundRegenerateButton;
     this.groundThemeSelect = groundThemeSelect;
+    this.skyThemeSelect = skyThemeSelect;
     this.elevationVariationInput = elevationVariationInput;
     this.elevationVariationValue = elevationVariationValue;
     this.terrainVariationInput = terrainVariationInput;
@@ -129,6 +132,8 @@ export class SketchApp {
     this.devConsoleVisible = false;
     this.modelName = DEFAULT_MODEL_NAME;
     this.exportMenuOpen = false;
+    this.skyTheme = normalizeSkyTheme(null);
+    this._skyThemeApplied = false;
     this.appSessionStore = new AppSessionStore();
     this.modelHistoryStore = new ModelScriptHistoryStore();
     this.modelHistory = new ModelScriptHistory();
@@ -175,6 +180,7 @@ export class SketchApp {
     this.runtimeController.initialize({ scene: this.viewport.scene, seedSceneState: {} });
     this._initPreselectionOverlays();
     this._initLineDrawOverlay();
+    this._setSkyTheme(this.skyTheme, { persist: false });
     this.viewport.controls.addEventListener("change", () => {
       this._scheduleSessionPersist();
       this._requestFrame();
@@ -579,6 +585,50 @@ export class SketchApp {
     this._attachDocumentNameHandlers();
     this._attachModelFileHandlers();
     this._attachExportHandlers();
+    this._attachSkyThemeHandlers();
+  }
+
+  _attachSkyThemeHandlers() {
+    if (!this.skyThemeSelect) {
+      return;
+    }
+
+    this.skyThemeSelect.addEventListener("change", () => {
+      this._setSkyTheme(this.skyThemeSelect.value);
+      void this._persistSessionState();
+    });
+
+    this._syncSkyThemeControls();
+  }
+
+  _setSkyTheme(theme, { persist = true } = {}) {
+    const normalized = normalizeSkyTheme(theme);
+    if (normalized === this.skyTheme && this._skyThemeApplied) {
+      return;
+    }
+    this.skyTheme = normalized;
+
+    document.body.dataset.skyTheme = normalized;
+    const preset = skyThemePreset(normalized);
+    const label = preset.uiLabel ?? "Sky Theme";
+
+    this.viewport?.setSkyTheme?.(normalized);
+    this.representationStore?.setObjectColorHex?.(preset.objects.idle.color);
+    this._syncSkyThemeControls();
+    this._applySelectionHighlights();
+    this._requestFrame();
+    this._skyThemeApplied = true;
+
+    if (persist) {
+      this._scheduleSessionPersist();
+    }
+  }
+
+  _syncSkyThemeControls() {
+    if (!this.skyThemeSelect) {
+      return;
+    }
+    this.skyThemeSelect.value = this.skyTheme;
   }
 
   _attachDocumentNameHandlers() {
@@ -889,21 +939,33 @@ export class SketchApp {
   }
 
   _applySelectionHighlights() {
+    const preset = skyThemePreset(this.skyTheme);
+    const colors = preset.objects;
     const selected = new Set(this.selectionPipeline.selectedObjectIds);
     const objectHoverEnabled = this.selectionPipeline.selectionMode === SELECTION_MODES.OBJECT;
     const objectSelectionEnabled = this.selectionPipeline.selectionMode === SELECTION_MODES.OBJECT;
     for (const mesh of this.representationStore.getSelectableMeshes()) {
       const objectId = mesh.userData.objectId;
       if (objectSelectionEnabled && selected.has(objectId)) {
-        mesh.material.emissive?.setHex(0x183a5b);
-        mesh.material.color.setHex(0x7dc8ff);
+        mesh.material.emissive?.setHex(colors.selected.emissive);
+        mesh.material.color.setHex(colors.selected.color);
       } else if (objectHoverEnabled && objectId === this.hoveredObjectId) {
-        mesh.material.emissive?.setHex(0x1d4468);
-        mesh.material.color.setHex(0x7dc8ff);
+        mesh.material.emissive?.setHex(colors.hover.emissive);
+        mesh.material.color.setHex(colors.hover.color);
       } else {
-        mesh.material.emissive?.setHex(0x000000);
-        mesh.material.color.setHex(mesh.userData.baseColor ?? 0x7aa2f7);
+        mesh.material.emissive?.setHex(colors.idle.emissive);
+        mesh.material.color.setHex(mesh.userData.baseColor ?? colors.idle.color);
       }
+    }
+
+    if (this.preselectionFaceOverlay?.material?.color) {
+      this.preselectionFaceOverlay.material.color.setHex(colors.preselect);
+    }
+    if (this.preselectionEdgeOverlay?.material?.color) {
+      this.preselectionEdgeOverlay.material.color.setHex(colors.preselect);
+    }
+    if (this.preselectionVertexOverlay?.material?.color) {
+      this.preselectionVertexOverlay.material.color.setHex(colors.preselect);
     }
 
     this._updatePreselectionOverlays();
@@ -2910,6 +2972,7 @@ export class SketchApp {
         panelPage: this.panelPage,
         devConsoleVisible: this.devConsoleVisible,
         modelName: this.modelName,
+        skyTheme: this.skyTheme,
       },
       selection: {
         selectedObjectIds: [...this.selectionPipeline.selectedObjectIds],
@@ -2945,6 +3008,7 @@ export class SketchApp {
       this._setPanelPage(state?.ui?.panelPage ?? "script");
       this._setDevConsoleVisible(Boolean(state?.ui?.devConsoleVisible));
       this._setModelName(state?.ui?.modelName ?? DEFAULT_MODEL_NAME);
+      this._setSkyTheme(state?.ui?.skyTheme ?? this.skyTheme, { persist: false });
       this._setGridVisible(Boolean(state?.scene?.gridVisible));
       this._setGroundEffectsVisible(state?.scene?.groundTheme?.groundEffectsVisible !== false);
       const savedGroundTheme = state?.scene?.groundTheme;
