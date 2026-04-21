@@ -188,12 +188,25 @@ test.describe("line draw tool", () => {
     await page.getByRole("button", { name: "Face" }).click();
     await activateTool(page, "Line Draw");
 
+    const face = await page.evaluate(() => window.__TEST_API__.getFaceData("cube")[0]);
+    expect(face).toBeTruthy();
+    await page.mouse.move(face.click.x, face.click.y);
+    await page.evaluate(() => window.__TEST_API__.nextFrame(5));
+
+    let overlay = await page.evaluate(() => window.__TEST_API__.getLineDrawOverlayState());
+    expect(overlay.active).toBe(false);
+    expect(overlay.snapVisible).toBe(true);
+    expect(overlay.snapPoint.x).toBeCloseTo(face.center.x, 5);
+    expect(overlay.snapPoint.y).toBeCloseTo(face.center.y, 5);
+    expect(overlay.snapPoint.z).toBeCloseTo(face.center.z, 5);
+    await expectCanvasSnapshot(page, "line-draw-start-unsnapped-preview.png");
+
     const vertex = await page.evaluate(() => window.__TEST_API__.getVertexData("cube")[0]);
     expect(vertex).toBeTruthy();
     await page.mouse.move(vertex.click.x, vertex.click.y);
     await page.evaluate(() => window.__TEST_API__.nextFrame(5));
 
-    let overlay = await page.evaluate(() => window.__TEST_API__.getLineDrawOverlayState());
+    overlay = await page.evaluate(() => window.__TEST_API__.getLineDrawOverlayState());
     expect(overlay.active).toBe(false);
     expect(overlay.snapVisible).toBe(true);
     expect(overlay.snapPoint.x).toBeCloseTo(vertex.world.x, 5);

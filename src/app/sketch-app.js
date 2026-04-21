@@ -1503,7 +1503,7 @@ export class SketchApp {
     }
 
     const snap = this._snapLineDrawPoint(event, hitPoint, { targetId: hover.objectId, includeLinePoints: false });
-    this._setLineDrawSnapPreview(snap?.point ?? null);
+    this._setLineDrawSnapPreview(snap?.point ?? hitPoint);
   }
 
   _appendLineDrawPoint(point) {
