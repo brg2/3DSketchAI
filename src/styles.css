@@ -1,6 +1,9 @@
 :root {
   --bg: #efefef;
   --panel: #ffffff;
+  --panel-rgb: 255 255 255;
+  --chrome: var(--panel);
+  --chrome-rgb: var(--panel-rgb);
   --line: #d1d6dd;
   --line-strong: #b5bdc8;
   --text: #1a2a3a;
@@ -8,6 +11,14 @@
   --accent: #1b8ad8;
   --accent-soft: #e3f2fc;
   --code-bg: #f7f9fc;
+  --control-bg: var(--panel);
+  --control-hover-bg: #f9fcff;
+  --control-active-bg: var(--accent-soft);
+  --menu-bg: var(--panel);
+  --viewport-border: rgba(0, 0, 0, 0.06);
+  --sky-top: #59b1ff;
+  --sky-mid: #d9f0ff;
+  --sky-bottom: #f9fdff;
   --sidebar-width: 40px;
 }
 
@@ -32,6 +43,116 @@ body.app-loading {
 body.app-loading #app-shell {
   opacity: 0;
   pointer-events: none;
+}
+
+body[data-sky-theme="clearNoon"] {
+  --bg: #eef3f8;
+  --panel: #ffffff;
+  --panel-rgb: 255 255 255;
+  --chrome: #ffffff;
+  --chrome-rgb: 255 255 255;
+  --line: #d1d6dd;
+  --line-strong: #b5bdc8;
+  --text: #162738;
+  --muted: #667a91;
+  --accent: #1b8ad8;
+  --accent-soft: #e3f2fc;
+  --control-bg: #ffffff;
+  --control-hover-bg: #f9fcff;
+  --control-active-bg: #e3f2fc;
+  --menu-bg: #ffffff;
+  --viewport-border: rgba(11, 34, 52, 0.08);
+  --sky-top: #59b1ff;
+  --sky-mid: #d9f0ff;
+  --sky-bottom: #f9fdff;
+}
+
+body[data-sky-theme="goldenHour"] {
+  --bg: #f7f1e9;
+  --panel: #fffdf9;
+  --panel-rgb: 255 253 249;
+  --chrome: #fffdf9;
+  --chrome-rgb: 255 253 249;
+  --line: #ead6c3;
+  --line-strong: #d3b79d;
+  --text: #2c1f15;
+  --muted: #7a5a43;
+  --accent: #d37a1e;
+  --accent-soft: #ffefd8;
+  --control-bg: #fffdf9;
+  --control-hover-bg: #fff6e8;
+  --control-active-bg: #ffefd8;
+  --menu-bg: #fffdf9;
+  --viewport-border: rgba(72, 32, 10, 0.12);
+  --sky-top: #ffb35e;
+  --sky-mid: #ffe1b8;
+  --sky-bottom: #fff7ee;
+}
+
+body[data-sky-theme="overcast"] {
+  --bg: #edf2f5;
+  --panel: #f7fafc;
+  --panel-rgb: 247 250 252;
+  --chrome: #f7fafc;
+  --chrome-rgb: 247 250 252;
+  --line: #cfd9e0;
+  --line-strong: #b7c4ce;
+  --text: #1c2a30;
+  --muted: #63757d;
+  --accent: #2a8d8c;
+  --accent-soft: #dff4f3;
+  --control-bg: #f7fafc;
+  --control-hover-bg: #eff6fb;
+  --control-active-bg: #dff4f3;
+  --menu-bg: #f7fafc;
+  --viewport-border: rgba(17, 35, 44, 0.1);
+  --sky-top: #9fb3c2;
+  --sky-mid: #d7e0e8;
+  --sky-bottom: #f6f8fa;
+}
+
+body[data-sky-theme="rainstorm"] {
+  --bg: #0f1722;
+  --panel: #162334;
+  --panel-rgb: 22 35 52;
+  --chrome: #121f2f;
+  --chrome-rgb: 18 31 47;
+  --line: #2b3b50;
+  --line-strong: #39506c;
+  --text: #e8f1ff;
+  --muted: #a8bbd1;
+  --accent: #36b3e5;
+  --accent-soft: #103545;
+  --control-bg: #162334;
+  --control-hover-bg: #1b2b40;
+  --control-active-bg: #103545;
+  --menu-bg: #162334;
+  --viewport-border: rgba(105, 170, 210, 0.18);
+  --sky-top: #071627;
+  --sky-mid: #12324b;
+  --sky-bottom: #285a6e;
+}
+
+body[data-sky-theme="nightSky"] {
+  --bg: #070b12;
+  --panel: #101a26;
+  --panel-rgb: 16 26 38;
+  --chrome: #0b1522;
+  --chrome-rgb: 11 21 34;
+  --line: #223145;
+  --line-strong: #2f4662;
+  --text: #e8eff8;
+  --muted: #98a9bf;
+  --accent: #4cc9a8;
+  --accent-soft: #0f2b2a;
+  --control-bg: #101a26;
+  --control-hover-bg: #142235;
+  --control-active-bg: #0f2b2a;
+  --menu-bg: #101a26;
+  --viewport-border: rgba(120, 210, 195, 0.18);
+  --sky-top: #020816;
+  --sky-mid: #0b1f44;
+  --sky-bottom: #23436d;
 }
 
 #app-shell {
@@ -286,7 +407,7 @@ body.code-collapsed #app-shell {
   align-items: center;
   justify-content: space-between;
   padding: 0 12px;
-  background: #ffffff;
+  background: var(--chrome);
   border-bottom: 1px solid var(--line);
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
   z-index: 6;
@@ -312,14 +433,14 @@ body.code-collapsed #app-shell {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  color: #24292f;
+  color: var(--text);
   text-decoration: none;
   flex: 0 0 auto;
 }
 
 .github-brand-link:hover,
 .github-brand-link:focus-visible {
-  background: #f0f4f8;
+  background: var(--control-hover-bg);
   outline: none;
 }
 
@@ -347,7 +468,7 @@ body.code-collapsed #app-shell {
 .doc-name:hover,
 .doc-name:focus {
   border-color: var(--line-strong);
-  background: #f9fcff;
+  background: var(--control-hover-bg);
   color: var(--text);
 }
 
@@ -359,7 +480,7 @@ body.code-collapsed #app-shell {
 
 button {
   border: 1px solid var(--line-strong);
-  background: #ffffff;
+  background: var(--control-bg);
   color: var(--text);
   border-radius: 8px;
   min-height: 34px;
@@ -370,12 +491,12 @@ button {
 
 button:hover {
   border-color: var(--accent);
-  background: #f9fcff;
+  background: var(--control-hover-bg);
 }
 
 button.active {
   border-color: var(--accent);
-  background: var(--accent-soft);
+  background: var(--control-active-bg);
 }
 
 .sidebar {
@@ -410,10 +531,11 @@ button.active {
   min-height: 22px;
   padding: 0;
   border-color: transparent;
-  background-color: rgba(255, 255, 255, 0.88);
+  background-color: rgb(var(--chrome-rgb) / 0.88);
   background-position: center;
   background-repeat: no-repeat;
   background-size: 22px 10px;
+  color: var(--accent);
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
@@ -421,7 +543,7 @@ button.active {
 
 .sidebar-scroll-control:hover {
   border-color: transparent;
-  background-color: rgba(255, 255, 255, 0.96);
+  background-color: rgb(var(--chrome-rgb) / 0.96);
 }
 
 .sidebar .sidebar-scroll-control {
@@ -432,12 +554,12 @@ button.active {
 
 .sidebar .sidebar-scroll-up {
   top: 0;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 12'%3E%3Cpath d='M3 9 L12 3 L21 9' fill='none' stroke='%231b8ad8' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 12'%3E%3Cpath d='M3 9 L12 3 L21 9' fill='none' stroke='currentColor' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 .sidebar .sidebar-scroll-down {
   bottom: 0;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 12'%3E%3Cpath d='M3 3 L12 9 L21 3' fill='none' stroke='%231b8ad8' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 12'%3E%3Cpath d='M3 3 L12 9 L21 3' fill='none' stroke='currentColor' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 .sidebar.can-scroll-up .sidebar-scroll-up,
@@ -473,7 +595,19 @@ button.active {
   position: relative;
   min-width: 0;
   min-height: 0;
-  background: #d8d8d8;
+  background:
+    radial-gradient(
+      circle at var(--sky-light-x, 50%) var(--sky-light-y, 38%),
+      rgb(var(--panel-rgb) / 0.22) 0%,
+      rgb(var(--panel-rgb) / 0) 58%
+    ),
+    linear-gradient(
+      180deg,
+      var(--sky-top) 0%,
+      var(--sky-mid) var(--sky-horizon, 58%),
+      var(--sky-bottom) 100%
+    );
+  box-shadow: inset 0 0 0 1px var(--viewport-border);
 }
 
 #viewport {
@@ -536,7 +670,7 @@ button.active {
 
 .actions .icon-btn {
   border: 1px solid var(--line-strong);
-  background: #ffffff;
+  background: var(--control-bg);
   color: var(--text);
   border-radius: 8px;
   padding: 0 10px;
@@ -546,7 +680,7 @@ button.active {
 
 .actions .icon-btn:hover {
   border-color: var(--accent);
-  background: #f9fcff;
+  background: var(--control-hover-bg);
 }
 
 .actions .icon-btn:disabled {
@@ -587,7 +721,7 @@ button.active {
   padding: 5px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
-  background: #ffffff;
+  background: var(--menu-bg);
   box-shadow: 0 10px 28px rgba(20, 35, 50, 0.16);
 }
 
@@ -617,19 +751,19 @@ button.active {
   min-width: 260px;
   padding: 10px;
   border-radius: 8px;
-  border: 1px solid #c9d1dc;
-  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--line);
+  background: rgb(var(--panel-rgb) / 0.82);
   font-size: 0.76rem;
-  color: #2a3a4f;
+  color: var(--text);
 }
 
 #overlay strong {
-  color: #1b8ad8;
+  color: var(--accent);
 }
 
 .code-panel {
   min-width: 0;
-  background: #ffffff;
+  background: var(--panel);
   border-left: 1px solid var(--line);
   padding: 10px;
   display: flex;

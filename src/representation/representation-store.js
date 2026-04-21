@@ -1280,6 +1280,14 @@ export class RepresentationStore {
     this.meshById = new Map();
     this.exactSceneState = {};
     this.previewOperation = null;
+    this.objectColorHex = 0x7aa2f7;
+  }
+
+  setObjectColorHex(hex) {
+    if (typeof hex !== "number" || !Number.isFinite(hex)) {
+      return;
+    }
+    this.objectColorHex = Math.max(0, Math.min(0xffffff, Math.floor(hex)));
   }
 
   bindScene(scene) {
@@ -1361,7 +1369,8 @@ export class RepresentationStore {
       applyTransform(mesh, state);
       mesh.castShadow = state.primitive === "brep_mesh";
       mesh.receiveShadow = state.primitive === "brep_mesh";
-      mesh.userData.baseColor = state.primitive === "polyline" && !isSplitProfileState(state) ? 0x24a148 : 0x7aa2f7;
+      mesh.userData.baseColor =
+        state.primitive === "polyline" && !isSplitProfileState(state) ? 0x24a148 : this.objectColorHex;
       mesh.material.color?.setHex(mesh.userData.baseColor);
       if (isSplitProfileState(state)) {
         mesh.material.depthTest = true;

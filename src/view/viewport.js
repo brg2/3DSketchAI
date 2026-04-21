@@ -9,6 +9,7 @@ import {
   normalizeTerrainSeed,
   normalizeTerrainVariation,
 } from "../environment/ground-theme.js";
+import { normalizeSkyTheme, skyThemePreset } from "../theme/sky-theme.js";
 
 export const ZOOM_EXTENTS_ANIMATION_MS = 250;
 
@@ -38,19 +39,35 @@ export class Viewport {
     this.terrainDensity = 0.5;
     this.terrainSeed = 0;
     this.groundEffectsVisible = true;
+    this.skyTheme = normalizeSkyTheme(null);
+    this._skyMotionYawDeg = null;
+    this._skyMotionPitchDeg = null;
+    this._skyMotionHorizonPct = null;
+    this._skyMotionLightXPct = null;
+    this._skyMotionLightYPct = null;
+    this._skyMotionDir = new THREE.Vector3();
+    this._skyCssTarget = canvas?.parentElement ?? null;
+    if (this._skyCssTarget instanceof Element) {
+      // Provide safe defaults; values are updated each frame.
+      this._skyCssTarget.style.setProperty("--sky-horizon", "58%");
+      this._skyCssTarget.style.setProperty("--sky-light-x", "50%");
+      this._skyCssTarget.style.setProperty("--sky-light-y", "38%");
+    }
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0xeef3f8);
+    // Sky is rendered via CSS behind the canvas. Keep the renderer transparent.
+    this.scene.background = null;
     this.scene.fog = new THREE.Fog(0xeef3f8, 38, 160);
 
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 2000);
     this.camera.position.set(6, 6, 8);
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.setClearColor(0x000000, 0);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -63,6 +80,7 @@ export class Viewport {
 
     this._setupLights();
     this._setupGround();
+    this.setSkyTheme(this.skyTheme);
     this.resize();
 
     window.addEventListener("resize", () => {
@@ -93,6 +111,54 @@ export class Viewport {
     key.shadow.camera.bottom = -36;
     key.shadow.normalBias = 0.015;
     this.scene.add(key);
+
+    this.lights = { hemi, ambient, key };
+  }
+
+  setSkyTheme(theme) {
+    const normalized = normalizeSkyTheme(theme);
+    if (normalized === this.skyTheme && this._skyThemeApplied) {
+      return;
+    }
+    this.skyTheme = normalized;
+    const preset = skyThemePreset(normalized);
+
+    if (this.scene?.fog) {
+      this.scene.fog.color.setHex(preset.fog.color);
+      this.scene.fog.near = preset.fog.near;
+      this.scene.fog.far = preset.fog.far;
+    }
+
+    if (this.gridHelper?.material) {
+      const materials = Array.isArray(this.gridHelper.material) ? this.gridHelper.material : [this.gridHelper.material];
+      if (materials[0]?.color) {
+        materials[0].color.setHex(preset.grid.major);
+      }
+      if (materials[1]?.color) {
+        materials[1].color.setHex(preset.grid.minor);
+      } else if (materials[0]?.color) {
+        materials[0].color.setHex(preset.grid.minor);
+      }
+    }
+
+    if (this.lights) {
+      this.lights.hemi.color.setHex(preset.lights.hemiSky);
+      this.lights.hemi.groundColor.setHex(preset.lights.hemiGround);
+      this.lights.hemi.intensity = preset.lights.hemiIntensity;
+
+      this.lights.ambient.color.setHex(preset.lights.ambient);
+      this.lights.ambient.intensity = preset.lights.ambientIntensity;
+
+      this.lights.key.color.setHex(preset.lights.key);
+      this.lights.key.intensity = preset.lights.keyIntensity;
+      const pos = preset.lights.keyPos;
+      if (Array.isArray(pos) && pos.length === 3) {
+        this.lights.key.position.set(pos[0], pos[1], pos[2]);
+      }
+    }
+
+    this._skyThemeApplied = true;
+    this._requestFrame();
   }
 
   _setupGround() {
@@ -1537,6 +1603,56 @@ export class Viewport {
     return true;
   }
 
+  _updateSkyCssFromCamera() {
+    if (!(this._skyCssTarget instanceof Element)) {
+      return;
+    }
+
+    const preset = skyThemePreset(this.skyTheme);
+    const motion = preset.skyMotion;
+
+    this.camera.getWorldDirection(this._skyMotionDir);
+    const dir = this._skyMotionDir;
+    const yaw = Math.atan2(dir.x, dir.z) * (180 / Math.PI);
+    const pitch = Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1)) * (180 / Math.PI);
+
+    const horizonBase = motion?.horizonBasePct ?? 58;
+    const horizonScale = motion?.horizonPitchScale ?? 12;
+    const horizonPct = THREE.MathUtils.clamp(horizonBase + (pitch / 90) * horizonScale, 28, 78);
+
+    // Keep the zenith-to-horizon gradient stable; use yaw to shift a soft highlight
+    // left/right so the "sun side" changes with view without rotating the sky sideways.
+    const yawRad = (yaw + (motion?.angleYawOffsetDeg ?? 0)) * (Math.PI / 180);
+    const lightX = THREE.MathUtils.clamp(50 + Math.sin(yawRad) * 18, 20, 80);
+    const lightY = THREE.MathUtils.clamp(horizonPct - 18 + (pitch / 90) * 6, 16, 70);
+
+    const roundedYaw = Math.round(yaw * 10) / 10;
+    const roundedPitch = Math.round(pitch * 10) / 10;
+    const roundedHorizon = Math.round(horizonPct * 10) / 10;
+    const roundedLightX = Math.round(lightX * 10) / 10;
+    const roundedLightY = Math.round(lightY * 10) / 10;
+
+    if (
+      this._skyMotionYawDeg === roundedYaw &&
+      this._skyMotionPitchDeg === roundedPitch &&
+      this._skyMotionHorizonPct === roundedHorizon &&
+      this._skyMotionLightXPct === roundedLightX &&
+      this._skyMotionLightYPct === roundedLightY
+    ) {
+      return;
+    }
+
+    this._skyMotionYawDeg = roundedYaw;
+    this._skyMotionPitchDeg = roundedPitch;
+    this._skyMotionHorizonPct = roundedHorizon;
+    this._skyMotionLightXPct = roundedLightX;
+    this._skyMotionLightYPct = roundedLightY;
+
+    this._skyCssTarget.style.setProperty("--sky-horizon", `${roundedHorizon}%`);
+    this._skyCssTarget.style.setProperty("--sky-light-x", `${roundedLightX}%`);
+    this._skyCssTarget.style.setProperty("--sky-light-y", `${roundedLightY}%`);
+  }
+
   frame() {
     this.resize();
     let needsNextFrame = false;
@@ -1566,6 +1682,8 @@ export class Viewport {
         }
       }
     }
+
+    this._updateSkyCssFromCamera();
     this.renderer.render(this.scene, this.camera);
     return needsNextFrame;
   }

@@ -20,6 +20,7 @@ const groundEffectsToggleButton = document.getElementById("ground-effects-toggle
 const devConsoleToggleButton = document.getElementById("dev-console-toggle");
 const groundRegenerateButton = document.getElementById("ground-regenerate");
 const groundThemeSelect = document.getElementById("ground-theme");
+const skyThemeSelect = document.getElementById("sky-theme");
 const elevationVariationInput = document.getElementById("elevation-variation");
 const elevationVariationValue = document.getElementById("elevation-variation-value");
 const terrainVariationInput = document.getElementById("terrain-variation");
@@ -54,6 +55,7 @@ if (
   !devConsoleToggleButton ||
   !groundRegenerateButton ||
   !groundThemeSelect ||
+  !skyThemeSelect ||
   !elevationVariationInput ||
   !elevationVariationValue ||
   !terrainVariationInput ||
@@ -139,6 +141,7 @@ const app = new SketchApp({
   devConsoleToggleButton,
   groundRegenerateButton,
   groundThemeSelect,
+  skyThemeSelect,
   elevationVariationInput,
   elevationVariationValue,
   terrainVariationInput,
