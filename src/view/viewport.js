@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
+  DEFAULT_SOLID_GROUND_COLOR,
   GROUND_THEMES,
   createGroundThemeGroup,
+  normalizeGroundColor,
   normalizeGroundTheme,
   normalizeElevationVariation,
   normalizeTerrainDensity,
@@ -40,6 +42,7 @@ export class Viewport {
     this.terrainVariation = 0.5;
     this.terrainDensity = 0.5;
     this.terrainSeed = 0;
+    this.groundSolidColor = normalizeGroundColor(DEFAULT_SOLID_GROUND_COLOR);
     this.groundEffectsVisible = true;
     this.skyTheme = normalizeSkyTheme(null);
     this._skyMotionYawDeg = null;
@@ -155,6 +158,7 @@ export class Viewport {
       terrainVariation: 0.5,
       terrainDensity: 0.5,
       terrainSeed: 0,
+      solidColor: this.groundSolidColor,
     });
     this.setGridVisible(false);
   }
@@ -165,12 +169,14 @@ export class Viewport {
     terrainVariation = this.terrainVariation,
     terrainDensity = this.terrainDensity,
     terrainSeed = this.terrainSeed,
+    solidColor = this.groundSolidColor,
   } = {}) {
     this.groundTheme = normalizeGroundTheme(theme);
     this.elevationVariation = normalizeElevationVariation(elevationVariation);
     this.terrainVariation = normalizeTerrainVariation(terrainVariation);
     this.terrainDensity = normalizeTerrainDensity(terrainDensity);
     this.terrainSeed = normalizeTerrainSeed(terrainSeed);
+    this.groundSolidColor = normalizeGroundColor(solidColor, this.groundSolidColor);
 
     if (this.groundThemeGroup) {
       this.scene.remove(this.groundThemeGroup);
@@ -183,6 +189,7 @@ export class Viewport {
       terrainVariation: this.terrainVariation,
       terrainDensity: this.terrainDensity,
       terrainSeed: this.terrainSeed,
+      solidColor: this.groundSolidColor,
     });
     this.groundThemeGroup.visible = this.groundEffectsVisible;
     this.scene.add(this.groundThemeGroup);
@@ -196,6 +203,7 @@ export class Viewport {
       terrainVariation: this.terrainVariation,
       terrainDensity: this.terrainDensity,
       terrainSeed: this.terrainSeed,
+      solidColor: this.groundSolidColor,
       groundEffectsVisible: this.groundEffectsVisible,
     };
   }

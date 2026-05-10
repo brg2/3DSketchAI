@@ -19,7 +19,9 @@ import { OPERATION_TYPES, SELECTION_MODES } from "../operation/operation-types.j
 import { SKY_THEMES, DEFAULT_SOLID_SKY_COLOR, normalizeSkyColor, normalizeSkyTheme, skyThemePreset } from "../theme/sky-theme.js";
 import { UI_THEME_MODES, normalizeUiThemeMode, resolveUiThemeMode } from "../theme/ui-theme.js";
 import {
+  DEFAULT_SOLID_GROUND_COLOR,
   GROUND_THEMES,
+  normalizeGroundColor,
   normalizeGroundTheme,
   normalizeElevationVariation,
   normalizeTerrainDensity,
@@ -35,8 +37,8 @@ const TOOL_CONFIG = [
   { id: "lineDraw", label: "Line Draw", icon: "lineDraw" },
 ];
 
-const DEFAULT_GROUND_THEME = GROUND_THEMES.FOREST;
-const DEFAULT_ELEVATION_VARIATION = 1;
+const DEFAULT_GROUND_THEME = GROUND_THEMES.AUTO;
+const DEFAULT_ELEVATION_VARIATION = 0.5;
 const DEFAULT_TERRAIN_VARIATION = 0.5;
 const DEFAULT_TERRAIN_DENSITY = 0.5;
 const DEFAULT_TERRAIN_SEED = 0;
@@ -88,7 +90,13 @@ export class SketchApp {
     groundEffectsToggleButton,
     devConsoleToggleButton,
     groundRegenerateButton,
+    groundResetButton,
     groundThemeSelect,
+    groundSolidField,
+    groundSolidToggleButton,
+    groundSolidPopover,
+    groundSolidColorInput,
+    groundSolidHexInput,
     uiThemeSelect,
     skyThemeSelect,
     skySolidField,
@@ -123,7 +131,13 @@ export class SketchApp {
     this.groundEffectsToggleButton = groundEffectsToggleButton;
     this.devConsoleToggleButton = devConsoleToggleButton;
     this.groundRegenerateButton = groundRegenerateButton;
+    this.groundResetButton = groundResetButton;
     this.groundThemeSelect = groundThemeSelect;
+    this.groundSolidField = groundSolidField;
+    this.groundSolidToggleButton = groundSolidToggleButton;
+    this.groundSolidPopover = groundSolidPopover;
+    this.groundSolidColorInput = groundSolidColorInput;
+    this.groundSolidHexInput = groundSolidHexInput;
     this.uiThemeSelect = uiThemeSelect;
     this.skyThemeSelect = skyThemeSelect;
     this.skySolidField = skySolidField;
@@ -151,10 +165,13 @@ export class SketchApp {
     this._uiThemeMediaQuery = typeof window.matchMedia === "function"
       ? window.matchMedia("(prefers-color-scheme: dark)")
       : null;
-    this.skyTheme = normalizeSkyTheme(null);
+    this.skyTheme = normalizeSkyTheme(SKY_THEMES.AUTO);
     this.skySolidColor = normalizeSkyColor(DEFAULT_SOLID_SKY_COLOR);
     this.skySolidPopoverOpen = false;
     this._skyThemeApplied = false;
+    this.groundThemeSelection = normalizeGroundTheme(DEFAULT_GROUND_THEME);
+    this.groundSolidColor = normalizeGroundColor(DEFAULT_SOLID_GROUND_COLOR);
+    this.groundSolidPopoverOpen = false;
     this.appSessionStore = new AppSessionStore();
     this.modelHistoryStore = new ModelScriptHistoryStore();
     this.modelHistory = new ModelScriptHistory();
@@ -610,8 +627,73 @@ export class SketchApp {
     this._attachDocumentNameHandlers();
     this._attachModelFileHandlers();
     this._attachExportHandlers();
+    this._attachGroundThemeHandlers();
     this._attachUiThemeHandlers();
     this._attachSkyThemeHandlers();
+  }
+
+  _attachGroundThemeHandlers() {
+    if (this.groundThemeSelect) {
+      this.groundThemeSelect.addEventListener("change", () => {
+        this._setGroundTheme({
+          theme: this.groundThemeSelect.value,
+          elevationVariation: this.elevationVariationInput?.value,
+          terrainVariation: this.terrainVariationInput?.value,
+          terrainDensity: this.terrainDensityInput?.value,
+          solidColor: this.groundSolidColor,
+        });
+        void this._persistSessionState();
+      });
+    }
+
+    if (this.groundSolidToggleButton && this.groundSolidPopover) {
+      this.groundSolidToggleButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this._setGroundSolidPopoverOpen(!this.groundSolidPopoverOpen);
+      });
+
+      document.addEventListener("pointerdown", (event) => {
+        if (!this.groundSolidPopoverOpen) {
+          return;
+        }
+        const target = event.target;
+        if (
+          target instanceof Node &&
+          (this.groundSolidPopover.contains(target) || this.groundSolidToggleButton.contains(target))
+        ) {
+          return;
+        }
+        this._setGroundSolidPopoverOpen(false);
+      });
+
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && this.groundSolidPopoverOpen) {
+          this._setGroundSolidPopoverOpen(false);
+          this.groundSolidToggleButton.focus();
+        }
+      });
+    }
+
+    if (this.groundSolidColorInput) {
+      const onColorInput = () => {
+        this._setGroundSolidColor(this.groundSolidColorInput.value);
+      };
+      this.groundSolidColorInput.addEventListener("input", onColorInput);
+      this.groundSolidColorInput.addEventListener("change", onColorInput);
+    }
+
+    if (this.groundSolidHexInput) {
+      const onHexInput = () => {
+        this._setGroundSolidColor(this.groundSolidHexInput.value);
+      };
+      this.groundSolidHexInput.addEventListener("input", onHexInput);
+      this.groundSolidHexInput.addEventListener("change", onHexInput);
+      this.groundSolidHexInput.addEventListener("blur", () => {
+        this.groundSolidHexInput.value = this.groundSolidColor.toUpperCase();
+      });
+    }
+
+    this._syncGroundThemeControls();
   }
 
   _attachUiThemeHandlers() {
@@ -716,6 +798,7 @@ export class SketchApp {
     }
 
     this._syncUiThemeControls();
+    this._applyAutoEnvironmentThemes();
     this._uiThemeApplied = true;
     this._requestFrame();
 
@@ -733,9 +816,11 @@ export class SketchApp {
   _setSkyTheme(theme, { solidColor = this.skySolidColor, persist = true } = {}) {
     const normalized = normalizeSkyTheme(theme);
     const normalizedSolidColor = normalizeSkyColor(solidColor, this.skySolidColor);
+    const resolvedTheme = this._resolveSkyTheme(normalized);
     if (
       normalized === this.skyTheme &&
       this._skyThemeApplied &&
+      this.viewport?.skyTheme === resolvedTheme &&
       (normalized !== SKY_THEMES.SOLID_COLOR || normalizedSolidColor === this.skySolidColor)
     ) {
       return;
@@ -743,10 +828,10 @@ export class SketchApp {
     this.skyTheme = normalized;
     this.skySolidColor = normalizedSolidColor;
 
-    document.body.dataset.skyTheme = normalized;
-    this._applySkyThemeDocumentTokens(normalized, this.skySolidColor);
+    document.body.dataset.skyTheme = resolvedTheme;
+    this._applySkyThemeDocumentTokens(resolvedTheme, this.skySolidColor);
 
-    this.viewport?.setSkyTheme?.(normalized, { solidColor: this.skySolidColor });
+    this.viewport?.setSkyTheme?.(resolvedTheme, { solidColor: this.skySolidColor });
     this._syncSkyThemeControls();
     this._applySelectionHighlights();
     this._requestFrame();
@@ -833,6 +918,102 @@ export class SketchApp {
     }
 
     bodyStyle.removeProperty("--sky-solid");
+  }
+
+  _syncGroundThemeControls() {
+    const activeTheme = this.groundThemeSelection;
+    if (this.groundThemeSelect) {
+      this.groundThemeSelect.value = activeTheme;
+    }
+    const solidThemeActive = activeTheme === GROUND_THEMES.SOLID_COLOR;
+    if (this.groundSolidField) {
+      this.groundSolidField.hidden = !solidThemeActive;
+    }
+    if (this.groundSolidToggleButton) {
+      this.groundSolidToggleButton.disabled = !solidThemeActive;
+      this.groundSolidToggleButton.setAttribute("aria-expanded", String(solidThemeActive && this.groundSolidPopoverOpen));
+    }
+    if (this.groundSolidPopover && !solidThemeActive) {
+      this._setGroundSolidPopoverOpen(false);
+    }
+    if (this.groundSolidColorInput) {
+      this.groundSolidColorInput.value = this.groundSolidColor;
+    }
+    if (this.groundSolidHexInput) {
+      this.groundSolidHexInput.value = this.groundSolidColor.toUpperCase();
+    }
+  }
+
+  _setGroundSolidPopoverOpen(open) {
+    const activeTheme = this.groundThemeSelection;
+    const shouldOpen = activeTheme === GROUND_THEMES.SOLID_COLOR && Boolean(open);
+    this.groundSolidPopoverOpen = shouldOpen;
+    if (this.groundSolidPopover) {
+      this.groundSolidPopover.hidden = !shouldOpen;
+    }
+    if (this.groundSolidToggleButton) {
+      this.groundSolidToggleButton.setAttribute("aria-expanded", String(shouldOpen));
+    }
+    if (shouldOpen && this.groundSolidColorInput) {
+      window.setTimeout(() => this.groundSolidColorInput?.focus(), 0);
+    }
+  }
+
+  _setGroundSolidColor(value, { persist = true } = {}) {
+    const normalized = normalizeGroundColor(value, this.groundSolidColor);
+    const groundState = this.viewport?.getGroundThemeState?.() ?? defaultGroundThemeState();
+    this.groundSolidColor = normalized;
+
+    if (normalizeGroundTheme(groundState.theme) !== GROUND_THEMES.SOLID_COLOR) {
+      this._syncGroundThemeControls();
+      if (persist) {
+        this._scheduleSessionPersist();
+      }
+      return;
+    }
+
+    if (normalized === groundState.solidColor) {
+      return;
+    }
+
+    this._setGroundTheme({
+      ...groundState,
+      solidColor: normalized,
+    });
+
+    if (persist) {
+      this._scheduleSessionPersist();
+    }
+  }
+
+  _resolveSkyTheme(theme = this.skyTheme) {
+    const normalized = normalizeSkyTheme(theme);
+    if (normalized !== SKY_THEMES.AUTO) {
+      return normalized;
+    }
+    return this.uiTheme === "dark" ? SKY_THEMES.NIGHT_SKY : SKY_THEMES.CLEAR_NOON;
+  }
+
+  _resolveGroundTheme(theme = this.groundThemeSelection) {
+    const normalized = normalizeGroundTheme(theme);
+    if (normalized !== GROUND_THEMES.AUTO) {
+      return normalized;
+    }
+    return this.uiTheme === "dark" ? GROUND_THEMES.DARK_FOREST : GROUND_THEMES.FOREST;
+  }
+
+  _applyAutoEnvironmentThemes() {
+    if (this.skyTheme === SKY_THEMES.AUTO) {
+      this._setSkyTheme(this.skyTheme, { solidColor: this.skySolidColor, persist: false });
+    }
+    if (this.groundThemeSelection === GROUND_THEMES.AUTO) {
+      const state = this.viewport?.getGroundThemeState?.() ?? defaultGroundThemeState();
+      this._setGroundTheme({
+        ...state,
+        theme: this.groundThemeSelection,
+        solidColor: this.groundSolidColor,
+      });
+    }
   }
 
   _attachDocumentNameHandlers() {
@@ -2896,14 +3077,9 @@ export class SketchApp {
       });
     }
 
-    if (this.groundThemeSelect) {
-      this.groundThemeSelect.addEventListener("change", () => {
-        this._setGroundTheme({
-          theme: this.groundThemeSelect.value,
-          elevationVariation: this.elevationVariationInput?.value,
-          terrainVariation: this.terrainVariationInput?.value,
-          terrainDensity: this.terrainDensityInput?.value,
-        });
+    if (this.groundResetButton) {
+      this.groundResetButton.addEventListener("click", () => {
+        this._resetGroundThemeDefaults();
         void this._persistSessionState();
       });
     }
@@ -2915,6 +3091,7 @@ export class SketchApp {
           elevationVariation: this.elevationVariationInput.value,
           terrainVariation: this.terrainVariationInput?.value,
           terrainDensity: this.terrainDensityInput?.value,
+          solidColor: this.groundSolidColor,
         });
       });
       this.elevationVariationInput.addEventListener("change", () => {
@@ -2929,6 +3106,7 @@ export class SketchApp {
           elevationVariation: this.elevationVariationInput?.value,
           terrainVariation: this.terrainVariationInput.value,
           terrainDensity: this.terrainDensityInput?.value,
+          solidColor: this.groundSolidColor,
         });
       });
       this.terrainVariationInput.addEventListener("change", () => {
@@ -2943,6 +3121,7 @@ export class SketchApp {
           elevationVariation: this.elevationVariationInput?.value,
           terrainVariation: this.terrainVariationInput?.value,
           terrainDensity: this.terrainDensityInput.value,
+          solidColor: this.groundSolidColor,
         });
       });
       this.terrainDensityInput.addEventListener("change", () => {
@@ -2966,6 +3145,7 @@ export class SketchApp {
       terrainVariation: DEFAULT_TERRAIN_VARIATION,
       terrainDensity: DEFAULT_TERRAIN_DENSITY,
       terrainSeed: DEFAULT_TERRAIN_SEED,
+      solidColor: this.groundSolidColor,
     });
   }
 
@@ -3097,23 +3277,29 @@ export class SketchApp {
     terrainVariation = DEFAULT_TERRAIN_VARIATION,
     terrainDensity = DEFAULT_TERRAIN_DENSITY,
     terrainSeed,
+    solidColor = this.groundSolidColor,
   } = {}) {
-    const normalizedTheme = normalizeGroundTheme(theme);
+    const normalizedThemeSelection = normalizeGroundTheme(theme);
+    const normalizedTheme = this._resolveGroundTheme(normalizedThemeSelection);
     const normalizedElevationVariation = normalizeElevationVariation(elevationVariation);
     const normalizedTerrainVariation = normalizeTerrainVariation(terrainVariation);
     const normalizedDensity = normalizeTerrainDensity(terrainDensity);
     const currentTerrainSeed = this.viewport?.getGroundThemeState?.().terrainSeed ?? DEFAULT_TERRAIN_SEED;
     const normalizedSeed = normalizeTerrainSeed(terrainSeed ?? currentTerrainSeed);
+    const normalizedSolidColor = normalizeGroundColor(solidColor, this.groundSolidColor);
+    this.groundThemeSelection = normalizedThemeSelection;
+    this.groundSolidColor = normalizedSolidColor;
     this.viewport.setGroundTheme({
       theme: normalizedTheme,
       elevationVariation: normalizedElevationVariation,
       terrainVariation: normalizedTerrainVariation,
       terrainDensity: normalizedDensity,
       terrainSeed: normalizedSeed,
+      solidColor: normalizedSolidColor,
     });
 
     if (this.groundThemeSelect) {
-      this.groundThemeSelect.value = normalizedTheme;
+      this.groundThemeSelect.value = normalizedThemeSelection;
     }
     if (this.elevationVariationInput) {
       this.elevationVariationInput.value = String(normalizedElevationVariation);
@@ -3133,6 +3319,7 @@ export class SketchApp {
     if (this.terrainDensityValue) {
       this.terrainDensityValue.textContent = `${Math.round(normalizedDensity * 100)}%`;
     }
+    this._syncGroundThemeControls();
     this._requestFrame();
   }
 
@@ -3146,6 +3333,15 @@ export class SketchApp {
       ...state,
       terrainSeed: nextSeed,
     });
+  }
+
+  _resetGroundThemeDefaults() {
+    this._setUiThemeMode(UI_THEME_MODES.AUTO, { persist: false, force: true });
+    this._setSkyTheme(SKY_THEMES.AUTO, { persist: false, solidColor: this.skySolidColor });
+    this._setGridVisible(false);
+    this._setGroundEffectsVisible(true);
+    this._setDevConsoleVisible(false);
+    this._setGroundTheme(defaultGroundThemeState());
   }
 
   _setActiveTool(tool, { render = true } = {}) {
@@ -3208,6 +3404,7 @@ export class SketchApp {
         uiThemeMode: this.uiThemeMode,
         skyTheme: this.skyTheme,
         skySolidColor: this.skySolidColor,
+        groundThemeSelection: this.groundThemeSelection,
       },
       selection: {
         selectedObjectIds: [...this.selectionPipeline.selectedObjectIds],
@@ -3254,7 +3451,11 @@ export class SketchApp {
       this._setGridVisible(Boolean(state?.scene?.gridVisible));
       this._setGroundEffectsVisible(state?.scene?.groundTheme?.groundEffectsVisible !== false);
       const savedGroundTheme = state?.scene?.groundTheme;
-      this._setGroundTheme(savedGroundTheme ? migrateGroundThemeState(savedGroundTheme) : defaultGroundThemeState());
+      const restoredGroundTheme = savedGroundTheme ? migrateGroundThemeState(savedGroundTheme) : defaultGroundThemeState();
+      this._setGroundTheme({
+        ...restoredGroundTheme,
+        theme: state?.ui?.groundThemeSelection ?? restoredGroundTheme.theme,
+      });
 
       const selectable = new Set(
         this.representationStore.getSelectableMeshes().map((mesh) => mesh.userData.objectId).filter(Boolean),
@@ -3504,16 +3705,20 @@ function defaultGroundThemeState() {
     terrainVariation: DEFAULT_TERRAIN_VARIATION,
     terrainDensity: DEFAULT_TERRAIN_DENSITY,
     terrainSeed: DEFAULT_TERRAIN_SEED,
+    solidColor: DEFAULT_SOLID_GROUND_COLOR,
   };
 }
 
 function migrateGroundThemeState(state) {
+  const normalizedTheme = normalizeGroundTheme(state?.theme);
   const legacyElevationVariation = state.elevationVariation ?? state.terrainVariation ?? DEFAULT_ELEVATION_VARIATION;
   const terrainVariation = state.elevationVariation == null ? DEFAULT_TERRAIN_VARIATION : state.terrainVariation;
   return {
     ...state,
+    theme: normalizedTheme,
     elevationVariation: legacyElevationVariation,
     terrainVariation,
+    solidColor: normalizeGroundColor(state?.solidColor, DEFAULT_SOLID_GROUND_COLOR),
   };
 }
 

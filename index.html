@@ -185,14 +185,58 @@
             <label class="settings-field" for="ground-theme">
               <span>Ground Theme</span>
               <select id="ground-theme">
-                <option value="none">None</option>
+                <option value="auto" selected>Automatic</option>
+                <option value="solidColor">Solid Color</option>
                 <option value="grass">Grass</option>
                 <option value="water">Water</option>
                 <option value="dirt-rocks">Dirt / Rocks</option>
-                <option value="forest" selected>Forest</option>
+                <option value="forest">Forest</option>
+                <option value="darkForest">Dark Forest</option>
                 <option value="city">City</option>
               </select>
             </label>
+            <div class="settings-field ground-solid-field" id="ground-solid-field" hidden>
+              <span>Ground Color</span>
+              <div class="ground-solid-wrap">
+                <button
+                  id="ground-solid-toggle"
+                  class="icon-btn ground-solid-toggle"
+                  type="button"
+                  aria-haspopup="dialog"
+                  aria-expanded="false"
+                  aria-label="Open ground color picker"
+                  title="Open ground color picker"
+                >
+                  <span class="btn-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                      <defs>
+                        <linearGradient id="ground-solid-icon-gradient" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
+                          <stop offset="0%" stop-color="#f3f6fa" />
+                          <stop offset="100%" stop-color="#b8c7d8" />
+                        </linearGradient>
+                      </defs>
+                      <rect x="4" y="4" width="16" height="16" rx="4" fill="url(#ground-solid-icon-gradient)" stroke="none" />
+                      <path d="M8 15.5c1.1-4 6.4-6.1 8.7-6.1" stroke="#4d6278" stroke-opacity="0.9" />
+                    </svg>
+                  </span>
+                </button>
+                <div id="ground-solid-popover" class="ground-solid-popover" role="dialog" aria-label="Ground color picker" hidden>
+                  <label class="ground-solid-swatch" for="ground-solid-color-input" aria-label="Ground color picker">
+                    <input id="ground-solid-color-input" type="color" value="#f3f6fa" />
+                  </label>
+                  <input
+                    id="ground-solid-hex-input"
+                    class="ground-solid-hex"
+                    type="text"
+                    inputmode="text"
+                    maxlength="7"
+                    spellcheck="false"
+                    aria-label="Ground color hex value"
+                    value="#f3f6fa"
+                  />
+                </div>
+              </div>
+            </div>
             <label class="settings-field" for="ui-theme">
               <span>UI Frame Theme</span>
               <select id="ui-theme">
@@ -204,6 +248,7 @@
             <label class="settings-field" for="sky-theme">
               <span>Sky Theme</span>
               <select id="sky-theme">
+                <option value="auto" selected>Automatic</option>
                 <option value="clearNoon">Clear Noon</option>
                 <option value="goldenHour">Golden Hour</option>
                 <option value="overcast">Overcast</option>
@@ -228,8 +273,8 @@
                     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
                       <defs>
                         <linearGradient id="sky-solid-icon-gradient" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
-                          <stop offset="0%" stop-color="#7aa7e8" />
-                          <stop offset="100%" stop-color="#2d5fd4" />
+                          <stop offset="0%" stop-color="#ffffff" />
+                          <stop offset="100%" stop-color="#d8e7f6" />
                         </linearGradient>
                       </defs>
                       <rect x="4" y="4" width="16" height="16" rx="4" fill="url(#sky-solid-icon-gradient)" stroke="none" />
@@ -239,7 +284,7 @@
                 </button>
                 <div id="sky-solid-popover" class="sky-solid-popover" role="dialog" aria-label="Solid color picker" hidden>
                   <label class="sky-solid-swatch" for="sky-solid-color-input" aria-label="Solid color picker">
-                    <input id="sky-solid-color-input" type="color" value="#7aa7e8" />
+                    <input id="sky-solid-color-input" type="color" value="#ffffff" />
                   </label>
                   <input
                     id="sky-solid-hex-input"
@@ -249,7 +294,7 @@
                     maxlength="7"
                     spellcheck="false"
                     aria-label="Solid color hex value"
-                    value="#7aa7e8"
+                    value="#ffffff"
                   />
                 </div>
               </div>
@@ -270,6 +315,7 @@
               <output id="terrain-density-value" for="terrain-density">50%</output>
             </label>
             <button id="ground-regenerate" class="settings-btn" type="button">Regenerate Ground</button>
+            <button id="ground-reset" class="settings-btn" type="button">Reset to Defaults</button>
           </div>
         </div>
       </section>

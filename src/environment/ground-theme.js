@@ -2,10 +2,13 @@ import * as THREE from "three";
 
 export const GROUND_THEMES = Object.freeze({
   NONE: "none",
+  AUTO: "auto",
+  SOLID_COLOR: "solidColor",
   GRASS: "grass",
   WATER: "water",
   DIRT_ROCKS: "dirt-rocks",
   FOREST: "forest",
+  DARK_FOREST: "darkForest",
   CITY: "city",
 });
 
@@ -14,9 +17,13 @@ const TERRAIN_SIZE = 100;
 const TERRAIN_SEGMENTS = 64;
 const BASE_TERRAIN_DENSITY = 0.5;
 const BASE_TERRAIN_VARIATION = 0.5;
+export const DEFAULT_SOLID_GROUND_COLOR = "#f3f6fa";
 
 export function normalizeGroundTheme(value) {
-  return THEME_OPTIONS.has(value) ? value : GROUND_THEMES.NONE;
+  if (value === GROUND_THEMES.NONE) {
+    return GROUND_THEMES.SOLID_COLOR;
+  }
+  return THEME_OPTIONS.has(value) ? value : GROUND_THEMES.SOLID_COLOR;
 }
 
 export function normalizeElevationVariation(value) {
@@ -51,24 +58,32 @@ export function normalizeTerrainSeed(value) {
   return Math.max(0, Math.floor(numeric));
 }
 
+export function normalizeGroundColor(value, fallback = DEFAULT_SOLID_GROUND_COLOR) {
+  const normalizedFallback = normalizeHexColor(fallback, DEFAULT_SOLID_GROUND_COLOR);
+  const normalized = normalizeHexColor(value, normalizedFallback);
+  return normalized ?? normalizedFallback;
+}
+
 export function createGroundThemeGroup({
-  theme = GROUND_THEMES.NONE,
+  theme = GROUND_THEMES.SOLID_COLOR,
   elevationVariation = 0,
   terrainVariation = BASE_TERRAIN_VARIATION,
   terrainDensity = BASE_TERRAIN_DENSITY,
   terrainSeed = 0,
+  solidColor = DEFAULT_SOLID_GROUND_COLOR,
 } = {}) {
   const normalizedTheme = normalizeGroundTheme(theme);
   const elevation = normalizeElevationVariation(elevationVariation);
   const objectVariation = normalizeTerrainVariation(terrainVariation);
   const density = normalizeTerrainDensity(terrainDensity);
   const seed = normalizeTerrainSeed(terrainSeed);
+  const normalizedSolidColor = normalizeGroundColor(solidColor);
   const group = new THREE.Group();
   group.name = `ground-theme:${normalizedTheme}`;
   group.userData.environment = true;
   group.userData.selectable = false;
 
-  const ground = createTerrainMesh(normalizedTheme, elevation, seed);
+  const ground = createTerrainMesh(normalizedTheme, elevation, seed, normalizedSolidColor);
   group.add(ground);
 
   if (normalizedTheme === GROUND_THEMES.GRASS) {
@@ -80,6 +95,12 @@ export function createGroundThemeGroup({
   } else if (normalizedTheme === GROUND_THEMES.FOREST) {
     addGrass(group, elevation, density, seed, objectVariation, 70);
     addForest(group, elevation, density, seed, objectVariation);
+  } else if (normalizedTheme === GROUND_THEMES.DARK_FOREST) {
+    addGrass(group, elevation, density, seed, objectVariation, 70, 0x27482f);
+    addForest(group, elevation, density, seed, objectVariation, {
+      trunk: 0x4f3826,
+      canopy: 0x1d4c2c,
+    });
   } else if (normalizedTheme === GROUND_THEMES.CITY) {
     addCity(group, elevation, density, seed, objectVariation);
   }
@@ -87,7 +108,7 @@ export function createGroundThemeGroup({
   return group;
 }
 
-function createTerrainMesh(theme, elevation, seed) {
+function createTerrainMesh(theme, elevation, seed, solidColor) {
   const geometry = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, TERRAIN_SEGMENTS, TERRAIN_SEGMENTS);
   geometry.rotateX(-Math.PI / 2);
 
@@ -104,7 +125,7 @@ function createTerrainMesh(theme, elevation, seed) {
   geometry.computeVertexNormals();
 
   const material = new THREE.MeshStandardMaterial({
-    color: themeColor(theme),
+    color: themeColor(theme, solidColor),
     roughness: theme === GROUND_THEMES.WATER ? 0.38 : 1,
     metalness: 0,
     transparent: theme === GROUND_THEMES.WATER,
@@ -118,8 +139,8 @@ function createTerrainMesh(theme, elevation, seed) {
   return mesh;
 }
 
-function addGrass(group, elevation, density, seed, objectVariation, baseCount = 130) {
-  const material = new THREE.MeshStandardMaterial({ color: 0x46a43f, roughness: 1 });
+function addGrass(group, elevation, density, seed, objectVariation, baseCount = 130, color = 0x46a43f) {
+  const material = new THREE.MeshStandardMaterial({ color, roughness: 1 });
   const geometry = new THREE.ConeGeometry(0.035, 0.34, 5);
   const count = detailCount(baseCount, density);
   for (let i = 0; i < count; i += 1) {
@@ -187,9 +208,9 @@ function addRocks(group, elevation, density, seed, objectVariation) {
   }
 }
 
-function addForest(group, elevation, density, seed, objectVariation) {
-  const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x78512d, roughness: 0.95 });
-  const canopyMaterial = new THREE.MeshStandardMaterial({ color: 0x2d7d3a, roughness: 0.9 });
+function addForest(group, elevation, density, seed, objectVariation, palette = {}) {
+  const trunkMaterial = new THREE.MeshStandardMaterial({ color: palette.trunk ?? 0x78512d, roughness: 0.95 });
+  const canopyMaterial = new THREE.MeshStandardMaterial({ color: palette.canopy ?? 0x2d7d3a, roughness: 0.9 });
   const trunkGeometry = new THREE.CylinderGeometry(0.13, 0.18, 1.25, 7);
   const canopyGeometry = new THREE.ConeGeometry(0.82, 1.8, 8);
   const count = detailCount(42, density);
@@ -265,11 +286,16 @@ function detailCount(baseCount, density) {
   return Math.max(1, Math.round(baseCount * (normalized / BASE_TERRAIN_DENSITY)));
 }
 
-function themeColor(theme) {
+function themeColor(theme, solidColor = DEFAULT_SOLID_GROUND_COLOR) {
   switch (theme) {
+    case GROUND_THEMES.SOLID_COLOR:
+    case GROUND_THEMES.NONE:
+      return hexToInt(normalizeGroundColor(solidColor));
     case GROUND_THEMES.GRASS:
     case GROUND_THEMES.FOREST:
       return 0x8ccf67;
+    case GROUND_THEMES.DARK_FOREST:
+      return 0x476c4a;
     case GROUND_THEMES.WATER:
       return 0x7dd3ed;
     case GROUND_THEMES.DIRT_ROCKS:
@@ -277,8 +303,20 @@ function themeColor(theme) {
     case GROUND_THEMES.CITY:
       return 0xd2d6db;
     default:
-      return 0xf3f6fa;
+      return hexToInt(DEFAULT_SOLID_GROUND_COLOR);
   }
+}
+
+function normalizeHexColor(value, fallback = DEFAULT_SOLID_GROUND_COLOR) {
+  const text = String(value ?? "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(text)) {
+    return `#${text.slice(1).toLowerCase()}`;
+  }
+  return fallback;
+}
+
+function hexToInt(value) {
+  return Number.parseInt(String(value ?? "").replace(/^#/, ""), 16);
 }
 
 function terrainHeightAt(x, z, elevation, seed) {

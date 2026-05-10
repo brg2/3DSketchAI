@@ -1,4 +1,5 @@
 export const SKY_THEMES = Object.freeze({
+  AUTO: "auto",
   CLEAR_NOON: "clearNoon",
   GOLDEN_HOUR: "goldenHour",
   OVERCAST: "overcast",
@@ -8,6 +9,7 @@ export const SKY_THEMES = Object.freeze({
 });
 
 export const SKY_THEME_ORDER = Object.freeze([
+  SKY_THEMES.AUTO,
   SKY_THEMES.CLEAR_NOON,
   SKY_THEMES.GOLDEN_HOUR,
   SKY_THEMES.OVERCAST,
@@ -17,6 +19,7 @@ export const SKY_THEME_ORDER = Object.freeze([
 ]);
 
 export const SKY_THEME_LABEL = Object.freeze({
+  [SKY_THEMES.AUTO]: "Automatic",
   [SKY_THEMES.CLEAR_NOON]: "Clear Noon",
   [SKY_THEMES.GOLDEN_HOUR]: "Golden Hour",
   [SKY_THEMES.OVERCAST]: "Overcast",
@@ -25,7 +28,7 @@ export const SKY_THEME_LABEL = Object.freeze({
   [SKY_THEMES.SOLID_COLOR]: "Solid Color",
 });
 
-export const DEFAULT_SOLID_SKY_COLOR = "#7aa7e8";
+export const DEFAULT_SOLID_SKY_COLOR = "#ffffff";
 
 const HEX_WHITE_RGB = { r: 255, g: 255, b: 255 };
 const HEX_BLACK_RGB = { r: 0, g: 0, b: 0 };

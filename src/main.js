@@ -19,7 +19,13 @@ const gridToggleButton = document.getElementById("grid-toggle");
 const groundEffectsToggleButton = document.getElementById("ground-effects-toggle");
 const devConsoleToggleButton = document.getElementById("dev-console-toggle");
 const groundRegenerateButton = document.getElementById("ground-regenerate");
+const groundResetButton = document.getElementById("ground-reset");
 const groundThemeSelect = document.getElementById("ground-theme");
+const groundSolidField = document.getElementById("ground-solid-field");
+const groundSolidToggleButton = document.getElementById("ground-solid-toggle");
+const groundSolidPopover = document.getElementById("ground-solid-popover");
+const groundSolidColorInput = document.getElementById("ground-solid-color-input");
+const groundSolidHexInput = document.getElementById("ground-solid-hex-input");
 const uiThemeSelect = document.getElementById("ui-theme");
 const skyThemeSelect = document.getElementById("sky-theme");
 const skySolidField = document.getElementById("sky-solid-field");
@@ -60,7 +66,13 @@ if (
   !groundEffectsToggleButton ||
   !devConsoleToggleButton ||
   !groundRegenerateButton ||
+  !groundResetButton ||
   !groundThemeSelect ||
+  !groundSolidField ||
+  !groundSolidToggleButton ||
+  !groundSolidPopover ||
+  !groundSolidColorInput ||
+  !groundSolidHexInput ||
   !uiThemeSelect ||
   !skyThemeSelect ||
   !skySolidField ||
@@ -152,7 +164,13 @@ const app = new SketchApp({
   groundEffectsToggleButton,
   devConsoleToggleButton,
   groundRegenerateButton,
+  groundResetButton,
   groundThemeSelect,
+  groundSolidField,
+  groundSolidToggleButton,
+  groundSolidPopover,
+  groundSolidColorInput,
+  groundSolidHexInput,
   uiThemeSelect,
   skyThemeSelect,
   skySolidField,
