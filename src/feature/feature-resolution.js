@@ -56,8 +56,8 @@ export function resolveFeatureModification(features, operation) {
       modifyExistingPushPullFeature(features, validOperation)
     );
   }
-  if (validOperation.type === OPERATION_TYPES.POLYLINE) {
-    return modifyExistingPolylineFeature(features, validOperation);
+  if (validOperation.type === OPERATION_TYPES.SKETCH_SPLIT) {
+    return modifyExistingSketchSplitFeature(features, validOperation);
   }
 
   return null;
@@ -116,37 +116,52 @@ function modifyExistingProfilePushPullFeature(features, operation) {
   return null;
 }
 
-function modifyExistingPolylineFeature(features, operation) {
-  const polylineId = operation.params?.objectId;
-  if (!polylineId) {
+function modifyExistingSketchSplitFeature(features, operation) {
+  const sketchId = operation.params?.sketchId;
+  if (!sketchId) {
     return null;
   }
+  const selectorFeatureId = operation.selection?.selector?.featureId ?? operation.params?.targetSelector?.featureId ?? null;
 
   const normalized = normalizeFeatureGraph(features);
   for (let index = normalized.length - 1; index >= 0; index -= 1) {
     const feature = normalized[index];
-    if (feature.type !== OPERATION_TYPES.POLYLINE) {
+    if (feature.type !== OPERATION_TYPES.SKETCH_SPLIT) {
       continue;
     }
-    if (feature.params?.objectId !== polylineId) {
+    if (feature.params?.sketchId !== sketchId && feature.id !== selectorFeatureId) {
       continue;
     }
-    if (!hasOnlySafeDownstreamFeatures(normalized, index, operation.targetId ?? polylineId)) {
+    if (!hasOnlySafeDownstreamFeatures(normalized, index, operation.targetId)) {
       return null;
     }
 
     const next = structuredClone(normalized);
+    const existingSegments = Array.isArray(next[index].params?.segments)
+      ? next[index].params.segments
+      : [];
+    const incomingSegments = Array.isArray(operation.params?.segments)
+      ? operation.params.segments
+      : [];
     next[index] = {
       ...next[index],
       target: {
         objectId: operation.targetId ?? null,
         selection: operation.selection ? structuredClone(operation.selection) : null,
       },
-      params: structuredClone(operation.params),
+      params: {
+        ...structuredClone(next[index].params),
+        plane: structuredClone(next[index].params.plane ?? operation.params.plane),
+        targetSelector: structuredClone(next[index].params.targetSelector ?? operation.params.targetSelector),
+        segments: [...existingSegments, ...incomingSegments].map((segment, segmentIndex) => ({
+          ...structuredClone(segment),
+          id: `${sketchId}_segment_${segmentIndex + 1}`,
+        })),
+      },
     };
     return {
       features: normalizeFeatureGraph(next),
-      reason: "modified_existing_polyline",
+      reason: "modified_existing_sketch_split",
       featureId: feature.id,
     };
   }

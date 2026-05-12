@@ -425,36 +425,55 @@ export function createGroupingOperation({ type, objectIds, groupId, componentId 
   });
 }
 
-export function createPolylineOperation({
-  objectId,
+export function createSketchSplitOperation({
+  sketchId,
   targetId = null,
   selection = null,
+  targetSelector = null,
   points,
   closed = false,
   plane = null,
 }) {
+  const normalizedPoints = points.map((point) => ({
+    x: round3(point.x ?? 0),
+    y: round3(point.y ?? 0),
+    z: round3(point.z ?? 0),
+  }));
+  const segments = [];
+  for (let index = 0; index < normalizedPoints.length - 1; index += 1) {
+    segments.push({
+      id: `${sketchId}_segment_${segments.length + 1}`,
+      points: [normalizedPoints[index], normalizedPoints[index + 1]],
+    });
+  }
+  if (closed && normalizedPoints.length > 2) {
+    segments.push({
+      id: `${sketchId}_segment_${segments.length + 1}`,
+      points: [normalizedPoints.at(-1), normalizedPoints[0]],
+    });
+  }
+
+  const selector = targetSelector ?? selection?.selector ?? null;
   return validateOperation({
-    type: OPERATION_TYPES.POLYLINE,
+    type: OPERATION_TYPES.SKETCH_SPLIT,
     targetId,
     selection,
     params: {
-      objectId,
-      points: points.map((point) => ({
-        x: round3(point.x ?? 0),
-        y: round3(point.y ?? 0),
-        z: round3(point.z ?? 0),
-      })),
-      closed: Boolean(closed),
-      ...(plane ? {
-        plane: {
-          origin: {
-            x: round3(plane.origin?.x ?? 0),
-            y: round3(plane.origin?.y ?? 0),
-            z: round3(plane.origin?.z ?? 0),
-          },
-          normal: normalizeAxis(plane.normal ?? { x: 0, y: 1, z: 0 }),
+      sketchId,
+      targetSelector: {
+        featureId: selector?.featureId ?? "",
+        role: selector?.role ?? "",
+        ...(selector?.hint ? { hint: structuredClone(selector.hint) } : {}),
+      },
+      plane: {
+        origin: {
+          x: round3(plane?.origin?.x ?? 0),
+          y: round3(plane?.origin?.y ?? 0),
+          z: round3(plane?.origin?.z ?? 0),
         },
-      } : {}),
+        normal: normalizeAxis(plane?.normal ?? { x: 0, y: 1, z: 0 }),
+      },
+      segments,
     },
   });
 }

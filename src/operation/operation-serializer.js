@@ -25,7 +25,12 @@ export function serializeCanonicalModelModule(operations) {
   const objectState = new Map();
   const editableTargets = new Set(
     normalizedOperations
-      .filter((operation) => operation.type === "push_pull" || operation.params?.subshapeMove)
+      .filter((operation) => (
+        operation.type === "push_pull" ||
+        operation.type === "sketch_split" ||
+        Boolean(operation.params?.subshapeMove) ||
+        Boolean(operation.params?.subshapeRotate)
+      ))
       .map((operation) => operation.targetId)
       .filter(Boolean),
   );
@@ -185,9 +190,9 @@ export function serializeCanonicalModelModule(operations) {
         }
         throw new Error("push_pull requires a solid modeling implementation for non-box targets");
       }
-      case "polyline": {
-        const varName = operation.params.objectId;
-        bodyLines.push(`  const ${varName} = sai.makePolyline(r, ${JSON.stringify(operation.params.points)}, { closed: ${operation.params.closed === true ? "true" : "false"} });`);
+      case "sketch_split": {
+        const varName = getVarName(operation.targetId);
+        bodyLines.push(`  sai.applySketchSplit(r, ${varName}, ${JSON.stringify(operation.params)});`);
         break;
       }
       case "group":
@@ -232,6 +237,7 @@ export function parseOperationsFromCanonicalModelCode(code) {
   candidates.push(..._parseDirectTaperedBox(code));
   candidates.push(..._parseDirectPushPullFace(code));
   candidates.push(..._parseDirectPushPullProfile(code));
+  candidates.push(..._parseDirectApplySketchSplit(code));
   candidates.push(..._parseDirectScale(code));
   candidates.push(..._parseCreatePrimitiveBox(code));
   candidates.push(..._parseCreatePrimitiveSphere(code));
@@ -596,6 +602,21 @@ function _parseDirectRotateBoxSubshape(code) {
         deltaEuler: { x: 0, y: 0, z: 0 },
         subshapeRotate: rotate,
       },
+    };
+  });
+}
+
+function _parseDirectApplySketchSplit(code) {
+  const regex = /sai\.applySketchSplit\(\s*r\s*,\s*([A-Za-z_$][\w$]*)\s*,\s*(\{[^\n]*\})\s*\);/g;
+  return _collectMatches(code, regex, (match) => {
+    const targetId = match[1];
+    const params = _safeJsonParse(match[2]);
+    if (!targetId || !params) return null;
+    return {
+      type: "sketch_split",
+      targetId,
+      selection: null,
+      params,
     };
   });
 }

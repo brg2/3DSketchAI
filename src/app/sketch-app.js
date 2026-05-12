@@ -14,7 +14,7 @@ import { ModelExecutor } from "../modeling/model-executor.js";
 import { ModelScriptHistory } from "../modeling/model-script-history.js";
 import { AppSessionStore } from "../persistence/app-session-store.js";
 import { ModelScriptHistoryStore } from "../persistence/model-script-history-store.js";
-import { createGroupingOperation, createPolylineOperation, createPrimitiveOperation, mapToolGestureToOperation } from "../operation/operation-mapper.js";
+import { createGroupingOperation, createPrimitiveOperation, createSketchSplitOperation, mapToolGestureToOperation } from "../operation/operation-mapper.js";
 import { OPERATION_TYPES, SELECTION_MODES } from "../operation/operation-types.js";
 import { SKY_THEMES, DEFAULT_SOLID_SKY_COLOR, normalizeSkyColor, normalizeSkyTheme, skyThemePreset } from "../theme/sky-theme.js";
 import { UI_THEME_MODES, normalizeUiThemeMode, resolveUiThemeMode } from "../theme/ui-theme.js";
@@ -204,7 +204,7 @@ export class SketchApp {
     this.touchDebugElement = null;
 
     this.objectCounter = 1;
-    this.polylineCounter = 1;
+    this.sketchCounter = 1;
 
     this.runtimeController = new RuntimeController({
       canonicalModel: new CanonicalModel(),
@@ -213,6 +213,7 @@ export class SketchApp {
       onCanonicalCodeChanged: (projection) => {
         this._renderFeatureGraphProjection(projection);
       },
+      onPreviewChanged: () => this._requestFrame(),
     });
 
     this.runtimeController.initialize({ scene: this.viewport.scene, seedSceneState: {} });
@@ -576,7 +577,7 @@ export class SketchApp {
           this.hoveredObjectId = null;
           this.hoveredHit = null;
           this.objectCounter = 1;
-          this.polylineCounter = 1;
+          this.sketchCounter = 1;
           this._setModelName(DEFAULT_MODEL_NAME);
           this._setPanelPage("script");
           this._setGridVisible(false);
@@ -586,7 +587,7 @@ export class SketchApp {
           });
           await this._persistModelHistory();
           this.objectCounter = 2;
-          this.polylineCounter = 1;
+          this.sketchCounter = 1;
           this.selectionPipeline.selectedObjectIds = ["obj_1"];
           this._applySelectionHighlights();
           this._renderOverlay();
@@ -1193,7 +1194,7 @@ export class SketchApp {
       this.modelHistory.reset(graphJson, { label: "Open" });
       await this._persistModelHistory();
       this.objectCounter = 1;
-      this.polylineCounter = 1;
+      this.sketchCounter = 1;
       this._syncObjectCounterFromOperations(this.runtimeController.canonicalModel.getOperations());
       this.selectionPipeline.selectedObjectIds = [];
       this.hoveredObjectId = null;
@@ -1920,8 +1921,10 @@ export class SketchApp {
     }
 
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, firstPoint);
+    const sketchContext = this._lineDrawSketchContext(selectionResult?.selection);
     this.lineDrawState = {
-      objectId: `polyline_${this.polylineCounter++}`,
+      sketchId: sketchContext.sketchId,
+      targetSelector: sketchContext.targetSelector,
       targetId,
       selection: selectionResult?.selection ? structuredClone(selectionResult.selection) : null,
       plane,
@@ -1933,6 +1936,25 @@ export class SketchApp {
     this._hidePreselectionOverlays();
     this._updateLineDrawPreview(firstPoint);
     return true;
+  }
+
+  _lineDrawSketchContext(selection) {
+    const selectorFeatureId = selection?.selector?.featureId ?? null;
+    if (selectorFeatureId) {
+      const existing = this.runtimeController.getSnapshot().featureGraph
+        .find((feature) => feature.id === selectorFeatureId && feature.type === OPERATION_TYPES.SKETCH_SPLIT);
+      if (existing?.params?.sketchId && existing.params?.targetSelector) {
+        return {
+          sketchId: existing.params.sketchId,
+          targetSelector: structuredClone(existing.params.targetSelector),
+        };
+      }
+    }
+
+    return {
+      sketchId: `sketch_${this.sketchCounter++}`,
+      targetSelector: selection?.selector ? structuredClone(selection.selector) : null,
+    };
   }
 
   _updateLineDrawStartSnapPreview(event, hover) {
@@ -2120,10 +2142,11 @@ export class SketchApp {
       return false;
     }
 
-    const operation = createPolylineOperation({
-      objectId: state.objectId,
+    const operation = createSketchSplitOperation({
+      sketchId: state.sketchId,
       targetId: state.targetId,
       selection: state.selection,
+      targetSelector: state.targetSelector,
       points: state.points,
       closed,
       plane: {
@@ -2410,6 +2433,11 @@ export class SketchApp {
       }
     }
 
+    const provenancePatch = this._facePatchTrisFromProvenance(geometry, seedTri, triCount);
+    if (provenancePatch.length > 0) {
+      return this._worldTrianglePointsFromIndices(hit.object, position, triVerts, provenancePatch);
+    }
+
     const adjacency = new Array(triCount);
     for (let tri = 0; tri < triCount; tri += 1) {
       adjacency[tri] = [];
@@ -2488,6 +2516,50 @@ export class SketchApp {
     return points;
   }
 
+  _facePatchTrisFromProvenance(geometry, seedTri, triCount) {
+    const faceProvenance = geometry?.userData?.faceProvenance;
+    const seed = Array.isArray(faceProvenance) ? faceProvenance[seedTri] : null;
+    if (!seed?.featureId || !seed?.role) {
+      return [];
+    }
+
+    const matches = [];
+    for (let tri = 0; tri < triCount; tri += 1) {
+      const candidate = faceProvenance[tri];
+      if (
+        candidate?.featureId === seed.featureId &&
+        candidate?.role === seed.role &&
+        (candidate?.sketchId ?? null) === (seed.sketchId ?? null)
+      ) {
+        matches.push(tri);
+      }
+    }
+    return matches;
+  }
+
+  _worldTrianglePointsFromIndices(object, position, triVerts, triangleIndices) {
+    const worldVertexCache = new Map();
+    const worldVertex = (idx) => {
+      const cached = worldVertexCache.get(idx);
+      if (cached) {
+        return cached;
+      }
+      const point = object.localToWorld(new THREE.Vector3().fromBufferAttribute(position, idx));
+      worldVertexCache.set(idx, point);
+      return point;
+    };
+
+    const points = [];
+    for (const tri of triangleIndices) {
+      const [a, b, c] = triVerts[tri] ?? [];
+      if (!Number.isInteger(a) || !Number.isInteger(b) || !Number.isInteger(c)) {
+        continue;
+      }
+      points.push(worldVertex(a), worldVertex(b), worldVertex(c));
+    }
+    return points;
+  }
+
   _edgeFromHit(hit) {
     const tri = this._triangleFromHit(hit);
     if (!tri || !hit?.point) {
@@ -2554,27 +2626,26 @@ export class SketchApp {
 
   _syncObjectCounterFromOperations(operations) {
     let max = 0;
-    let maxPolyline = 0;
+    let maxSketch = 0;
     for (const operation of operations) {
       const objectId = operation?.params?.objectId;
-      if (!objectId || !objectId.startsWith("obj_")) {
-        if (objectId?.startsWith?.("polyline_")) {
-          const serial = Number.parseInt(objectId.slice("polyline_".length), 10);
-          if (Number.isFinite(serial) && serial > maxPolyline) {
-            maxPolyline = serial;
-          }
+      if (objectId?.startsWith?.("obj_")) {
+        const serial = Number.parseInt(objectId.slice(4), 10);
+        if (Number.isFinite(serial) && serial > max) {
+          max = serial;
         }
-        continue;
       }
-
-      const serial = Number.parseInt(objectId.slice(4), 10);
-      if (Number.isFinite(serial) && serial > max) {
-        max = serial;
+      const sketchId = operation?.params?.sketchId;
+      if (sketchId?.startsWith?.("sketch_")) {
+        const serial = Number.parseInt(sketchId.slice("sketch_".length), 10);
+        if (Number.isFinite(serial) && serial > maxSketch) {
+          maxSketch = serial;
+        }
       }
     }
 
     this.objectCounter = Math.max(this.objectCounter, max + 1);
-    this.polylineCounter = Math.max(this.polylineCounter, maxPolyline + 1);
+    this.sketchCounter = Math.max(this.sketchCounter, maxSketch + 1);
   }
 
   async _restoreModelHistory() {
@@ -3411,7 +3482,7 @@ export class SketchApp {
       },
       scene: {
         objectCounter: this.objectCounter,
-        polylineCounter: this.polylineCounter,
+        sketchCounter: this.sketchCounter,
         gridVisible: this.viewport.isGridVisible(),
         groundTheme: this.viewport.getGroundThemeState(),
       },
@@ -3430,8 +3501,8 @@ export class SketchApp {
       if (typeof state?.scene?.objectCounter === "number" && Number.isFinite(state.scene.objectCounter)) {
         this.objectCounter = Math.max(this.objectCounter, Math.floor(state.scene.objectCounter));
       }
-      if (typeof state?.scene?.polylineCounter === "number" && Number.isFinite(state.scene.polylineCounter)) {
-        this.polylineCounter = Math.max(this.polylineCounter, Math.floor(state.scene.polylineCounter));
+      if (typeof state?.scene?.sketchCounter === "number" && Number.isFinite(state.scene.sketchCounter)) {
+        this.sketchCounter = Math.max(this.sketchCounter, Math.floor(state.scene.sketchCounter));
       }
 
       this._setActiveTool(state?.ui?.activeTool ?? "select", { render: false });

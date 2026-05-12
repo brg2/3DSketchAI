@@ -35,7 +35,7 @@ export async function expectFeatureGraphIntegrity(page: Page) {
 
   for (const feature of graph.features) {
     expect(feature.id).toMatch(/^feature_\d+$/);
-    expect(feature.type).toMatch(/^(create_primitive|move|rotate|push_pull|polyline|group|component)$/);
+    expect(feature.type).toMatch(/^(create_primitive|move|rotate|push_pull|sketch_split|group|component)$/);
     expect(Array.isArray(feature.dependsOn)).toBe(true);
     expect(Array.isArray(feature.children)).toBe(true);
     for (const dependencyId of feature.dependsOn) {

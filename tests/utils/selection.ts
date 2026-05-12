@@ -9,6 +9,7 @@ export async function loadKnownScene(page: Page) {
     await page.waitForFunction(() => Boolean(window.__TEST_API__));
   }
   await page.evaluate(() => window.__TEST_API__.setupDeterministicScene());
+  await page.evaluate(() => window.__TEST_API__.zoomToExtents({ animate: false }));
   await page.evaluate(() => window.__TEST_API__.nextFrame(3));
   await expect(page.locator("canvas")).toBeVisible();
 }

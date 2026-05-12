@@ -9,6 +9,8 @@ function workflowSnapshotName(prefix: string, workflow: { id: string }[]) {
 }
 
 test.describe("stacked tool feature graph workflows", () => {
+  test.describe.configure({ mode: "parallel" });
+
   test.beforeEach(async ({ page }) => {
     await loadKnownScene(page);
     await expectFeatureGraphIntegrity(page);
@@ -46,6 +48,8 @@ test.describe("stacked tool feature graph workflows", () => {
 });
 
 test.describe("required stacked feature graph examples", () => {
+  test.describe.configure({ mode: "parallel" });
+
   test.beforeEach(async ({ page }) => {
     await loadKnownScene(page);
   });

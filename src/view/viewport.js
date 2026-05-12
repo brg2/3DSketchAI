@@ -14,6 +14,11 @@ import {
 import { SKY_THEMES, normalizeSkyColor, normalizeSkyTheme, skyThemePreset } from "../theme/sky-theme.js";
 
 export const ZOOM_EXTENTS_ANIMATION_MS = 250;
+const ZOOM_EXTENTS_PADDING = 1.14;
+const ZOOM_EXTENTS_ORTHOGRAPHIC_PADDING = 1.34;
+const ZOOM_EXTENTS_MIN_DISTANCE = 2.25;
+const ORTHOGRAPHIC_DEFAULT_VIEW_HEIGHT = 4;
+const ORTHOGRAPHIC_MIN_VIEW_HEIGHT = 0.25;
 
 export class Viewport {
   constructor({ canvas, onFrameNeeded = null }) {
@@ -24,6 +29,7 @@ export class Viewport {
     this._viewportWidth = 0;
     this._viewportHeight = 0;
     this._cameraTransition = null;
+    this._orthographicViewHeight = ORTHOGRAPHIC_DEFAULT_VIEW_HEIGHT;
     this._zoomTargetDistance = null;
     this._zoomFocusPoint = null;
     this._zoomRaycaster = new THREE.Raycaster();
@@ -64,7 +70,7 @@ export class Viewport {
     this.scene.background = null;
     this.scene.fog = new THREE.Fog(0xeef3f8, 38, 160);
 
-    this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 2000);
+    this.camera = this._createPerspectiveCamera();
     this.camera.position.set(6, 6, 8);
 
     this.renderer = new THREE.WebGLRenderer({
@@ -100,6 +106,92 @@ export class Viewport {
         this._requestFrame();
       }
     });
+  }
+
+  _createPerspectiveCamera() {
+    const camera = new THREE.PerspectiveCamera(60, this._cameraAspect(), 0.1, 2000);
+    camera.updateProjectionMatrix();
+    return camera;
+  }
+
+  _createOrthographicCamera() {
+    const aspect = this._cameraAspect();
+    const halfHeight = this._orthographicViewHeight / 2;
+    const halfWidth = halfHeight * aspect;
+    const camera = new THREE.OrthographicCamera(-halfWidth, halfWidth, halfHeight, -halfHeight, 0.1, 2000);
+    camera.updateProjectionMatrix();
+    return camera;
+  }
+
+  _cameraAspect() {
+    const width = this._viewportWidth || this.canvas?.clientWidth || 1;
+    const height = this._viewportHeight || this.canvas?.clientHeight || 1;
+    return Math.max(width / Math.max(height, 1), 0.001);
+  }
+
+  setCameraProjectionMode(mode, { viewHeight = null } = {}) {
+    const normalizedMode = mode === "orthographic" ? "orthographic" : "perspective";
+    if (normalizedMode === "orthographic" && Number.isFinite(viewHeight)) {
+      this._orthographicViewHeight = Math.max(ORTHOGRAPHIC_MIN_VIEW_HEIGHT, viewHeight);
+    }
+
+    const needsCameraSwap = normalizedMode === "orthographic"
+      ? !this.camera?.isOrthographicCamera
+      : !this.camera?.isPerspectiveCamera;
+    if (!needsCameraSwap) {
+      this._updateCameraProjectionForViewport();
+      this._requestFrame();
+      return;
+    }
+
+    const previousCamera = this.camera;
+    this.camera = normalizedMode === "orthographic"
+      ? this._createOrthographicCamera()
+      : this._createPerspectiveCamera();
+    if (previousCamera) {
+      this.camera.position.copy(previousCamera.position);
+      this.camera.quaternion.copy(previousCamera.quaternion);
+      this.camera.up.copy(previousCamera.up);
+      this.camera.zoom = previousCamera.zoom;
+    }
+    this._updateCameraProjectionForViewport();
+    this.controls.object = this.camera;
+    this.controls.update();
+    this._requestFrame();
+  }
+
+  setOrthographicViewHeight(viewHeight) {
+    if (!Number.isFinite(viewHeight)) {
+      return false;
+    }
+    const nextViewHeight = Math.max(ORTHOGRAPHIC_MIN_VIEW_HEIGHT, viewHeight);
+    if (Math.abs(nextViewHeight - this._orthographicViewHeight) < 1e-8) {
+      return false;
+    }
+    this._orthographicViewHeight = nextViewHeight;
+    if (this.camera?.isOrthographicCamera) {
+      this._updateCameraProjectionForViewport();
+      this._requestFrame();
+    }
+    return true;
+  }
+
+  _updateCameraProjectionForViewport() {
+    if (!this.camera) {
+      return;
+    }
+    const aspect = this._cameraAspect();
+    if (this.camera.isOrthographicCamera) {
+      const halfHeight = Math.max(ORTHOGRAPHIC_MIN_VIEW_HEIGHT, this._orthographicViewHeight) / 2;
+      const halfWidth = halfHeight * aspect;
+      this.camera.left = -halfWidth;
+      this.camera.right = halfWidth;
+      this.camera.top = halfHeight;
+      this.camera.bottom = -halfHeight;
+    } else {
+      this.camera.aspect = aspect;
+    }
+    this.camera.updateProjectionMatrix();
   }
 
   _requestFrame() {
@@ -278,19 +370,18 @@ export class Viewport {
     bounds.getCenter(center);
     bounds.getSize(size);
 
-    const radius = Math.max(size.length() * 0.5, 0.75);
-    const fov = THREE.MathUtils.degToRad(this.camera.fov);
-    const fitHeightDistance = radius / Math.sin(fov / 2);
-    const fitWidthDistance = fitHeightDistance / Math.max(this.camera.aspect, 0.001);
-    const defaultViewDistance = Math.hypot(6, 6, 8);
-    const distance = Math.max(fitHeightDistance, fitWidthDistance, defaultViewDistance);
-
     const viewDirection = this.camera.position.clone().sub(this.controls.target);
     if (viewDirection.lengthSq() < 1e-8) {
       viewDirection.set(1, 1, 1);
     }
     viewDirection.normalize();
 
+    const distance = this.camera.isOrthographicCamera
+      ? Math.max(this.camera.position.distanceTo(this.controls.target), ZOOM_EXTENTS_MIN_DISTANCE)
+      : this._distanceToFitPerspectiveBounds(size);
+    const orthographicViewHeight = this.camera.isOrthographicCamera
+      ? this._viewHeightToFitOrthographicBounds(bounds, center)
+      : null;
     const targetPosition = center.clone().add(viewDirection.multiplyScalar(distance));
     this._zoomTargetDistance = null;
     this._zoomFocusPoint = null;
@@ -300,7 +391,10 @@ export class Viewport {
       this._cameraTransition = null;
       this.controls.target.copy(center);
       this.camera.position.copy(targetPosition);
-      this.camera.updateProjectionMatrix();
+      if (orthographicViewHeight != null) {
+        this._orthographicViewHeight = orthographicViewHeight;
+      }
+      this._updateCameraProjectionForViewport();
       this.controls.update();
       this._requestFrame();
       return true;
@@ -311,11 +405,53 @@ export class Viewport {
       durationMs: transitionDurationMs,
       startPosition: this.camera.position.clone(),
       startTarget: this.controls.target.clone(),
+      startOrthographicViewHeight: this._orthographicViewHeight,
       endPosition: targetPosition,
       endTarget: center,
+      endOrthographicViewHeight: orthographicViewHeight,
     };
     this._requestFrame();
     return true;
+  }
+
+  _distanceToFitPerspectiveBounds(size) {
+    const radius = Math.max(size.length() * 0.5, 0.2);
+    const fov = THREE.MathUtils.degToRad(this.camera.fov);
+    const fitHeightDistance = (radius / Math.sin(fov / 2)) * ZOOM_EXTENTS_PADDING;
+    const fitWidthDistance = fitHeightDistance / Math.max(this.camera.aspect, 0.001);
+    return Math.max(fitHeightDistance, fitWidthDistance, ZOOM_EXTENTS_MIN_DISTANCE);
+  }
+
+  _viewHeightToFitOrthographicBounds(bounds, center) {
+    this.camera.updateMatrixWorld(true);
+    const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize();
+    const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1).normalize();
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const x of [bounds.min.x, bounds.max.x]) {
+      for (const y of [bounds.min.y, bounds.max.y]) {
+        for (const z of [bounds.min.z, bounds.max.z]) {
+          const point = new THREE.Vector3(x, y, z).sub(center);
+          const projectedX = point.dot(right);
+          const projectedY = point.dot(up);
+          minX = Math.min(minX, projectedX);
+          maxX = Math.max(maxX, projectedX);
+          minY = Math.min(minY, projectedY);
+          maxY = Math.max(maxY, projectedY);
+        }
+      }
+    }
+
+    const projectedWidth = Math.max(maxX - minX, ORTHOGRAPHIC_MIN_VIEW_HEIGHT);
+    const projectedHeight = Math.max(maxY - minY, ORTHOGRAPHIC_MIN_VIEW_HEIGHT);
+    const aspect = this._cameraAspect();
+    return Math.max(
+      projectedHeight,
+      projectedWidth / Math.max(aspect, 0.001),
+      ORTHOGRAPHIC_MIN_VIEW_HEIGHT,
+    ) * ZOOM_EXTENTS_ORTHOGRAPHIC_PADDING;
   }
 
   _now() {
@@ -339,11 +475,23 @@ export class Viewport {
 
     this.camera.position.copy(transition.startPosition).lerp(transition.endPosition, eased);
     this.controls.target.copy(transition.startTarget).lerp(transition.endTarget, eased);
+    if (this.camera.isOrthographicCamera && Number.isFinite(transition.endOrthographicViewHeight)) {
+      this._orthographicViewHeight = THREE.MathUtils.lerp(
+        transition.startOrthographicViewHeight,
+        transition.endOrthographicViewHeight,
+        eased,
+      );
+      this._updateCameraProjectionForViewport();
+    }
     this.camera.updateMatrixWorld();
 
     if (progress >= 1) {
       this.camera.position.copy(transition.endPosition);
       this.controls.target.copy(transition.endTarget);
+      if (this.camera.isOrthographicCamera && Number.isFinite(transition.endOrthographicViewHeight)) {
+        this._orthographicViewHeight = transition.endOrthographicViewHeight;
+        this._updateCameraProjectionForViewport();
+      }
       this._cameraTransition = null;
     }
 
@@ -1589,8 +1737,7 @@ export class Viewport {
 
     this._viewportWidth = width;
     this._viewportHeight = height;
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
+    this._updateCameraProjectionForViewport();
     this.renderer.setSize(width, height, false);
     return true;
   }

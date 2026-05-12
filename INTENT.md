@@ -194,7 +194,23 @@ The system must support:
 Roles must be interpreted as semantic face groups, not single topology elements.
 After a split, face identity MUST be preserved or remapped so selectors and downstream operations reference the correct sub-face region.
 
-## 4.1.9 Prohibited Behavior
+## 4.1.9 Sketch-Aware Face Splitting
+When a user draws additional subdivision lines on a face that originated from an existing sketch-driven split operation, the system MUST attempt to modify the upstream sketch instead of creating a new split feature or performing incremental topology surgery.
+
+The split feature MUST then recompute from the updated sketch as a single coherent subdivision operation.
+
+Rules:
+- sketches are authoritative subdivision definitions
+- resulting faces MUST remain traceable to the originating split feature and sketch
+- the system MUST use sketch provenance to preserve stable interaction semantics
+- the system MUST not create overlay geometry, offset fans, or viewer-side fake splits
+- the system MUST not incrementally mutate already-mutated topology when sketch continuation semantics apply
+- the system MUST not modify mesh geometry directly
+
+The system MUST maintain provenance relationships:
+- resulting face -> originating split feature -> originating sketch
+
+## 4.1.10 Prohibited Behavior
 The following are explicitly disallowed:
 - defaulting to feature creation when safe modification is possible
 - modifying features without validation
@@ -266,7 +282,7 @@ Required tools:
 ### 5.1 Line Draw Tool
 The line draw tool is a V1 topology-editing tool.
 
-It is used to place ordered points in feature/model space and commit them as a face-splitting feature operation when applied on an existing face.
+It is used to place ordered points in feature/model space and commit them as a sketch-aware face-splitting BREP operation when applied on an existing face.
 
 Usage:
 - select or infer a drawing plane
@@ -277,13 +293,39 @@ Usage:
 Modeling rules:
 - point order is preserved
 - the committed result is deterministic and replayable
-- the tool stores topology changes as features, not as sketch overlays
-- when committed on a face, the line MUST split that face into separate regions
+- the tool stores subdivision intent as a sketch graph associated with the target face
+- the sketch graph is authoritative for subdivision intent
+- the BREP split feature is the generated result of the sketch graph
+- when committed on a face, the sketch MUST produce a real BREP topology change
+- the committed result MUST replace the original face topology with newly created faces
 - the resulting sub-faces MUST be first-class selectable faces
 - the resulting sub-faces MUST support downstream direct modeling operations such as push/pull and face-level move/rotate when applicable
-- the original face is no longer treated as a single continuous surface after split
-- the line itself is not the source of truth; the split topology is the source of truth
+- the original face is no longer treated as a single continuous surface after commit
+- the line itself is not the source of truth; the resulting BREP topology is the source of truth
 - split results MUST be represented in the feature graph and replayed deterministically
+- subsequent subdivision lines on a derived face MUST attempt to modify the originating sketch first
+- the system MUST prefer re-entering the upstream sketch over creating a new split feature when sketch continuation semantics apply
+- incremental topology surgery on already-mutated faces is disallowed when sketch continuation semantics apply
+
+Face sketch execution pipeline:
+1. take sketch
+   - capture user-drawn curves in sketch space
+   - ensure curves are well-defined and valid for splitting
+2. project onto face
+   - map 2D sketch curves onto the target face surface
+   - produce valid 3D curves lying on the surface
+3. split face in BREP
+   - use projected curves to split the target face
+   - perform a full topological update with edges, wires, and faces
+   - do not use mesh or overlay approximations
+4. replace original face(s)
+   - remove the original face from the solid
+   - insert newly created faces into the topology
+   - maintain a valid watertight solid
+5. regenerate mesh
+   - tessellate the updated BREP
+   - update render geometry accordingly
+   - mesh must reflect true topology
 
 Independent extrusion rule:
 - resulting sub-faces MUST be independently extrudable via push/pull
@@ -310,6 +352,15 @@ Inference rules:
 
 Snapping must operate in feature/model space and remain stable under replay.
 
+Preview vs commit behavior:
+- preview MAY display temporary projected curves and potential split regions
+- preview MAY show lightweight visual hints
+- preview MAY evaluate the active sketch against the cached base BRep for interactive feedback
+- preview MUST NOT create overlay geometry as a final state
+- commit MUST execute the full BREP split pipeline
+- commit MUST recompute the full split feature from the updated sketch graph
+- commit MUST replace topology authoritatively
+
 ### 5.3 System-Level Implications
 Face identity must persist or be remapped after splits so that:
 - feature graph updates correctly
@@ -320,6 +371,12 @@ The modeling kernel MUST treat the split as a real BREP operation, not a visual 
 The Three.js layer MUST:
 - reflect updated topology immediately
 - maintain correct selection mapping between rendered mesh and kernel faces
+
+Sketch ownership rules:
+- sketches are topology planning environments and upstream subdivision intent definitions
+- sketches are not disposable drawing artifacts
+- the system MUST trace resulting faces back to the originating split feature and originating sketch
+- the system MUST use that provenance to decide whether new lines modify the sketch or create a new split feature
 
 Persistence requirement:
 - save/load Feature Graph JSON as primary model format
@@ -335,6 +392,7 @@ During active input:
 - do not replay the full feature graph on each event
 - do not invoke full CAD-kernel recompute on each event
 - maintain a transient operation and continuously update its parameters
+- evaluate the active sketch against the cached base BRep for interactive feedback
 - update preview mesh at interactive frame rates
 
 Preview constraints:
@@ -349,6 +407,7 @@ On interaction completion:
 - modify existing feature only when all safety conditions pass; otherwise create a new feature
 - update canonical feature graph
 - replay feature graph via Replicad + OpenCascade
+- if the committed operation is a sketch-on-face edit, recompute the upstream sketch and run the full BREP split pipeline from that sketch
 - replace preview with exact resulting geometry
 
 Commit outcome:
@@ -527,6 +586,7 @@ Example combinations include:
 - `move(object) -> push/pull(face)`
 - `rotate(face) -> move(object)`
 - `line draw(face) -> push/pull(face)`
+- `line draw(face) -> line draw(face)`
 
 Manual hand-writing of the full combination space is disallowed.
 
@@ -568,6 +628,14 @@ Tests MUST assert all of the following after each operation:
 - split faces MUST remain traceable through feature-origin identity
 - split faces MUST remain independently selectable and independently extrudable
 - face split results MUST be validated in both geometry state and feature graph snapshots
+- additional line draws on an already split face MUST modify the originating sketch when sketch continuation semantics apply
+- tests MUST fail if a new split feature is created instead of re-entering the upstream sketch under sketch continuation semantics
+- tests MUST fail if the implementation produces overlay geometry, offset fans, or viewer-side fake splits
+- additional line draws on an already split face MUST modify the originating sketch when sketch continuation semantics apply
+- tests MUST fail if a new split feature is created instead of re-entering the upstream sketch under sketch continuation semantics
+- tests MUST fail if the implementation produces overlay geometry, offset fans, or viewer-side fake splits
+- committed sketch-on-face results MUST have no residual overlay geometry
+- committed sketch-on-face results MUST be verified as real BREP topology changes
 
 4. Modification over creation when intent continues
 - prefer modification over creation when tool, selection target, and intent continuation are the same

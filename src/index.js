@@ -21,7 +21,6 @@ export {
 export {
   create3dsaiModelingLibrary,
   makeBox,
-  makePolyline,
   makeTaperedBox,
   moveBoxSubshape,
   moveBoxVertex,

@@ -15,9 +15,7 @@ export class ReplicadOpenCascadeAdapter {
     const sai = create3dsaiModelingLibrary();
     const transformReplay = replayFeaturesToSceneState({ features, exactBackend: "replicad:transforms" });
     const replayed = replayFeaturesToShapes({ features, r: replicad, sai, bakeObjectRotations: false });
-    const sceneState = Object.fromEntries(
-      Object.entries(transformReplay.sceneState).filter(([, state]) => state?.primitive === "polyline"),
-    );
+    const sceneState = {};
 
     if (!replayed.shape) {
       return {
@@ -99,10 +97,21 @@ export function meshDataForDisplayTransform(meshData, transformState) {
     vertices[offset + 1] = (vertices[offset + 1] ?? 0) - (position.y ?? 0);
     vertices[offset + 2] = (vertices[offset + 2] ?? 0) - (position.z ?? 0);
   }
+  const renderEdges = Array.isArray(meshData?.renderEdges)
+    ? meshData.renderEdges.map((edge) => ({
+      ...edge,
+      points: (edge.points ?? []).map((point) => ({
+        x: (point.x ?? 0) - (position.x ?? 0),
+        y: (point.y ?? 0) - (position.y ?? 0),
+        z: (point.z ?? 0) - (position.z ?? 0),
+      })),
+    }))
+    : meshData?.renderEdges;
   return {
     ...meshData,
     vertices,
     positions: meshData?.positions ? vertices : meshData?.positions,
+    renderEdges,
     featureSpaceOrigin: { x: position.x ?? 0, y: position.y ?? 0, z: position.z ?? 0 },
   };
 }
@@ -116,6 +125,7 @@ export function meshDataSignature(meshData) {
   hash = hashNumberArray(hash, vertices);
   hash = hashNumberArray(hash, triangles);
   hash = hashNumberArray(hash, normals);
+  hash = hashNumberArray(hash, renderEdgeNumberArray(meshData?.renderEdges));
 
   return [
     `v${vertices.length}`,
@@ -124,6 +134,17 @@ export function meshDataSignature(meshData) {
     `b${bounds.map(formatSignatureNumber).join(",")}`,
     `h${hash.toString(16)}`,
   ].join(":");
+}
+
+function renderEdgeNumberArray(renderEdges) {
+  if (!Array.isArray(renderEdges)) {
+    return [];
+  }
+  return renderEdges.flatMap((edge) => (edge.points ?? []).flatMap((point) => [
+    point.x ?? 0,
+    point.y ?? 0,
+    point.z ?? 0,
+  ]));
 }
 
 function vertexBounds(vertices) {

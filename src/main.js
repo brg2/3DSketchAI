@@ -264,13 +264,15 @@ function createTestApi(app) {
       app.hoveredObjectId = null;
       app.hoveredHit = null;
       app.objectCounter = 2;
-      app.polylineCounter = 1;
+      app.sketchCounter = 1;
       app._setModelName("E2E Deterministic Scene");
       app._setActiveTool("select", { render: false });
       app._setSelectionMode("object", { render: false });
       this.setCamera({
+        projection: "orthographic",
         position: { x: 4, y: 3, z: 5 },
         target: { x: 0, y: 0, z: 0 },
+        viewHeight: 3.4,
       });
 
       const result = await app.runtimeController.commitOperation({
@@ -291,17 +293,28 @@ function createTestApi(app) {
       app.viewport.frame();
       return this.getSceneState();
     },
-    setCamera({ position, target }) {
+    setCamera({ projection = null, position, target, viewHeight = null }) {
       app.viewport._cameraTransition = null;
       app.viewport._zoomTargetDistance = null;
       app.viewport._zoomFocusPoint = null;
+      if (projection) {
+        app.viewport.setCameraProjectionMode(projection, { viewHeight });
+      } else if (Number.isFinite(viewHeight)) {
+        app.viewport.setOrthographicViewHeight(viewHeight);
+      }
+      app.selectionPipeline.camera = app.viewport.camera;
       app.viewport.camera.position.set(position?.x ?? 4, position?.y ?? 3, position?.z ?? 5);
       app.viewport.controls.target.set(target?.x ?? 0, target?.y ?? 0, target?.z ?? 0);
       app.viewport.camera.lookAt(app.viewport.controls.target);
       app.viewport.camera.updateMatrixWorld(true);
-      app.viewport.camera.updateProjectionMatrix();
+      app.viewport._updateCameraProjectionForViewport();
       app.viewport.controls.update();
       app.viewport.frame();
+    },
+    zoomToExtents({ animate = false } = {}) {
+      const didZoom = app.viewport.zoomToObjectsExtents(app.representationStore.getSelectableMeshes(), { animate });
+      app.viewport.frame();
+      return didZoom;
     },
     getSceneState() {
       const snapshot = app.runtimeController.getSnapshot();
@@ -323,9 +336,11 @@ function createTestApi(app) {
           dragging: Boolean(app.tools.dragState),
         },
         camera: {
+          projection: app.viewport.camera.isOrthographicCamera ? "orthographic" : "perspective",
           position: vector(app.viewport.camera.position),
           target: vector(app.viewport.controls.target),
           zoom: round(app.viewport.camera.zoom),
+          viewHeight: round(app.viewport._orthographicViewHeight),
         },
       };
     },
@@ -340,8 +355,13 @@ function createTestApi(app) {
       };
     },
     getPreselectionState() {
+      const facePosition = app.preselectionFaceOverlay?.geometry?.attributes?.position;
       return {
         faceVisible: Boolean(app.preselectionFaceOverlay?.visible),
+        faceVertexCount: facePosition?.count ?? 0,
+        facePoints: facePosition
+          ? Array.from({ length: facePosition.count }, (_, index) => vector(new THREE.Vector3().fromBufferAttribute(facePosition, index)))
+          : [],
         edgeVisible: Boolean(app.preselectionEdgeOverlay?.visible),
         vertexVisible: Boolean(app.preselectionVertexOverlay?.visible),
         dragging: Boolean(app.tools.dragState),
@@ -361,10 +381,12 @@ function createTestApi(app) {
     },
     getCamera() {
       return {
+        projection: app.viewport.camera.isOrthographicCamera ? "orthographic" : "perspective",
         position: vector(app.viewport.camera.position),
         target: vector(app.viewport.controls.target),
         zoom: round(app.viewport.camera.zoom),
         fov: round(app.viewport.camera.fov),
+        viewHeight: round(app.viewport._orthographicViewHeight),
       };
     },
     getObjectByName(name) {
@@ -388,6 +410,19 @@ function createTestApi(app) {
         state: objectTransformState({ [objectId]: state })[objectId],
         mesh: meshSummaryFor(mesh, vector),
       };
+    },
+    getMeshVertices(objectName) {
+      const objectId = objectIdForName(objectName);
+      const mesh = meshForObject(objectId);
+      const position = mesh?.geometry?.attributes?.position;
+      if (!mesh || !position) {
+        return [];
+      }
+      mesh.updateMatrixWorld(true);
+      return Array.from({ length: position.count }, (_, index) => {
+        const point = new THREE.Vector3().fromBufferAttribute(position, index);
+        return vector(mesh.localToWorld(point));
+      });
     },
     getFaceData(objectName) {
       const objectId = objectIdForName(objectName);
@@ -475,7 +510,7 @@ function createTestApi(app) {
     getCanvasPointForWorldPoint(point) {
       return clientPointForWorldPoint(new THREE.Vector3(point?.x ?? 0, point?.y ?? 0, point?.z ?? 0));
     },
-    getPolylineDrawPath({ objectName = "cube", faceIndex = 0, points = [] } = {}) {
+    getLineDrawPath({ objectName = "cube", faceIndex = 0, points = [] } = {}) {
       const face = this.getFaceData(objectName).find((entry) => entry.faceIndex === faceIndex);
       if (!face) {
         return null;
@@ -635,6 +670,32 @@ function meshSummaryFor(mesh, vector) {
     geometrySignature: mesh.userData.geometrySignature ?? null,
     vertexCount: position?.count ?? 0,
     triangleCount: index ? Math.floor(index.count / 3) : Math.floor((position?.count ?? 0) / 3),
+    provenance: Array.isArray(geometry?.userData?.faceProvenance)
+      ? geometry.userData.faceProvenance.filter(Boolean).map((entry) => ({
+        featureId: entry.featureId ?? null,
+        role: entry.role ?? null,
+        sketchId: entry.sketchId ?? null,
+      }))
+      : [],
+    faceGroups: Array.isArray(geometry?.userData?.faceGroups)
+      ? geometry.userData.faceGroups.map((group) => ({
+        start: group.start ?? 0,
+        count: group.count ?? 0,
+        provenance: group.provenance ? {
+          featureId: group.provenance.featureId ?? null,
+          role: group.provenance.role ?? null,
+          sketchId: group.provenance.sketchId ?? null,
+        } : null,
+      }))
+      : [],
+    renderEdges: Array.isArray(geometry?.userData?.renderEdges)
+      ? geometry.userData.renderEdges.map((edge) => ({
+        featureId: edge.featureId ?? null,
+        sketchId: edge.sketchId ?? null,
+        role: edge.role ?? null,
+        points: (edge.points ?? []).map((point) => vector(point)),
+      }))
+      : [],
     worldBounds: {
       min: vector(worldBounds.min),
       max: vector(worldBounds.max),
@@ -767,14 +828,22 @@ function provenanceFaceCenters(mesh) {
     if (!role) {
       continue;
     }
-    const accumulator = accumulators.get(role) ?? { sum: new THREE.Vector3(), count: 0 };
+    const roles = [role];
+    const sourceRoleMatch = /(?:^|\.)face\.([pn][xyz])$/.exec(role);
+    if (sourceRoleMatch && !role.startsWith("face.")) {
+      roles.push(`face.${sourceRoleMatch[1]}`);
+    }
     for (let corner = 0; corner < 3; corner += 1) {
       const vertexIndex = index.getX(triangle * 3 + corner);
       local.fromBufferAttribute(position, vertexIndex);
-      accumulator.sum.add(mesh.localToWorld(local.clone()));
-      accumulator.count += 1;
+      const world = mesh.localToWorld(local.clone());
+      for (const roleKey of roles) {
+        const accumulator = accumulators.get(roleKey) ?? { sum: new THREE.Vector3(), count: 0 };
+        accumulator.sum.add(world);
+        accumulator.count += 1;
+        accumulators.set(roleKey, accumulator);
+      }
     }
-    accumulators.set(role, accumulator);
   }
 
   for (const [role, accumulator] of accumulators.entries()) {

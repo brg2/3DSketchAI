@@ -7,7 +7,7 @@ import { FeatureStore, featureGraphFromOperations, orderedFeatures } from "../sr
 import { applyOperationToFeatureGraph } from "../src/feature/feature-resolution.js";
 import { annotateMeshDataWithFeatureProvenance } from "../src/feature/feature-provenance.js";
 import { replayFeaturesToSceneState, replayFeaturesToShapes } from "../src/feature/feature-replay.js";
-import { createPolylineOperation, createPrimitiveOperation, mapToolGestureToOperation } from "../src/operation/operation-mapper.js";
+import { createPrimitiveOperation, createSketchSplitOperation, mapToolGestureToOperation } from "../src/operation/operation-mapper.js";
 import { OPERATION_TYPES } from "../src/operation/operation-types.js";
 
 function createRepresentationStore(initialState = {}) {
@@ -61,7 +61,7 @@ test("canonical model stores committed modeling actions as ordered features", ()
   ]);
 });
 
-test("polyline operations round-trip as replayable guide features", () => {
+test("sketch split operations round-trip as feature graph topology edits", () => {
   const model = new CanonicalModel();
   model.appendCommittedOperation(
     createPrimitiveOperation({
@@ -72,10 +72,16 @@ test("polyline operations round-trip as replayable guide features", () => {
     }),
   );
   model.appendCommittedOperation(
-    createPolylineOperation({
-      objectId: "polyline_1",
+    createSketchSplitOperation({
+      sketchId: "sketch_1",
       targetId: "obj_1",
-      selection: { mode: "face", objectId: "obj_1", objectIds: ["obj_1"] },
+      selection: {
+        mode: "face",
+        objectId: "obj_1",
+        objectIds: ["obj_1"],
+        selector: { featureId: "feature_1", role: "face.py" },
+      },
+      targetSelector: { featureId: "feature_1", role: "face.py" },
       points: [
         { x: -0.25, y: 1.1, z: -0.25 },
         { x: 0.25, y: 1.1, z: -0.25 },
@@ -91,14 +97,14 @@ test("polyline operations round-trip as replayable guide features", () => {
 
   const features = model.getFeatures();
   assert.equal(features.length, 2);
-  assert.equal(features[1].type, OPERATION_TYPES.POLYLINE);
+  assert.equal(features[1].type, OPERATION_TYPES.SKETCH_SPLIT);
   assert.deepEqual(features[1].dependsOn, ["feature_1"]);
-  assert.equal(features[1].params.objectId, "polyline_1");
-  assert.equal(features[1].params.points.length, 3);
+  assert.equal(features[1].params.sketchId, "sketch_1");
+  assert.equal(features[1].params.segments.length, 2);
 
   const operations = model.getOperations();
-  assert.equal(operations[1].type, OPERATION_TYPES.POLYLINE);
-  assert.deepEqual(operations[1].params.points, features[1].params.points);
+  assert.equal(operations[1].type, OPERATION_TYPES.SKETCH_SPLIT);
+  assert.deepEqual(operations[1].params.segments, features[1].params.segments);
 });
 
 test("feature ordering honors dependencies without changing the serialized graph", () => {
@@ -249,26 +255,40 @@ test("shape replay returns all primitive object shapes without requiring a compo
   assert.ok(replayed.shape);
 });
 
-test("feature replay emits open polyline guide scene state without a solid fallback", () => {
+test("feature replay does not emit committed sketch split overlay scene objects", () => {
   const features = featureGraphFromOperations([
-    createPolylineOperation({
-      objectId: "polyline_1",
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    createSketchSplitOperation({
+      sketchId: "sketch_1",
+      targetId: "obj_1",
+      selection: {
+        mode: "face",
+        objectId: "obj_1",
+        objectIds: ["obj_1"],
+        selector: { featureId: "feature_1", role: "face.py" },
+      },
+      targetSelector: { featureId: "feature_1", role: "face.py" },
       points: [
-        { x: 0, y: 0, z: 0 },
-        { x: 1, y: 0, z: 0 },
+        { x: -0.5, y: 1.1, z: -0.5 },
+        { x: 0.5, y: 1.1, z: 0.5 },
       ],
       closed: false,
+      plane: {
+        origin: { x: 0, y: 1.1, z: 0 },
+        normal: { x: 0, y: 1, z: 0 },
+      },
     }),
   ]);
 
   const replayed = replayFeaturesToSceneState({ features, exactBackend: "test" });
 
-  assert.equal(replayed.sceneState.polyline_1.primitive, "polyline");
-  assert.equal(replayed.sceneState.polyline_1.closed, false);
-  assert.deepEqual(replayed.sceneState.polyline_1.points, [
-    { x: 0, y: 0, z: 0 },
-    { x: 1, y: 0, z: 0 },
-  ]);
+  assert.deepEqual(Object.keys(replayed.sceneState), ["obj_1"]);
+  assert.equal(replayed.sceneState.obj_1.primitive, "box");
 });
 
 test("shape replay applies whole-object rotate feature across changed axes", () => {
@@ -1654,31 +1674,63 @@ test("push-pull feature origin metadata derives stable identity from the committ
   assert.equal(features[1].params.faceSign, 1);
 });
 
-test("polyline feature resolution updates an existing guide with the same guide id", () => {
+test("sketch split feature resolution appends segments to the originating sketch", () => {
   const features = featureGraphFromOperations([
-    createPolylineOperation({
-      objectId: "polyline_1",
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+    createSketchSplitOperation({
+      sketchId: "sketch_1",
+      targetId: "obj_1",
+      selection: {
+        mode: "face",
+        objectId: "obj_1",
+        objectIds: ["obj_1"],
+        selector: { featureId: "feature_1", role: "face.py" },
+      },
+      targetSelector: { featureId: "feature_1", role: "face.py" },
       points: [
-        { x: 0, y: 0, z: 0 },
-        { x: 1, y: 0, z: 0 },
+        { x: -0.5, y: 1.1, z: -0.5 },
+        { x: 0.5, y: 1.1, z: 0.5 },
       ],
       closed: false,
+      plane: {
+        origin: { x: 0, y: 1.1, z: 0 },
+        normal: { x: 0, y: 1, z: 0 },
+      },
     }),
   ]);
 
-  const result = applyOperationToFeatureGraph(features, createPolylineOperation({
-    objectId: "polyline_1",
+  const result = applyOperationToFeatureGraph(features, createSketchSplitOperation({
+    sketchId: "sketch_1",
+    targetId: "obj_1",
+    selection: {
+      mode: "face",
+      objectId: "obj_1",
+      objectIds: ["obj_1"],
+      selector: { featureId: "feature_2", role: "split.sketch_1.face.py", sketchId: "sketch_1" },
+    },
+    targetSelector: { featureId: "feature_1", role: "face.py" },
     points: [
-      { x: 0, y: 0, z: 0 },
-      { x: 1, y: 0, z: 0 },
-      { x: 1, y: 0, z: 1 },
+      { x: -0.5, y: 1.1, z: 0.5 },
+      { x: 0.5, y: 1.1, z: -0.5 },
     ],
-    closed: true,
+    closed: false,
+    plane: {
+      origin: { x: 0, y: 1.1, z: 0 },
+      normal: { x: 0, y: 1, z: 0 },
+    },
   }));
 
-  assert.equal(result.reason, "modified_existing_polyline");
-  assert.equal(result.features.length, 1);
-  assert.equal(result.features[0].type, OPERATION_TYPES.POLYLINE);
-  assert.equal(result.features[0].params.closed, true);
-  assert.equal(result.features[0].params.points.length, 3);
+  assert.equal(result.reason, "modified_existing_sketch_split");
+  assert.equal(result.features.length, 2);
+  assert.equal(result.features[1].type, OPERATION_TYPES.SKETCH_SPLIT);
+  assert.equal(result.features[1].params.segments.length, 2);
+  assert.deepEqual(result.features[1].params.segments.map((segment) => segment.id), [
+    "sketch_1_segment_1",
+    "sketch_1_segment_2",
+  ]);
 });

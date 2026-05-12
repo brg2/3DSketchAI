@@ -6,13 +6,13 @@ const PROFILE_BOOLEAN_EPSILON = 1e-4;
 export function create3dsaiModelingLibrary() {
   return {
     makeBox,
-    makePolyline,
     makeTaperedBox,
     moveBoxSubshape,
     moveBoxVertex,
     pushPull,
     pushPullFace,
     pushPullProfile,
+    applySketchSplit,
     rotateBoxSubshape,
     translateObject,
   };
@@ -20,16 +20,6 @@ export function create3dsaiModelingLibrary() {
 
 export function makeBox(r, min, max) {
   return new EditableBox(r, min, max);
-}
-
-export function makePolyline(_r, points, { closed = false } = {}) {
-  return {
-    kind: "polyline_guide",
-    points: points.map((point) => Array.isArray(point)
-      ? [point[0] ?? 0, point[1] ?? 0, point[2] ?? 0]
-      : [point?.x ?? 0, point?.y ?? 0, point?.z ?? 0]),
-    closed: Boolean(closed),
-  };
 }
 
 export function makeTaperedBox(r, { min, max, faceTilts = [], faceExtrudes = [], subshapeMoves = [], faceExtensions = [] }) {
@@ -108,6 +98,14 @@ export function pushPullProfile(r, shape, operation) {
   return simplifyBooleanResult(result);
 }
 
+export function applySketchSplit(_r, shape, operation) {
+  if (!shape || typeof shape.applySketchSplit !== "function") {
+    throw new Error("applySketchSplit requires an editable BREP box target");
+  }
+  shape.applySketchSplit(operation);
+  return shape;
+}
+
 export function moveBoxSubshape(_r, shape, operation) {
   if (!shape || typeof shape.moveSubshape !== "function") {
     throw new Error("moveBoxSubshape requires an editable box");
@@ -174,6 +172,7 @@ class EditableBox {
     this.corners = createBoxCorners(min, max);
     this.extraFaces = [];
     this.hiddenBaseFaces = new Set();
+    this.sketchSplitFaces = new Map();
     this.brepOperations = [];
     this.brepCompatible = true;
   }
@@ -200,6 +199,15 @@ class EditableBox {
         point[2] += vector[2];
       }
     }
+    for (const regions of this.sketchSplitFaces.values()) {
+      for (const face of regions) {
+        for (const point of face) {
+          point[0] += vector[0];
+          point[1] += vector[1];
+          point[2] += vector[2];
+        }
+      }
+    }
     return this;
   }
 
@@ -218,6 +226,15 @@ class EditableBox {
         point[0] *= scale[0];
         point[1] *= scale[1];
         point[2] *= scale[2];
+      }
+    }
+    for (const regions of this.sketchSplitFaces.values()) {
+      for (const face of regions) {
+        for (const point of face) {
+          point[0] *= scale[0];
+          point[1] *= scale[1];
+          point[2] *= scale[2];
+        }
       }
     }
     return this;
@@ -243,6 +260,13 @@ class EditableBox {
     for (const face of this.extraFaces) {
       for (const point of face) {
         rotatePointInPlace(point, normalizedAngle, normalizedOrigin, normalizedAxis);
+      }
+    }
+    for (const regions of this.sketchSplitFaces.values()) {
+      for (const face of regions) {
+        for (const point of face) {
+          rotatePointInPlace(point, normalizedAngle, normalizedOrigin, normalizedAxis);
+        }
       }
     }
     this.refreshBoundsFromCorners();
@@ -447,6 +471,25 @@ class EditableBox {
     return this;
   }
 
+  applySketchSplit(operation) {
+    const identity = faceIdentityFromSketchSplit(operation);
+    if (!identity || !Array.isArray(operation?.segments) || operation.segments.length === 0) {
+      throw new Error("sketch split requires a planar target face and at least one segment");
+    }
+
+    const loop = faceLoop(this.corners, identity, axisFromFaceIdentity(identity));
+    const regions = splitPlanarFaceLoop(loop, operation.segments, identity);
+    if (regions.length < 2) {
+      throw new Error("sketch split did not produce separate BREP face regions");
+    }
+
+    this.brepCompatible = false;
+    this.hiddenBaseFaces.add(faceKeyFromOperation(identity, axisFromFaceIdentity(identity)));
+    this.sketchSplitFaces.set(operation.sketchId, regions);
+    this.refreshBoundsFromCorners();
+    return this;
+  }
+
   toShape() {
     const brepShape = this.toBrepShape();
     if (brepShape) {
@@ -498,6 +541,9 @@ class EditableBox {
       .filter((entry) => !this.hiddenBaseFaces.has(entry.key))
       .flatMap((entry) => this.makePolygonFaces(entry.points));
     faces.push(...this.extraFaces.flatMap((points) => this.makePolygonFaces(points)));
+    for (const regions of this.sketchSplitFaces.values()) {
+      faces.push(...regions.flatMap((points) => this.makePolygonFaces(points)));
+    }
     return this.r.makeSolid(faces);
   }
 
@@ -514,6 +560,263 @@ class EditableBox {
     }
     return faces;
   }
+}
+
+function faceIdentityFromSketchSplit(operation) {
+  const role = operation?.targetSelector?.role;
+  const match = typeof role === "string" ? /^face\.([pn])([xyz])$/.exec(role) : null;
+  if (match) {
+    return {
+      faceAxis: match[2],
+      faceSign: match[1] === "p" ? 1 : -1,
+    };
+  }
+
+  const normal = normalizeVector(operation?.plane?.normal);
+  const faceAxis = dominantAxis(normal);
+  return {
+    faceAxis,
+    faceSign: Math.sign(normal[faceAxis] ?? 1) || 1,
+  };
+}
+
+function splitPlanarFaceLoop(loop, segments, identity) {
+  const faceAxis = identity.faceAxis;
+  const axes = AXES.filter((axis) => axis !== faceAxis);
+  const fixedIndex = axisIndex(faceAxis);
+  const fixedCoordinate = loop[0]?.[fixedIndex] ?? 0;
+  const boundary = loop.map((point) => projectPoint2d(point, axes));
+  const boundaryArea = polygonArea2d(boundary);
+  const boundaryAreaMagnitude = Math.abs(boundaryArea);
+  const sources = [];
+
+  for (let index = 0; index < boundary.length; index += 1) {
+    sources.push({
+      a: boundary[index],
+      b: boundary[(index + 1) % boundary.length],
+    });
+  }
+
+  for (const segment of segments) {
+    const points = segment?.points ?? [];
+    if (points.length !== 2) {
+      continue;
+    }
+    sources.push({
+      a: projectPointObject2d(points[0], axes),
+      b: projectPointObject2d(points[1], axes),
+    });
+  }
+
+  const graph = new Map();
+  for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
+    const source = sources[sourceIndex];
+    const points = [
+      { point: source.a, t: 0 },
+      { point: source.b, t: 1 },
+    ];
+
+    for (let otherIndex = 0; otherIndex < sources.length; otherIndex += 1) {
+      if (otherIndex === sourceIndex) {
+        continue;
+      }
+      const hit = segmentIntersection2d(source.a, source.b, sources[otherIndex].a, sources[otherIndex].b);
+      if (hit) {
+        points.push({
+          point: hit,
+          t: parameterOnSegment2d(source.a, source.b, hit),
+        });
+      }
+    }
+
+    points
+      .filter((entry) => entry.t >= -1e-7 && entry.t <= 1 + 1e-7)
+      .sort((a, b) => a.t - b.t)
+      .reduce((previous, current) => {
+        if (previous && distance2d(previous.point, current.point) > 1e-7) {
+          addGraphEdge(graph, previous.point, current.point);
+        }
+        return current;
+      }, null);
+  }
+
+  const regions = graphFaces(graph)
+    .filter((face) => {
+      const area = Math.abs(polygonArea2d(face));
+      return area > 1e-8 && area < boundaryAreaMagnitude - 1e-8;
+    })
+    .map((face) => face.map((point) => unprojectPoint2d(point, axes, fixedIndex, fixedCoordinate)))
+    .filter((face) => face.length >= 3);
+
+  return uniqueRegionFaces(regions);
+}
+
+function projectPoint2d(point, axes) {
+  return {
+    x: point[axisIndex(axes[0])] ?? 0,
+    y: point[axisIndex(axes[1])] ?? 0,
+  };
+}
+
+function projectPointObject2d(point, axes) {
+  return {
+    x: point?.[axes[0]] ?? 0,
+    y: point?.[axes[1]] ?? 0,
+  };
+}
+
+function unprojectPoint2d(point, axes, fixedIndex, fixedCoordinate) {
+  const out = [0, 0, 0];
+  out[fixedIndex] = fixedCoordinate;
+  out[axisIndex(axes[0])] = round6(point.x);
+  out[axisIndex(axes[1])] = round6(point.y);
+  return out;
+}
+
+function addGraphEdge(graph, a, b) {
+  const aKey = pointKey2d(a);
+  const bKey = pointKey2d(b);
+  if (aKey === bKey) {
+    return;
+  }
+  if (!graph.has(aKey)) {
+    graph.set(aKey, { point: roundedPoint2d(a), neighbors: new Set() });
+  }
+  if (!graph.has(bKey)) {
+    graph.set(bKey, { point: roundedPoint2d(b), neighbors: new Set() });
+  }
+  graph.get(aKey).neighbors.add(bKey);
+  graph.get(bKey).neighbors.add(aKey);
+}
+
+function graphFaces(graph) {
+  const sortedNeighbors = new Map();
+  for (const [key, node] of graph.entries()) {
+    sortedNeighbors.set(key, [...node.neighbors].sort((a, b) => {
+      const point = node.point;
+      const aPoint = graph.get(a).point;
+      const bPoint = graph.get(b).point;
+      return Math.atan2(aPoint.y - point.y, aPoint.x - point.x) -
+        Math.atan2(bPoint.y - point.y, bPoint.x - point.x);
+    }));
+  }
+
+  const visited = new Set();
+  const faces = [];
+  for (const [start, node] of graph.entries()) {
+    for (const next of node.neighbors) {
+      const edgeKey = `${start}->${next}`;
+      if (visited.has(edgeKey)) {
+        continue;
+      }
+
+      const cycle = [];
+      let from = start;
+      let to = next;
+      for (let guard = 0; guard < graph.size * 4; guard += 1) {
+        const currentEdgeKey = `${from}->${to}`;
+        if (visited.has(currentEdgeKey)) {
+          break;
+        }
+        visited.add(currentEdgeKey);
+        cycle.push(graph.get(from).point);
+
+        const neighbors = sortedNeighbors.get(to) ?? [];
+        const reverseIndex = neighbors.indexOf(from);
+        if (reverseIndex < 0 || neighbors.length === 0) {
+          break;
+        }
+        const nextIndex = (reverseIndex - 1 + neighbors.length) % neighbors.length;
+        const candidate = neighbors[nextIndex];
+        from = to;
+        to = candidate;
+        if (from === start && to === next) {
+          break;
+        }
+      }
+
+      if (cycle.length >= 3) {
+        faces.push(cycle);
+      }
+    }
+  }
+  return faces;
+}
+
+function uniqueRegionFaces(regions) {
+  const seen = new Set();
+  const unique = [];
+  for (const region of regions) {
+    const key = region
+      .map((point) => point.map((value) => round6(value)).join(":"))
+      .sort()
+      .join("|");
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(region);
+  }
+  return unique;
+}
+
+function segmentIntersection2d(a, b, c, d) {
+  const r = { x: b.x - a.x, y: b.y - a.y };
+  const s = { x: d.x - c.x, y: d.y - c.y };
+  const denominator = cross2d(r, s);
+  const qmp = { x: c.x - a.x, y: c.y - a.y };
+  if (Math.abs(denominator) < 1e-9) {
+    return null;
+  }
+  const t = cross2d(qmp, s) / denominator;
+  const u = cross2d(qmp, r) / denominator;
+  if (t < -1e-7 || t > 1 + 1e-7 || u < -1e-7 || u > 1 + 1e-7) {
+    return null;
+  }
+  return {
+    x: a.x + r.x * t,
+    y: a.y + r.y * t,
+  };
+}
+
+function parameterOnSegment2d(a, b, point) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const denominator = dx * dx + dy * dy;
+  if (denominator < 1e-12) {
+    return 0;
+  }
+  return ((point.x - a.x) * dx + (point.y - a.y) * dy) / denominator;
+}
+
+function polygonArea2d(points) {
+  let area = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const a = points[index];
+    const b = points[(index + 1) % points.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  return area / 2;
+}
+
+function cross2d(a, b) {
+  return a.x * b.y - a.y * b.x;
+}
+
+function distance2d(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function pointKey2d(point) {
+  return `${round6(point.x)}:${round6(point.y)}`;
+}
+
+function roundedPoint2d(point) {
+  return { x: round6(point.x), y: round6(point.y) };
+}
+
+function round6(value) {
+  return Math.round((value ?? 0) * 1000000) / 1000000;
 }
 
 function canUseBrepKernel(r) {

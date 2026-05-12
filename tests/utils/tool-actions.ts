@@ -6,7 +6,7 @@ import { activateTool, selectFace, selectObject } from "./selection";
 export type ToolAction = {
   id: string;
   tool: "Move" | "Rotate" | "Push/Pull" | "Line Draw";
-  toolType: "move" | "rotate" | "push_pull" | "polyline";
+  toolType: "move" | "rotate" | "push_pull" | "line_draw";
   selectionType: "object" | "face";
   faceIndex?: number;
   worldDelta?: { x: number; y: number; z: number };
@@ -43,7 +43,7 @@ export const STACKED_TOOL_ACTIONS: ToolAction[] = [
     toolType: "rotate",
     selectionType: "face",
     faceIndex: 0,
-    screenDelta: { x: 30, y: 0 },
+    screenDelta: { x: -30, y: 0 },
   },
   {
     id: "pushpull-face",
@@ -64,14 +64,14 @@ export const STACKED_TOOL_ACTIONS: ToolAction[] = [
   {
     id: "line-draw-face",
     tool: "Line Draw",
-    toolType: "polyline",
+    toolType: "line_draw",
     selectionType: "face",
     faceIndex: 0,
   },
   {
     id: "line-draw-object",
     tool: "Line Draw",
-    toolType: "polyline",
+    toolType: "line_draw",
     selectionType: "object",
     faceIndex: 0,
   },
@@ -85,7 +85,7 @@ export async function applyToolAction(page: Page, action: ToolAction) {
   }
 
   await activateTool(page, action.tool);
-  if (action.toolType === "polyline") {
+  if (action.toolType === "line_draw") {
     await performLineDraw(page, action);
     await waitForRenderCompletion(page);
     return expectFeatureGraphIntegrity(page);
@@ -108,7 +108,7 @@ export async function applyToolAction(page: Page, action: ToolAction) {
 
 async function performLineDraw(page: Page, action: ToolAction) {
   const drawPath = await page.evaluate(
-    ({ faceIndex }) => window.__TEST_API__.getPolylineDrawPath({
+    ({ faceIndex }) => window.__TEST_API__.getLineDrawPath({
       objectName: "cube",
       faceIndex,
       points: [

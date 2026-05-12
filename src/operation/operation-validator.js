@@ -64,29 +64,8 @@ export function validateOperation(operation) {
         assertProfile(params.profile, "params.profile");
       }
       break;
-    case OPERATION_TYPES.POLYLINE:
-      if (!params.objectId || typeof params.objectId !== "string") {
-        throw new Error("polyline requires params.objectId");
-      }
-      if (!Array.isArray(params.points) || params.points.length < 2) {
-        throw new Error("polyline requires at least two params.points");
-      }
-      for (let index = 0; index < params.points.length; index += 1) {
-        assertVector3(params.points[index], `params.points[${index}]`);
-      }
-      if (params.closed !== undefined && typeof params.closed !== "boolean") {
-        throw new Error("polyline params.closed must be a boolean");
-      }
-      if (params.closed === true && params.points.length < 3) {
-        throw new Error("closed polyline requires at least three params.points");
-      }
-      if (params.plane !== undefined && params.plane !== null) {
-        if (!params.plane || typeof params.plane !== "object") {
-          throw new Error("polyline params.plane must be an object");
-        }
-        assertVector3(params.plane.origin, "params.plane.origin");
-        assertVector3(params.plane.normal, "params.plane.normal");
-      }
+    case OPERATION_TYPES.SKETCH_SPLIT:
+      assertSketchSplitParams(params);
       break;
     case OPERATION_TYPES.GROUP:
       if (!params.groupId || typeof params.groupId !== "string") {
@@ -109,6 +88,69 @@ export function validateOperation(operation) {
   }
 
   return operation;
+}
+
+function assertSketchSplitParams(params) {
+  if (!params.sketchId || typeof params.sketchId !== "string") {
+    throw new Error("sketch_split requires params.sketchId");
+  }
+  if (!params.targetSelector || typeof params.targetSelector !== "object" || Array.isArray(params.targetSelector)) {
+    throw new Error("sketch_split requires params.targetSelector");
+  }
+  if (typeof params.targetSelector.featureId !== "string" || typeof params.targetSelector.role !== "string") {
+    throw new Error("sketch_split targetSelector requires featureId and role");
+  }
+  if (!params.plane || typeof params.plane !== "object" || Array.isArray(params.plane)) {
+    throw new Error("sketch_split requires params.plane");
+  }
+  assertVector3(params.plane.origin, "params.plane.origin");
+  assertVector3(params.plane.normal, "params.plane.normal");
+  const normalLength = vectorLength(params.plane.normal);
+  if (normalLength < 1e-8) {
+    throw new Error("sketch_split params.plane.normal must be non-zero");
+  }
+  if (!Array.isArray(params.segments) || params.segments.length === 0) {
+    throw new Error("sketch_split requires at least one segment");
+  }
+  for (let index = 0; index < params.segments.length; index += 1) {
+    const segment = params.segments[index];
+    if (!segment || typeof segment !== "object" || Array.isArray(segment)) {
+      throw new Error(`params.segments[${index}] must be an object`);
+    }
+    if (segment.id !== undefined && typeof segment.id !== "string") {
+      throw new Error(`params.segments[${index}].id must be a string`);
+    }
+    if (!Array.isArray(segment.points) || segment.points.length !== 2) {
+      throw new Error(`params.segments[${index}].points must contain exactly two points`);
+    }
+    assertVector3(segment.points[0], `params.segments[${index}].points[0]`);
+    assertVector3(segment.points[1], `params.segments[${index}].points[1]`);
+    assertPointOnPlane(segment.points[0], params.plane, normalLength, `params.segments[${index}].points[0]`);
+    assertPointOnPlane(segment.points[1], params.plane, normalLength, `params.segments[${index}].points[1]`);
+  }
+}
+
+function assertPointOnPlane(point, plane, normalLength, label) {
+  const distance = Math.abs(dotVector(subtractVector(point, plane.origin), plane.normal) / normalLength);
+  if (distance > 1e-4) {
+    throw new Error(`${label} must be coplanar with params.plane`);
+  }
+}
+
+function vectorLength(vector) {
+  return Math.hypot(vector?.x ?? 0, vector?.y ?? 0, vector?.z ?? 0);
+}
+
+function subtractVector(a, b) {
+  return {
+    x: (a?.x ?? 0) - (b?.x ?? 0),
+    y: (a?.y ?? 0) - (b?.y ?? 0),
+    z: (a?.z ?? 0) - (b?.z ?? 0),
+  };
+}
+
+function dotVector(a, b) {
+  return (a?.x ?? 0) * (b?.x ?? 0) + (a?.y ?? 0) * (b?.y ?? 0) + (a?.z ?? 0) * (b?.z ?? 0);
 }
 
 function assertProfile(value, label) {

@@ -72,9 +72,9 @@ export function applyFeature(context, feature) {
       }
       return setObjectValue(context, targetId, context.sai.pushPullFace(context.r, current, faceOperationFromPushPull(operation.params)));
 
-    case OPERATION_TYPES.POLYLINE:
-      applyPolylineMetadata(context, operation);
-      return null;
+    case OPERATION_TYPES.SKETCH_SPLIT:
+      if (!current) return null;
+      return setObjectValue(context, targetId, context.sai.applySketchSplit(context.r, current, sketchSplitOperation(operation)));
 
     case OPERATION_TYPES.GROUP:
     case OPERATION_TYPES.COMPONENT:
@@ -139,23 +139,8 @@ function applyFeatureToSceneState(sceneState, feature) {
       }
       return;
 
-    case OPERATION_TYPES.POLYLINE: {
-      const id = operation.params.objectId;
-      if (!id) return;
-      sceneState[id] = {
-        primitive: "polyline",
-        objectId: id,
-        featureId: feature.id,
-        points: operation.params.points.map((point) => ({ ...point })),
-        closed: Boolean(operation.params.closed),
-        targetId: operation.targetId ?? null,
-        plane: operation.params.plane ? structuredClone(operation.params.plane) : null,
-        position: { x: 0, y: 0, z: 0 },
-        rotation: { x: 0, y: 0, z: 0 },
-        scale: { x: 1, y: 1, z: 1 },
-      };
+    case OPERATION_TYPES.SKETCH_SPLIT:
       return;
-    }
 
     case OPERATION_TYPES.GROUP:
       for (const objectId of operation.params.objectIds ?? []) {
@@ -314,27 +299,6 @@ function applyCreatePrimitive(context, operation) {
   );
 }
 
-function applyPolylineMetadata(context, operation) {
-  const { objectId, points, closed } = operation.params;
-  if (!objectId) {
-    return;
-  }
-  if (!context.objectOrder.includes(objectId)) {
-    context.objectOrder.push(objectId);
-  }
-  context.objectState.set(objectId, {
-    primitive: "polyline",
-    objectId,
-    points: points.map((point) => ({ ...point })),
-    closed: Boolean(closed),
-    targetId: operation.targetId ?? null,
-    plane: operation.params.plane ? structuredClone(operation.params.plane) : null,
-    position: { x: 0, y: 0, z: 0 },
-    scale: { x: 1, y: 1, z: 1 },
-    rotation: { x: 0, y: 0, z: 0 },
-  });
-}
-
 function profileOperationFromPushPull(params) {
   return {
     axis: params.axis,
@@ -343,6 +307,15 @@ function profileOperationFromPushPull(params) {
     profile: structuredClone(params.profile),
     points: (params.profile?.points ?? []).map((point) => ({ ...point })),
     plane: params.profile?.plane ? structuredClone(params.profile.plane) : null,
+  };
+}
+
+function sketchSplitOperation(operation) {
+  return {
+    sketchId: operation.params.sketchId,
+    targetSelector: structuredClone(operation.params.targetSelector),
+    plane: structuredClone(operation.params.plane),
+    segments: structuredClone(operation.params.segments ?? []),
   };
 }
 
@@ -443,6 +416,7 @@ function editableTargetIds(features) {
     }
     const isEditable =
       operation.type === OPERATION_TYPES.PUSH_PULL ||
+      operation.type === OPERATION_TYPES.SKETCH_SPLIT ||
       Boolean(operation.params?.subshapeMove) ||
       Boolean(operation.params?.subshapeRotate) ||
       (operation.type === OPERATION_TYPES.ROTATE && operation.selection?.mode === "face" && faceTiltsFromParams(operation.params).length > 0);

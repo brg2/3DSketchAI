@@ -8,12 +8,15 @@ Agents must not modify, regenerate, reinterpret, or redefine `INTENT.md`. Treat 
 
 ## Single Source of Truth
 
-The canonical model script (TypeScript) is the absolute, singular source of truth for the model's geometry and history.
+The canonical feature graph is the absolute, singular source of truth for the model's geometry and history.
 
-- Modeling must be purely parametric and derived from the execution of the model script.
-- No parallel object descriptors, state-replay mechanisms, or secondary geometry definitions are allowed for modeling.
-- The application must always execute the model script through the BREP kernel (Replicad/OpenCascade) to produce the exact geometry.
-- If the kernel is unavailable or execution fails, the application should report the error rather than falling back to an approximate state-based model.
+- Modeling must be feature-graph driven and replayed through Replicad/OpenCascade.
+- No parallel object descriptors, state-replay mechanisms, mesh-volume models, mesh proxies, or secondary geometry definitions are allowed for modeling.
+- The application must always execute the feature graph through the BREP kernel (Replicad/OpenCascade) to produce exact geometry.
+- All geometry, including preview geometry, must remain BREP geometry. Meshes are render-only tessellations of OCC output and are never authoritative geometry.
+- Face-sketch commits on existing faces must resolve to real BREP topology changes; visual-only overlays are preview-only and must not become final geometry.
+- When additional subdivision lines are added to a face created by an existing sketch-driven split, the originating sketch must be modified and the same split feature recomputed instead of creating incremental split features or overlay geometry.
+- If the kernel is unavailable or execution fails, the application should report the error rather than falling back to an approximate, mesh-based, or non-BREP model.
 
 ## Orchestration Workflow
 

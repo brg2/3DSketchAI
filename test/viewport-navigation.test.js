@@ -71,7 +71,7 @@ test("zoom to extents animates camera position and target over 250ms", () => {
   viewport._applyCameraTransitionStep(ZOOM_EXTENTS_ANIMATION_MS);
 
   const expectedCenter = new THREE.Vector3(3, 0, 0);
-  const expectedDistance = Math.hypot(6, 6, 8);
+  const expectedDistance = (Math.sqrt(12) * 0.5 / Math.sin(THREE.MathUtils.degToRad(60) / 2)) * 1.14;
   assert.equal(viewport._cameraTransition, null);
   assert.ok(viewport.controls.target.distanceTo(expectedCenter) < 1e-8);
   assert.ok(Math.abs(viewport.camera.position.distanceTo(expectedCenter) - expectedDistance) < 1e-8);

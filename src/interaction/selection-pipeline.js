@@ -108,7 +108,134 @@ function pickFaceNormalWorld(intersection) {
 
 function profileFromIntersection(intersection) {
   const profile = intersection?.object?.userData?.profile;
-  return profile ? structuredClone(profile) : null;
+  if (profile) {
+    return structuredClone(profile);
+  }
+  return splitFaceProfileFromIntersection(intersection);
+}
+
+function splitFaceProfileFromIntersection(intersection) {
+  const faceIndex = intersection?.faceIndex;
+  const object = intersection?.object;
+  const geometry = object?.geometry;
+  const provenance = Number.isInteger(faceIndex)
+    ? geometry?.userData?.faceProvenance?.[faceIndex]
+    : null;
+  if (
+    !object?.userData?.objectId ||
+    !geometry?.attributes?.position ||
+    !geometry?.index ||
+    !provenance?.featureId ||
+    !provenance?.role?.startsWith?.("split.")
+  ) {
+    return null;
+  }
+
+  const triangleIndices = matchingProvenanceTriangles(geometry.userData.faceProvenance, provenance);
+  const points = boundaryPointsForTriangles(geometry, triangleIndices);
+  if (points.length < 3) {
+    return null;
+  }
+
+  const normal = intersection.face?.normal?.clone?.().normalize?.() ?? null;
+  return {
+    objectId: `${object.userData.objectId}:${provenance.role}`,
+    featureId: provenance.featureId,
+    targetId: object.userData.objectId,
+    closed: true,
+    points: orderPlanarProfilePoints(points, normal),
+    plane: {
+      origin: points[0],
+      normal: normal ? vecToRoundedObject(normal) : provenance.hint?.normal ?? { x: 0, y: 1, z: 0 },
+    },
+  };
+}
+
+function matchingProvenanceTriangles(faceProvenance, seed) {
+  const matches = [];
+  if (!Array.isArray(faceProvenance)) {
+    return matches;
+  }
+  for (let triangleIndex = 0; triangleIndex < faceProvenance.length; triangleIndex += 1) {
+    const candidate = faceProvenance[triangleIndex];
+    if (
+      candidate?.featureId === seed.featureId &&
+      candidate?.role === seed.role &&
+      (candidate?.sketchId ?? null) === (seed.sketchId ?? null)
+    ) {
+      matches.push(triangleIndex);
+    }
+  }
+  return matches;
+}
+
+function boundaryPointsForTriangles(geometry, triangleIndices) {
+  const position = geometry.attributes.position;
+  const index = geometry.index;
+  const origin = geometry.userData.featureSpaceOrigin;
+  const edgeCounts = new Map();
+  const pointsByKey = new Map();
+
+  const vertexIndexAt = (offset) => index.getX(offset);
+  const pointForVertex = (vertexIndex) => {
+    const local = new THREE.Vector3().fromBufferAttribute(position, vertexIndex);
+    if (origin) {
+      local.add(new THREE.Vector3(origin.x ?? 0, origin.y ?? 0, origin.z ?? 0));
+    }
+    return vecToRoundedObject(local);
+  };
+  const pointKey = (point) => `${point.x}:${point.y}:${point.z}`;
+
+  for (const triangleIndex of triangleIndices) {
+    const base = triangleIndex * 3;
+    const corners = [0, 1, 2].map((corner) => {
+      const point = pointForVertex(vertexIndexAt(base + corner));
+      pointsByKey.set(pointKey(point), point);
+      return point;
+    });
+    for (const [a, b] of [[corners[0], corners[1]], [corners[1], corners[2]], [corners[2], corners[0]]]) {
+      const aKey = pointKey(a);
+      const bKey = pointKey(b);
+      const key = aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`;
+      edgeCounts.set(key, (edgeCounts.get(key) ?? 0) + 1);
+    }
+  }
+
+  const boundaryKeys = new Set();
+  for (const [edgeKey, count] of edgeCounts.entries()) {
+    if (count !== 1) {
+      continue;
+    }
+    for (const key of edgeKey.split("|")) {
+      boundaryKeys.add(key);
+    }
+  }
+  return [...boundaryKeys].map((key) => pointsByKey.get(key)).filter(Boolean);
+}
+
+function orderPlanarProfilePoints(points, normal) {
+  if (points.length <= 3) {
+    return points;
+  }
+  const centroid = points.reduce((sum, point) => ({
+    x: sum.x + point.x / points.length,
+    y: sum.y + point.y / points.length,
+    z: sum.z + point.z / points.length,
+  }), { x: 0, y: 0, z: 0 });
+  const n = normal?.clone?.() ?? new THREE.Vector3(0, 1, 0);
+  if (n.lengthSq() < 1e-8) {
+    n.set(0, 1, 0);
+  }
+  n.normalize();
+  const tangent = Math.abs(n.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0).cross(n).normalize();
+  const bitangent = n.clone().cross(tangent).normalize();
+  return [...points].sort((a, b) => {
+    const av = new THREE.Vector3(a.x - centroid.x, a.y - centroid.y, a.z - centroid.z);
+    const bv = new THREE.Vector3(b.x - centroid.x, b.y - centroid.y, b.z - centroid.z);
+    const aa = Math.atan2(av.dot(bitangent), av.dot(tangent));
+    const ba = Math.atan2(bv.dot(bitangent), bv.dot(tangent));
+    return aa - ba;
+  });
 }
 
 export function selectorFromIntersection(intersection) {
@@ -129,6 +256,7 @@ export function selectorFromIntersection(intersection) {
   return {
     featureId: provenance.featureId,
     role: provenance.role,
+    ...(provenance.sketchId ? { sketchId: provenance.sketchId } : {}),
     hint: {
       point: vecToRoundedObject(point),
       normal: normal ? vecToRoundedObject(normal) : provenance.hint?.normal ?? null,

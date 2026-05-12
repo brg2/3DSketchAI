@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { RuntimeController } from "../src/app/runtime-controller.js";
 import { CanonicalModel } from "../src/modeling/canonical-model.js";
 import { ModelExecutor } from "../src/modeling/model-executor.js";
-import { createPolylineOperation, createPrimitiveOperation, mapToolGestureToOperation } from "../src/operation/operation-mapper.js";
+import { createPrimitiveOperation, createSketchSplitOperation, mapToolGestureToOperation } from "../src/operation/operation-mapper.js";
 import { OPERATION_TYPES } from "../src/operation/operation-types.js";
 import { parseOperationsFromCanonicalModelCode } from "../src/operation/operation-serializer.js";
 
@@ -108,25 +108,51 @@ test("canonical script serializes push_pull as direct callable geometry code wit
   assert.equal(parsed[1].params.distance, 3.74);
 });
 
-test("canonical script serializes polyline guides as direct modeling library calls", () => {
+test("canonical script serializes sketch splits as direct modeling library calls", () => {
   const model = new CanonicalModel();
   model.appendCommittedOperation(
-    createPolylineOperation({
-      objectId: "polyline_1",
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "obj_1",
+      position: { x: 0, y: 0.6, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+  );
+  model.appendCommittedOperation(
+    createSketchSplitOperation({
+      sketchId: "sketch_1",
+      targetId: "obj_1",
+      selection: {
+        mode: "face",
+        objectId: "obj_1",
+        objectIds: ["obj_1"],
+        selector: { featureId: "feature_1", role: "face.py" },
+      },
+      targetSelector: { featureId: "feature_1", role: "face.py" },
       points: [
-        { x: 0, y: 0, z: 0 },
-        { x: 1, y: 0, z: 0 },
+        { x: -0.5, y: 1.1, z: -0.5 },
+        { x: 0.5, y: 1.1, z: 0.5 },
       ],
       closed: false,
+      plane: {
+        origin: { x: 0, y: 1.1, z: 0 },
+        normal: { x: 0, y: 1, z: 0 },
+      },
     }),
   );
 
   const code = model.toTypeScriptModule();
 
-  assert.match(code, /const polyline_1 = sai\.makePolyline\(r,/);
-  assert.match(code, /closed: false/);
-  assert.match(code, /return null;/);
+  assert.match(code, /const obj_1 = sai\.makeBox\(r,/);
+  assert.match(code, /sai\.applySketchSplit\(r, obj_1,/);
+  assert.match(code, /return obj_1\.toShape\(\);/);
   assertNoBehaviorComments(code);
+
+  const parsed = parseOperationsFromCanonicalModelCode(code);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[1].type, OPERATION_TYPES.SKETCH_SPLIT);
+  assert.equal(parsed[1].params.sketchId, "sketch_1");
+  assert.equal(parsed[1].params.segments.length, 1);
 });
 
 test("canonical script serializes tilted face push_pull as direct face extrusion helper call", () => {

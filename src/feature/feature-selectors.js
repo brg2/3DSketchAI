@@ -1,5 +1,5 @@
 const AXES = ["x", "y", "z"];
-const ROLE_PATTERN = /^face\.([p,n])([xyz])$/;
+const ROLE_PATTERN = /(?:^|\.)face\.([p,n])([xyz])$/;
 
 export function faceRole(axis, sign) {
   if (!AXES.includes(axis)) {
@@ -38,6 +38,9 @@ export function normalizeSelector(selector) {
     featureId: selector.featureId,
     role: selector.role,
   };
+  if (typeof selector.sketchId === "string") {
+    normalized.sketchId = selector.sketchId;
+  }
   const hint = normalizeSelectorHint(selector.hint);
   if (hint) {
     normalized.hint = hint;

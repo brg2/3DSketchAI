@@ -9,15 +9,17 @@ import { operationFromFeature } from "../feature/feature-store.js";
 import { OPERATION_TYPES } from "../operation/operation-types.js";
 
 export class RuntimeController {
-  constructor({ canonicalModel, modelExecutor, representationStore, modelScriptStore, onCanonicalCodeChanged } = {}) {
+  constructor({ canonicalModel, modelExecutor, representationStore, modelScriptStore, onCanonicalCodeChanged, onPreviewChanged } = {}) {
     this.canonicalModel = canonicalModel || new CanonicalModel();
     this.modelExecutor = modelExecutor || new ModelExecutor();
     this.representationStore = representationStore || new RepresentationStore();
     this.modelScriptStore = modelScriptStore || new ModelScriptStore();
     this.onCanonicalCodeChanged = onCanonicalCodeChanged || (() => {});
+    this.onPreviewChanged = onPreviewChanged || (() => {});
     this._activeSession = null;
     this._lastExactBackend = "not-run";
     this._lastPreviewFeatureGraphUpdate = null;
+    this._previewReplayRevision = 0;
   }
 
   initialize({ scene, seedSceneState }) {
@@ -32,6 +34,10 @@ export class RuntimeController {
 
     this._activeSession = new ManipulationSession({ type, targetId, selection, params });
     const previewOperation = this._activeSession.getPreviewOperation();
+    if (this._usesExactPreview(previewOperation)) {
+      void this._updateExactPreview(previewOperation);
+      return previewOperation;
+    }
     this.representationStore.setPreviewOperation(this._operationForDisplayPreview(previewOperation));
     return previewOperation;
   }
@@ -40,6 +46,10 @@ export class RuntimeController {
     const session = this._requireActiveSession();
     session.updateParams(params);
     const previewOperation = session.getPreviewOperation();
+    if (this._usesExactPreview(previewOperation)) {
+      void this._updateExactPreview(previewOperation);
+      return previewOperation;
+    }
     this.representationStore.setPreviewOperation(this._operationForDisplayPreview(previewOperation));
     return previewOperation;
   }
@@ -49,6 +59,7 @@ export class RuntimeController {
     const operation = session.commitOperation();
     this._activeSession = null;
     this._lastPreviewFeatureGraphUpdate = null;
+    this._previewReplayRevision += 1;
     return this.commitOperation(operation);
   }
 
@@ -58,6 +69,7 @@ export class RuntimeController {
       this._activeSession = null;
     }
     this._lastPreviewFeatureGraphUpdate = null;
+    this._previewReplayRevision += 1;
     this.representationStore.clearPreview();
   }
 
@@ -226,6 +238,41 @@ export class RuntimeController {
     const nextFeature = featureGraphUpdate.features.find((feature) => feature.id === featureGraphUpdate.featureId);
     const incrementalOperation = incrementalPreviewOperation(rawOperation, currentFeature, nextFeature, featureGraphUpdate.reason);
     return incrementalOperation ?? rawOperation;
+  }
+
+  _usesExactPreview(operation) {
+    return operation?.type === OPERATION_TYPES.PUSH_PULL;
+  }
+
+  async _updateExactPreview(operation) {
+    const revision = ++this._previewReplayRevision;
+    let featureGraphUpdate;
+    try {
+      featureGraphUpdate = applyOperationToFeatureGraph(this.canonicalModel.getFeatures(), operation);
+    } catch {
+      if (revision === this._previewReplayRevision) {
+        this._lastPreviewFeatureGraphUpdate = null;
+        this.representationStore.clearPreview();
+      }
+      return null;
+    }
+
+    this._lastPreviewFeatureGraphUpdate = previewFeatureGraphUpdateSummary(featureGraphUpdate);
+    const nextFeatures = featureGraphUpdate.features;
+    const exactRepresentation = await this._executeModelForDisplay({
+      features: nextFeatures,
+      operations: nextFeatures.map((feature) => operationFromFeature(feature)),
+      sceneState: this.representationStore.getExactSceneState(),
+    });
+
+    if (revision !== this._previewReplayRevision || !this._activeSession?.isActive()) {
+      return null;
+    }
+
+    this._lastExactBackend = exactRepresentation.exactBackend;
+    this.representationStore.setPreviewExactRepresentation(exactRepresentation);
+    this.onPreviewChanged();
+    return exactRepresentation;
   }
 }
 

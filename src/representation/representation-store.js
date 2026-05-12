@@ -1,78 +1,18 @@
 import * as THREE from "three";
 
+const SPLIT_EDGE_OVERLAY_NAME = "3dsai-split-edge-overlay";
+
 function createGeometryForState(state) {
   let geometry;
   switch (state.primitive) {
     case "brep_mesh":
       geometry = createGeometryFromBrepMesh(state.meshData);
       break;
-    case "polyline":
-      geometry = isSplitProfileState(state) ? createSplitProfileGeometry(state) : createPolylineGeometry(state);
-      break;
     case "box":
     default:
       geometry = new THREE.BoxGeometry(1, 1, 1);
       break;
   }
-  return geometry;
-}
-
-function isSplitProfileState(state) {
-  return state?.primitive === "polyline" && state.closed === true && Boolean(state.targetId) && (state.points?.length ?? 0) >= 3;
-}
-
-function createPolylineGeometry(state) {
-  const points = state.points ?? [];
-  const vertices = [...points];
-  if (state.closed && points.length > 2) {
-    vertices.push(points[0]);
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    "position",
-    new THREE.BufferAttribute(new Float32Array(vertices.flatMap((point) => [
-      point.x ?? 0,
-      point.y ?? 0,
-      point.z ?? 0,
-    ])), 3),
-  );
-  return geometry;
-}
-
-function createSplitProfileGeometry(state) {
-  const normal = profileNormalFromState(state);
-  const points = (state.points ?? []).map((point) => ({
-    x: (point.x ?? 0) + normal.x * 0.002,
-    y: (point.y ?? 0) + normal.y * 0.002,
-    z: (point.z ?? 0) + normal.z * 0.002,
-  }));
-  const vertices = points.flatMap((point) => [point.x, point.y, point.z]);
-  const triangles = [];
-  for (let index = 1; index < points.length - 1; index += 1) {
-    triangles.push(0, index, index + 1);
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(vertices), 3));
-  geometry.setIndex(new THREE.Uint32BufferAttribute(new Uint32Array(triangles), 1));
-  geometry.computeVertexNormals();
-  geometry.userData.faceProvenance = Array.from({ length: triangles.length / 3 }, () => ({
-    objectId: state.targetId,
-    featureId: state.featureId ?? state.objectId ?? null,
-    role: `split.${state.objectId}`,
-    hint: {
-      point: state.plane?.origin ? { ...state.plane.origin } : { ...points[0] },
-      normal,
-    },
-  }));
-  geometry.userData.faceGroups = [{
-    start: 0,
-    count: triangles.length,
-    provenance: {
-      featureId: state.featureId ?? state.objectId ?? null,
-      role: `split.${state.objectId}`,
-    },
-  }];
   return geometry;
 }
 
@@ -99,35 +39,6 @@ function createGeometryFromBrepMesh(meshData) {
 
 function createMeshForState(state) {
   const geometry = createGeometryForState(state);
-  if (state.primitive === "polyline" && !isSplitProfileState(state)) {
-    const line = new THREE.Line(
-      geometry,
-      new THREE.LineBasicMaterial({ color: 0x24a148, depthTest: false }),
-    );
-    line.renderOrder = 35;
-    line.frustumCulled = false;
-    line.userData.geometrySignature = geometrySignature(state);
-    line.userData.meshKind = meshKindForState(state);
-    line.userData.baseColor = 0x24a148;
-    return line;
-  }
-  if (isSplitProfileState(state)) {
-    const mesh = new THREE.Mesh(
-      geometry,
-      new THREE.MeshStandardMaterial({
-        color: 0x7aa2f7,
-        roughness: 0.4,
-        metalness: 0.1,
-        side: THREE.DoubleSide,
-      }),
-    );
-    mesh.renderOrder = 36;
-    mesh.frustumCulled = false;
-    mesh.userData.geometrySignature = geometrySignature(state);
-    mesh.userData.meshKind = meshKindForState(state);
-    mesh.userData.baseColor = 0x7aa2f7;
-    return mesh;
-  }
   const material = new THREE.MeshStandardMaterial({ color: 0x7aa2f7, roughness: 0.4, metalness: 0.1 });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.castShadow = true;
@@ -154,6 +65,7 @@ function updateMeshGeometry(mesh, state) {
 function applyGeometryUserData(geometry, meshData) {
   geometry.userData.faceProvenance = cloneFaceProvenance(meshData?.faceProvenance);
   geometry.userData.faceGroups = cloneFaceGroups(meshData?.faceGroups);
+  geometry.userData.renderEdges = cloneRenderEdges(meshData?.renderEdges);
   geometry.userData.featureSpaceOrigin = meshData?.featureSpaceOrigin ? { ...meshData.featureSpaceOrigin } : null;
 }
 
@@ -161,246 +73,21 @@ function geometrySignature(state) {
   return JSON.stringify({
     primitive: state.primitive,
     meshSignature: state.meshSignature ?? null,
-    points: state.primitive === "polyline" ? state.points ?? [] : null,
-    closed: state.primitive === "polyline" ? Boolean(state.closed) : null,
-    targetId: state.primitive === "polyline" ? state.targetId ?? null : null,
-    featureId: state.primitive === "polyline" ? state.featureId ?? null : null,
-    plane: state.primitive === "polyline" ? state.plane ?? null : null,
   });
 }
 
 function meshKindForState(state) {
-  if (isSplitProfileState(state)) {
-    return "split-profile";
-  }
   return state?.primitive ?? "mesh";
 }
 
 function selectableObjectIdForState(objectId, state) {
-  return isSplitProfileState(state) ? state.targetId : objectId;
-}
-
-function profileForState(objectId, state) {
-  if (!isSplitProfileState(state)) {
-    return null;
-  }
-  return {
-    objectId,
-    featureId: state.featureId ?? null,
-    targetId: state.targetId,
-    closed: true,
-    points: (state.points ?? []).map((point) => ({ ...point })),
-    plane: state.plane ? structuredClone(state.plane) : {
-      origin: state.points?.[0] ? { ...state.points[0] } : { x: 0, y: 0, z: 0 },
-      normal: profileNormalFromState(state),
-    },
-  };
-}
-
-function profileNormalFromState(state) {
-  const normal = normalizeVector(state?.plane?.normal ?? polygonNormal(state?.points ?? []));
-  return vectorLength(normal) > 1e-8 ? normal : { x: 0, y: 1, z: 0 };
-}
-
-function polygonNormal(points) {
-  if (!Array.isArray(points) || points.length < 3) {
-    return { x: 0, y: 1, z: 0 };
-  }
-  const origin = points[0];
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const a = subtractVector(points[index], origin);
-    const b = subtractVector(points[index + 1], origin);
-    const normal = crossVector(a, b);
-    if (vectorLength(normal) > 1e-8) {
-      return normal;
-    }
-  }
-  return { x: 0, y: 1, z: 0 };
+  return objectId;
 }
 
 function applyTransform(mesh, state) {
   mesh.position.set(state.position.x, state.position.y, state.position.z);
   mesh.rotation.set(state.rotation.x, state.rotation.y, state.rotation.z);
   mesh.scale.set(state.scale.x, state.scale.y, state.scale.z);
-}
-
-function previewProfilePushPullSceneState(exactSceneState, operation) {
-  const profileId = operation?.params?.profile?.objectId;
-  if (!profileId) {
-    return null;
-  }
-
-  const nextSceneState = structuredClone(exactSceneState ?? {});
-  const profileState = nextSceneState[profileId];
-  if (profileState?.primitive !== "polyline") {
-    return null;
-  }
-
-  if (profilePushPullRemovesCap(profileState, nextSceneState[profileState.targetId], operation.params)) {
-    delete nextSceneState[profileId];
-    return nextSceneState;
-  }
-
-  translateProfilePreviewState(profileState, operation.params);
-  return nextSceneState;
-}
-
-function translateProfilePreviewState(state, params) {
-  const axis = normalizeVector(params.axis ?? state.plane?.normal ?? { x: 0, y: 1, z: 0 });
-  const distance = params.distance ?? 0;
-  const delta = scaleVector(axis, distance);
-  state.points = (state.points ?? []).map((point) => addVector(point, delta));
-  if (state.plane?.origin) {
-    state.plane.origin = addVector(state.plane.origin, delta);
-  }
-}
-
-function profilePushPullRemovesCap(profileState, targetState, params) {
-  const distance = params.distance ?? 0;
-  if (!Number.isFinite(distance) || distance >= -1e-8 || !profileState || !targetState) {
-    return false;
-  }
-
-  const axis = normalizeVector(params.axis ?? profileState.plane?.normal ?? { x: 0, y: 1, z: 0 });
-  const bounds = projectedStateBounds(targetState, axis);
-  if (!bounds) {
-    return false;
-  }
-
-  const origin = profileState.plane?.origin ?? profileState.points?.[0] ?? { x: 0, y: 0, z: 0 };
-  const destination = dotVector(origin, axis) + distance;
-  const tolerance = 1e-5;
-  return destination <= bounds.min + tolerance || destination >= bounds.max - tolerance;
-}
-
-function projectedStateBounds(state, axis) {
-  if (state.primitive === "brep_mesh") {
-    return projectedVerticesBounds(state.meshData?.vertices ?? state.meshData?.positions, axis);
-  }
-
-  if (state.primitive !== "box") {
-    return null;
-  }
-
-  const center = state.position ?? { x: 0, y: 0, z: 0 };
-  const size = state.scale ?? { x: 1, y: 1, z: 1 };
-  const half = {
-    x: Math.abs(size.x ?? 1) / 2,
-    y: Math.abs(size.y ?? 1) / 2,
-    z: Math.abs(size.z ?? 1) / 2,
-  };
-  return projectedPointsBounds([
-    { x: (center.x ?? 0) - half.x, y: (center.y ?? 0) - half.y, z: (center.z ?? 0) - half.z },
-    { x: (center.x ?? 0) - half.x, y: (center.y ?? 0) - half.y, z: (center.z ?? 0) + half.z },
-    { x: (center.x ?? 0) - half.x, y: (center.y ?? 0) + half.y, z: (center.z ?? 0) - half.z },
-    { x: (center.x ?? 0) - half.x, y: (center.y ?? 0) + half.y, z: (center.z ?? 0) + half.z },
-    { x: (center.x ?? 0) + half.x, y: (center.y ?? 0) - half.y, z: (center.z ?? 0) - half.z },
-    { x: (center.x ?? 0) + half.x, y: (center.y ?? 0) - half.y, z: (center.z ?? 0) + half.z },
-    { x: (center.x ?? 0) + half.x, y: (center.y ?? 0) + half.y, z: (center.z ?? 0) - half.z },
-    { x: (center.x ?? 0) + half.x, y: (center.y ?? 0) + half.y, z: (center.z ?? 0) + half.z },
-  ], axis);
-}
-
-function projectedVerticesBounds(vertices, axis) {
-  if (!Array.isArray(vertices) || vertices.length < 3) {
-    return null;
-  }
-
-  let min = Infinity;
-  let max = -Infinity;
-  for (let index = 0; index < vertices.length; index += 3) {
-    const projection = dotVector({
-      x: vertices[index + 0] ?? 0,
-      y: vertices[index + 1] ?? 0,
-      z: vertices[index + 2] ?? 0,
-    }, axis);
-    min = Math.min(min, projection);
-    max = Math.max(max, projection);
-  }
-  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
-}
-
-function projectedPointsBounds(points, axis) {
-  let min = Infinity;
-  let max = -Infinity;
-  for (const point of points) {
-    const projection = dotVector(point, axis);
-    min = Math.min(min, projection);
-    max = Math.max(max, projection);
-  }
-  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
-}
-
-function previewPushPullMeshData(meshData, operation) {
-  if (!meshData) {
-    return null;
-  }
-
-  const vertices = [...(meshData.vertices ?? meshData.positions ?? [])];
-  const sourceTriangles = [...(meshData.triangles ?? meshData.indices ?? [])];
-  const triangles = [...sourceTriangles];
-  if (vertices.length === 0 || triangles.length === 0) {
-    return null;
-  }
-
-  const axis = normalizeVector(operation.params?.axis ?? { x: 0, y: 0, z: 1 });
-  const distance = operation.params?.distance ?? 0;
-  if (!Number.isFinite(distance) || Math.abs(distance) < 1e-8) {
-    return {
-      ...meshData,
-      vertices,
-      triangles,
-      normals: [...(meshData.normals ?? [])],
-      faceGroups: cloneFaceGroups(meshData.faceGroups),
-    };
-  }
-
-  const selectedTriangles = selectedPushPullTriangleIndices({
-    vertices,
-    triangles,
-    faceGroups: meshData.faceGroups ?? [],
-    faceProvenance: meshData.faceProvenance ?? [],
-    selector: operation.selection?.selector ?? null,
-    faceIndex: operation.selection?.faceIndex ?? operation.params?.faceIndex ?? null,
-    axis,
-  });
-  if (selectedTriangles.size === 0) {
-    return null;
-  }
-
-  const selectedVertices = verticesFromTriangles(sourceTriangles, selectedTriangles);
-  const capVertexBySource = new Map();
-  for (const index of selectedVertices) {
-    capVertexBySource.set(index, pushOffsetVertex(vertices, index, axis, distance));
-  }
-
-  triangles.length = 0;
-  triangles.push(...trianglesWithoutSelected(sourceTriangles, selectedTriangles));
-
-  for (const triangleIndex of selectedTriangles) {
-    const base = triangleIndex * 3;
-    triangles.push(
-      capVertexBySource.get(sourceTriangles[base]),
-      capVertexBySource.get(sourceTriangles[base + 1]),
-      capVertexBySource.get(sourceTriangles[base + 2]),
-    );
-  }
-
-  for (const [a, b] of boundaryEdgesForTriangles(sourceTriangles, selectedTriangles)) {
-    const wallA = pushSourceVertex(vertices, a);
-    const wallB = pushSourceVertex(vertices, b);
-    const wallOuterB = pushOffsetVertex(vertices, b, axis, distance);
-    const wallOuterA = pushOffsetVertex(vertices, a, axis, distance);
-    triangles.push(wallA, wallB, wallOuterB, wallA, wallOuterB, wallOuterA);
-  }
-
-  return {
-    ...meshData,
-    vertices,
-    triangles,
-    normals: [],
-    faceGroups: cloneFaceGroups(meshData.faceGroups),
-  };
 }
 
 function previewSubshapeMoveMeshData(meshData, operation) {
@@ -737,183 +424,6 @@ function selectedPushPullVertexIndices({ vertices, triangles, faceGroups, facePr
   return selectedVerticesFromExtremePlane({ vertices, axis });
 }
 
-function selectedPushPullTriangleIndices({ vertices, triangles, faceGroups, faceProvenance, selector, faceIndex, axis }) {
-  const byGroup = selectedTrianglesFromFaceGroup({ triangles, faceGroups, faceIndex });
-  if (byGroup.size > 0) {
-    return byGroup;
-  }
-
-  const byPlane = selectedTrianglesFromTrianglePlane({ vertices, triangles, faceIndex, axis });
-  if (byPlane.size > 0) {
-    return byPlane;
-  }
-
-  const bySelector = selectedTrianglesFromSelector({ faceProvenance, selector });
-  if (bySelector.size > 0) {
-    return bySelector;
-  }
-
-  return selectedTrianglesFromExtremePlane({ vertices, triangles, axis });
-}
-
-function selectedTrianglesFromSelector({ faceProvenance, selector }) {
-  const selected = new Set();
-  if (!selector?.role || !Array.isArray(faceProvenance)) {
-    return selected;
-  }
-
-  for (let triangleIndex = 0; triangleIndex < faceProvenance.length; triangleIndex += 1) {
-    const provenance = faceProvenance[triangleIndex];
-    if (!provenance || provenance.role !== selector.role) {
-      continue;
-    }
-    if (selector.featureId && provenance.featureId !== selector.featureId) {
-      continue;
-    }
-    selected.add(triangleIndex);
-  }
-
-  if (selected.size > 0 || !selector.featureId) {
-    return selected;
-  }
-
-  for (let triangleIndex = 0; triangleIndex < faceProvenance.length; triangleIndex += 1) {
-    if (faceProvenance[triangleIndex]?.role === selector.role) {
-      selected.add(triangleIndex);
-    }
-  }
-  return selected;
-}
-
-function selectedTrianglesFromFaceGroup({ triangles, faceGroups, faceIndex }) {
-  const selected = new Set();
-  if (!Number.isInteger(faceIndex) || faceIndex < 0 || !Array.isArray(faceGroups)) {
-    return selected;
-  }
-
-  const triangleOffset = faceIndex * 3;
-  const group = faceGroups.find((candidate) => {
-    if (!candidate || typeof candidate !== "object") {
-      return false;
-    }
-    const start = candidate.start ?? 0;
-    const count = candidate.count ?? 0;
-    return triangleOffset >= start && triangleOffset < start + count;
-  });
-  if (!group) {
-    return selected;
-  }
-
-  const startTriangle = Math.floor((group.start ?? 0) / 3);
-  const endTriangle = Math.min(Math.ceil(((group.start ?? 0) + (group.count ?? 0)) / 3), triangles.length / 3);
-  for (let triangleIndex = startTriangle; triangleIndex < endTriangle; triangleIndex += 1) {
-    selected.add(triangleIndex);
-  }
-  return selected;
-}
-
-function selectedTrianglesFromTrianglePlane({ vertices, triangles, faceIndex, axis }) {
-  const selected = new Set();
-  if (!Number.isInteger(faceIndex) || faceIndex < 0) {
-    return selected;
-  }
-
-  const base = faceIndex * 3;
-  if (base + 2 >= triangles.length) {
-    return selected;
-  }
-
-  const planeProjection = triangleProjection(vertices, triangles, faceIndex, axis);
-  const tolerance = meshTolerance(vertices);
-  for (let triangleIndex = 0; triangleIndex < triangles.length / 3; triangleIndex += 1) {
-    if (Math.abs(triangleProjection(vertices, triangles, triangleIndex, axis) - planeProjection) <= tolerance) {
-      selected.add(triangleIndex);
-    }
-  }
-  return selected;
-}
-
-function selectedTrianglesFromExtremePlane({ vertices, triangles, axis }) {
-  const selected = new Set();
-  let maxProjection = -Infinity;
-  for (let vertexIndex = 0; vertexIndex < vertices.length / 3; vertexIndex += 1) {
-    maxProjection = Math.max(maxProjection, vertexProjection(vertices, vertexIndex, axis));
-  }
-
-  const tolerance = meshTolerance(vertices);
-  for (let triangleIndex = 0; triangleIndex < triangles.length / 3; triangleIndex += 1) {
-    const base = triangleIndex * 3;
-    const allOnPlane = [triangles[base], triangles[base + 1], triangles[base + 2]]
-      .every((vertexIndex) => Math.abs(vertexProjection(vertices, vertexIndex, axis) - maxProjection) <= tolerance);
-    if (allOnPlane) {
-      selected.add(triangleIndex);
-    }
-  }
-  return selected;
-}
-
-function verticesFromTriangles(triangles, triangleIndices) {
-  const selected = new Set();
-  for (const triangleIndex of triangleIndices) {
-    addTriangleVertices(selected, triangles, triangleIndex);
-  }
-  return selected;
-}
-
-function pushSourceVertex(vertices, sourceIndex) {
-  const offset = sourceIndex * 3;
-  const nextIndex = vertices.length / 3;
-  vertices.push(vertices[offset + 0], vertices[offset + 1], vertices[offset + 2]);
-  return nextIndex;
-}
-
-function pushOffsetVertex(vertices, sourceIndex, axis, distance) {
-  const offset = sourceIndex * 3;
-  const nextIndex = vertices.length / 3;
-  vertices.push(
-    vertices[offset + 0] + axis.x * distance,
-    vertices[offset + 1] + axis.y * distance,
-    vertices[offset + 2] + axis.z * distance,
-  );
-  return nextIndex;
-}
-
-function trianglesWithoutSelected(triangles, selectedTriangleIndices) {
-  const next = [];
-  for (let triangleIndex = 0; triangleIndex < triangles.length / 3; triangleIndex += 1) {
-    if (selectedTriangleIndices.has(triangleIndex)) {
-      continue;
-    }
-    const base = triangleIndex * 3;
-    next.push(triangles[base], triangles[base + 1], triangles[base + 2]);
-  }
-  return next;
-}
-
-function boundaryEdgesForTriangles(triangles, triangleIndices) {
-  const byKey = new Map();
-  for (const triangleIndex of triangleIndices) {
-    const base = triangleIndex * 3;
-    const edges = [
-      [triangles[base], triangles[base + 1]],
-      [triangles[base + 1], triangles[base + 2]],
-      [triangles[base + 2], triangles[base]],
-    ];
-    for (const edge of edges) {
-      const key = edge[0] < edge[1] ? `${edge[0]}:${edge[1]}` : `${edge[1]}:${edge[0]}`;
-      const existing = byKey.get(key);
-      if (existing) {
-        existing.count += 1;
-      } else {
-        byKey.set(key, { count: 1, edge });
-      }
-    }
-  }
-  return [...byKey.values()]
-    .filter((entry) => entry.count === 1)
-    .map((entry) => entry.edge);
-}
-
 function selectedVerticesFromSelector({ vertices, triangles, faceProvenance, selector }) {
   const selected = new Set();
   if (!selector?.role || !Array.isArray(faceProvenance)) {
@@ -926,6 +436,9 @@ function selectedVerticesFromSelector({ vertices, triangles, faceProvenance, sel
       continue;
     }
     if (selector.featureId && provenance.featureId !== selector.featureId) {
+      continue;
+    }
+    if (selector.sketchId && provenance.sketchId !== selector.sketchId) {
       continue;
     }
     addTriangleVertices(selected, triangles, triangleIndex);
@@ -1150,15 +663,6 @@ function vertexProjection(vertices, vertexIndex, axis) {
   return vertices[offset + 0] * axis.x + vertices[offset + 1] * axis.y + vertices[offset + 2] * axis.z;
 }
 
-function triangleProjection(vertices, triangles, triangleIndex, axis) {
-  const base = triangleIndex * 3;
-  return (
-    vertexProjection(vertices, triangles[base], axis) +
-    vertexProjection(vertices, triangles[base + 1], axis) +
-    vertexProjection(vertices, triangles[base + 2], axis)
-  ) / 3;
-}
-
 function meshTolerance(vertices) {
   const bounds = meshBounds(vertices);
   const diagonal = Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ);
@@ -1201,42 +705,6 @@ function normalizeVector(vector) {
   };
 }
 
-function vectorLength(vector) {
-  return Math.hypot(vector?.x ?? 0, vector?.y ?? 0, vector?.z ?? 0);
-}
-
-function addVector(a, b) {
-  return {
-    x: (a?.x ?? 0) + (b?.x ?? 0),
-    y: (a?.y ?? 0) + (b?.y ?? 0),
-    z: (a?.z ?? 0) + (b?.z ?? 0),
-  };
-}
-
-function scaleVector(vector, scalar) {
-  return {
-    x: (vector?.x ?? 0) * scalar,
-    y: (vector?.y ?? 0) * scalar,
-    z: (vector?.z ?? 0) * scalar,
-  };
-}
-
-function subtractVector(a, b) {
-  return {
-    x: (a?.x ?? 0) - (b?.x ?? 0),
-    y: (a?.y ?? 0) - (b?.y ?? 0),
-    z: (a?.z ?? 0) - (b?.z ?? 0),
-  };
-}
-
-function crossVector(a, b) {
-  return {
-    x: (a?.y ?? 0) * (b?.z ?? 0) - (a?.z ?? 0) * (b?.y ?? 0),
-    y: (a?.z ?? 0) * (b?.x ?? 0) - (a?.x ?? 0) * (b?.z ?? 0),
-    z: (a?.x ?? 0) * (b?.y ?? 0) - (a?.y ?? 0) * (b?.x ?? 0),
-  };
-}
-
 function normalizeVectorOrNull(vector) {
   if (!vector || typeof vector !== "object") {
     return null;
@@ -1260,6 +728,10 @@ function cloneFaceProvenance(faceProvenance) {
   return Array.isArray(faceProvenance)
     ? faceProvenance.map((provenance) => (provenance ? structuredClone(provenance) : null))
     : [];
+}
+
+function cloneRenderEdges(renderEdges) {
+  return Array.isArray(renderEdges) ? renderEdges.map((edge) => structuredClone(edge)) : [];
 }
 
 function axisFromMoveIdentity(move) {
@@ -1307,6 +779,11 @@ export class RepresentationStore {
   setPreviewOperation(operation) {
     this.previewOperation = structuredClone(operation);
     this.applyPreviewToScene();
+  }
+
+  setPreviewExactRepresentation(exactRepresentation) {
+    this.previewOperation = null;
+    this._applySceneStateToScene(structuredClone(exactRepresentation?.sceneState ?? {}));
   }
 
   clearPreview() {
@@ -1364,19 +841,14 @@ export class RepresentationStore {
       }
       mesh.userData.objectId = selectableObjectIdForState(objectId, state);
       mesh.userData.sourceObjectId = objectId;
-      mesh.userData.profile = profileForState(objectId, state);
+      mesh.userData.profile = null;
       updateMeshGeometry(mesh, state);
+      updateSplitEdgeOverlay(mesh, state);
       applyTransform(mesh, state);
       mesh.castShadow = state.primitive === "brep_mesh";
       mesh.receiveShadow = state.primitive === "brep_mesh";
-      mesh.userData.baseColor =
-        state.primitive === "polyline" && !isSplitProfileState(state) ? 0x24a148 : this.objectColorHex;
+      mesh.userData.baseColor = this.objectColorHex;
       mesh.material.color?.setHex(mesh.userData.baseColor);
-      if (isSplitProfileState(state)) {
-        mesh.material.depthTest = true;
-        mesh.material.transparent = false;
-        mesh.material.opacity = 1;
-      }
     }
   }
 
@@ -1387,27 +859,6 @@ export class RepresentationStore {
     }
 
     const { type, targetId, params } = this.previewOperation;
-
-    if (params?.profile) {
-      const previewSceneState = previewProfilePushPullSceneState(this.exactSceneState, this.previewOperation);
-      if (previewSceneState) {
-        this._applySceneStateToScene(previewSceneState);
-        const previewMesh = targetId ? this.meshById.get(targetId) : null;
-        if (previewMesh) {
-          previewMesh.receiveShadow = false;
-        }
-        const profileMesh = this.meshById.get(params.profile.objectId);
-        if (profileMesh) {
-          profileMesh.material.depthTest = false;
-          profileMesh.material.transparent = false;
-          profileMesh.material.opacity = 1;
-          profileMesh.renderOrder = 60;
-        }
-        return;
-      }
-      this.applyExactStateToScene();
-      return;
-    }
 
     this.applyExactStateToScene();
     const mesh = targetId ? this.meshById.get(targetId) : null;
@@ -1534,27 +985,60 @@ export class RepresentationStore {
       return;
     }
 
-    if (params?.profile) {
-      return;
-    }
-
-    if (previewState.primitive === "brep_mesh") {
-      const meshData = previewPushPullMeshData(previewState.meshData, this.previewOperation);
-      if (!meshData) {
-        return;
-      }
-      previewState.meshData = meshData;
-      previewState.meshSignature = [
-        previewState.meshSignature ?? "mesh",
-        this.previewOperation.selection?.faceIndex ?? "face",
-        this.previewOperation.params?.distance ?? 0,
-      ].join(":");
-      updateMeshGeometry(mesh, previewState);
-      applyTransform(mesh, previewState);
-    }
+    void params;
   }
 
   getSelectableMeshes() {
     return [...this.meshById.values()].filter((object) => object.isMesh);
   }
+}
+
+function updateSplitEdgeOverlay(mesh, state) {
+  const edges = state.primitive === "brep_mesh" ? state.meshData?.renderEdges ?? [] : [];
+  let overlay = mesh.getObjectByName(SPLIT_EDGE_OVERLAY_NAME);
+  if (!Array.isArray(edges) || edges.length === 0) {
+    if (overlay) {
+      mesh.remove(overlay);
+      overlay.geometry?.dispose?.();
+      overlay.material?.dispose?.();
+    }
+    return;
+  }
+
+  const vertices = [];
+  for (const edge of edges) {
+    const [a, b] = edge?.points ?? [];
+    if (!a || !b) {
+      continue;
+    }
+    vertices.push(a.x ?? 0, a.y ?? 0, a.z ?? 0, b.x ?? 0, b.y ?? 0, b.z ?? 0);
+  }
+
+  if (vertices.length === 0) {
+    return;
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(vertices), 3));
+
+  if (!overlay) {
+    overlay = new THREE.LineSegments(
+      geometry,
+      new THREE.LineBasicMaterial({
+        color: 0x143a5a,
+        depthTest: false,
+        transparent: true,
+        opacity: 0.95,
+      }),
+    );
+    overlay.name = SPLIT_EDGE_OVERLAY_NAME;
+    overlay.renderOrder = 80;
+    overlay.frustumCulled = false;
+    overlay.userData.renderOnly = true;
+    mesh.add(overlay);
+    return;
+  }
+
+  overlay.geometry.dispose();
+  overlay.geometry = geometry;
 }

@@ -24,8 +24,8 @@ export function annotateMeshDataWithFeatureProvenance(meshData, { objectId, feat
     return meshData;
   }
 
-  const roleOwners = featureRoleOwnersForObject(features, objectId);
-  if (roleOwners.size === 0) {
+  const roleContext = featureRoleContextForObject(features, objectId);
+  if (roleContext.roleOwners.size === 0 && roleContext.sketchSplitsBySourceRole.size === 0) {
     return meshData;
   }
 
@@ -33,11 +33,12 @@ export function annotateMeshDataWithFeatureProvenance(meshData, { objectId, feat
   for (let triangleIndex = 0; triangleIndex < triangles.length / 3; triangleIndex += 1) {
     const geometry = triangleGeometry(vertices, triangles, normals, triangleIndex);
     const role = roleForTriangle(geometry);
-    const owner = role ? roleOwners.get(role) : null;
+    const owner = role ? ownerForTriangleRole(roleContext, role, geometry) : null;
     faceProvenance.push(owner ? {
       objectId,
       featureId: owner.featureId,
-      role,
+      role: owner.role,
+      ...(owner.sketchId ? { sketchId: owner.sketchId } : {}),
       hint: {
         point: geometry.centroid,
         normal: geometry.normal,
@@ -49,11 +50,18 @@ export function annotateMeshDataWithFeatureProvenance(meshData, { objectId, feat
     ...meshData,
     faceProvenance,
     faceGroups: provenanceFaceGroups(faceProvenance),
+    renderEdges: sketchSplitRenderEdgesFromTopology(vertices, triangles, faceProvenance),
   };
 }
 
 export function featureRoleOwnersForObject(features, objectId) {
+  return featureRoleContextForObject(features, objectId).roleOwners;
+}
+
+function featureRoleContextForObject(features, objectId) {
   const roleOwners = new Map();
+  const sketchSplitsBySourceRole = new Map();
+  const sketchSplitFeatures = [];
   for (const feature of orderedFeatures(normalizeFeatureGraph(features ?? []))) {
     if (feature.type === OPERATION_TYPES.CREATE_PRIMITIVE && feature.params?.objectId === objectId) {
       for (const role of BOX_FACE_ROLES) {
@@ -66,12 +74,55 @@ export function featureRoleOwnersForObject(features, objectId) {
       continue;
     }
 
+    if (feature.type === OPERATION_TYPES.SKETCH_SPLIT) {
+      const sourceRole = feature.params?.targetSelector?.role;
+      if (sourceRole && faceIdentityFromRole(sourceRole)) {
+        sketchSplitsBySourceRole.set(sourceRole, feature);
+        sketchSplitFeatures.push(feature);
+      }
+      continue;
+    }
+
     const role = feature.target?.selection?.selector?.role ?? roleFromFeature(feature);
     if (role && faceIdentityFromRole(role)) {
       roleOwners.set(role, { featureId: feature.id, role });
     }
   }
-  return roleOwners;
+  return { roleOwners, sketchSplitsBySourceRole, sketchSplitFeatures };
+}
+
+function ownerForTriangleRole(context, sourceRole, geometry) {
+  const sketchSplit = context.sketchSplitsBySourceRole.get(sourceRole);
+  if (sketchSplit?.params?.sketchId) {
+    return {
+      featureId: sketchSplit.id,
+      role: `split.${sketchSplit.params.sketchId}.region.${sketchSplitRegionKey(geometry.centroid, sketchSplit, sourceRole)}.${sourceRole}`,
+      sketchId: sketchSplit.params.sketchId,
+    };
+  }
+  return context.roleOwners.get(sourceRole) ?? null;
+}
+
+function sketchSplitRegionKey(point, feature, sourceRole) {
+  const identity = faceIdentityFromRole(sourceRole);
+  const faceAxis = identity?.axis ?? dominantAxis(feature.params?.plane?.normal ?? { x: 0, y: 1, z: 0 });
+  const axes = AXES.filter((axis) => axis !== faceAxis);
+  const keys = [];
+  for (const segment of feature.params?.segments ?? []) {
+    const [a, b] = segment?.points ?? [];
+    if (!a || !b) {
+      continue;
+    }
+    const ax = a[axes[0]] ?? 0;
+    const ay = a[axes[1]] ?? 0;
+    const bx = b[axes[0]] ?? 0;
+    const by = b[axes[1]] ?? 0;
+    const px = point[axes[0]] ?? 0;
+    const py = point[axes[1]] ?? 0;
+    const cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+    keys.push(cross >= 0 ? "p" : "n");
+  }
+  return keys.length > 0 ? keys.join("") : "base";
 }
 
 function roleFromFeature(feature) {
@@ -93,6 +144,164 @@ function roleFromFeature(feature) {
   }
 
   return null;
+}
+
+function sketchSplitRenderEdgesFromTopology(vertices, triangles, faceProvenance) {
+  if (!Array.isArray(faceProvenance) || faceProvenance.length === 0) {
+    return [];
+  }
+
+  const edgesByKey = new Map();
+  for (let triangleIndex = 0; triangleIndex < triangles.length / 3; triangleIndex += 1) {
+    const provenance = faceProvenance[triangleIndex];
+    if (!isSplitRegionProvenance(provenance)) {
+      continue;
+    }
+
+    const base = triangleIndex * 3;
+    const corners = [
+      vertexAt(vertices, triangles[base]),
+      vertexAt(vertices, triangles[base + 1]),
+      vertexAt(vertices, triangles[base + 2]),
+    ];
+    for (const [a, b] of [[corners[0], corners[1]], [corners[1], corners[2]], [corners[2], corners[0]]]) {
+      const aKey = pointKey3d(a);
+      const bKey = pointKey3d(b);
+      const edgeKey = aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`;
+      const entry = edgesByKey.get(edgeKey) ?? {
+        points: aKey < bKey ? [a, b] : [b, a],
+        provenances: [],
+      };
+      entry.provenances.push(provenance);
+      edgesByKey.set(edgeKey, entry);
+    }
+  }
+
+  const rawEdges = [];
+  for (const entry of edgesByKey.values()) {
+    const boundary = splitBoundaryProvenance(entry.provenances);
+    if (!boundary || distance3d(entry.points[0], entry.points[1]) <= 1e-7) {
+      continue;
+    }
+    rawEdges.push({
+      featureId: boundary.featureId,
+      sketchId: boundary.sketchId,
+      points: entry.points,
+    });
+  }
+  return mergeCollinearRenderEdges(rawEdges);
+}
+
+function isSplitRegionProvenance(provenance) {
+  return Boolean(
+    provenance?.featureId &&
+    provenance?.sketchId &&
+    provenance?.role?.startsWith?.(`split.${provenance.sketchId}.region.`),
+  );
+}
+
+function splitBoundaryProvenance(provenances) {
+  for (let i = 0; i < provenances.length; i += 1) {
+    const a = provenances[i];
+    if (!isSplitRegionProvenance(a)) {
+      continue;
+    }
+    for (let j = i + 1; j < provenances.length; j += 1) {
+      const b = provenances[j];
+      if (
+        isSplitRegionProvenance(b) &&
+        a.featureId === b.featureId &&
+        a.sketchId === b.sketchId &&
+        a.role !== b.role
+      ) {
+        return {
+          featureId: a.featureId,
+          sketchId: a.sketchId,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function mergeCollinearRenderEdges(edges) {
+  const groups = new Map();
+  for (const edge of edges) {
+    const direction = normalizedDirection(edge.points[0], edge.points[1]);
+    if (!direction) {
+      continue;
+    }
+    const lineKey = [
+      edge.featureId,
+      edge.sketchId,
+      direction.x,
+      direction.y,
+      direction.z,
+      ...lineMoment(edge.points[0], direction),
+    ].join(":");
+    const group = groups.get(lineKey) ?? {
+      featureId: edge.featureId,
+      sketchId: edge.sketchId,
+      direction,
+      minT: Infinity,
+      maxT: -Infinity,
+      minPoint: null,
+      maxPoint: null,
+    };
+    for (const point of edge.points) {
+      const t = dot(point, direction);
+      if (t < group.minT) {
+        group.minT = t;
+        group.minPoint = point;
+      }
+      if (t > group.maxT) {
+        group.maxT = t;
+        group.maxPoint = point;
+      }
+    }
+    groups.set(lineKey, group);
+  }
+
+  return [...groups.values()]
+    .filter((group) => Number.isFinite(group.minT) && Number.isFinite(group.maxT) && group.maxT - group.minT > 1e-7)
+    .map((group, index) => ({
+      featureId: group.featureId,
+      sketchId: group.sketchId,
+      role: `split.${group.sketchId}.edge.topology_${index + 1}`,
+      points: [
+        group.minPoint,
+        group.maxPoint,
+      ],
+    }));
+}
+
+function normalizedDirection(a, b) {
+  const vector = subtract(b, a);
+  const normalized = normalize(vector);
+  if (!normalized) {
+    return null;
+  }
+  const components = [normalized.x, normalized.y, normalized.z];
+  const firstNonZero = components.find((value) => Math.abs(value) > 1e-7) ?? 0;
+  const sign = firstNonZero < 0 ? -1 : 1;
+  return {
+    x: round(normalized.x * sign),
+    y: round(normalized.y * sign),
+    z: round(normalized.z * sign),
+  };
+}
+
+function lineMoment(point, direction) {
+  const moment = cross(point, direction);
+  return [round(moment.x), round(moment.y), round(moment.z)];
+}
+
+function pointKey3d(point) {
+  return `${round(point.x)}:${round(point.y)}:${round(point.z)}`;
+}
+
+function distance3d(a, b) {
+  return Math.hypot((a.x ?? 0) - (b.x ?? 0), (a.y ?? 0) - (b.y ?? 0), (a.z ?? 0) - (b.z ?? 0));
 }
 
 function roleForTriangle({ normal }) {
@@ -155,6 +364,7 @@ function provenanceFaceGroups(faceProvenance) {
       provenance: provenance ? {
         featureId: provenance.featureId,
         role: provenance.role,
+        ...(provenance.sketchId ? { sketchId: provenance.sketchId } : {}),
       } : null,
     };
   }
@@ -191,6 +401,10 @@ function cross(a, b) {
     y: a.z * b.x - a.x * b.z,
     z: a.x * b.y - a.y * b.x,
   };
+}
+
+function dot(a, b) {
+  return (a.x ?? 0) * (b.x ?? 0) + (a.y ?? 0) * (b.y ?? 0) + (a.z ?? 0) * (b.z ?? 0);
 }
 
 function normalize(vector) {
