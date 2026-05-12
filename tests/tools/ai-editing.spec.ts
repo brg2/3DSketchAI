@@ -50,12 +50,12 @@ test.describe("AI feature graph editing", () => {
       const graph = await page.evaluate(() => window.__TEST_API__.getFeatureGraph());
       return graph.parameters;
     }).toEqual([{ name: "ai_width", value: 2 }]);
+    await expect(prompt).toHaveValue("");
 
-    await prompt.fill("Draft prompt");
     await prompt.press("ArrowUp");
     await expect(prompt).toHaveValue("Make the cube wider with a named parameter.");
     await prompt.press("ArrowDown");
-    await expect(prompt).toHaveValue("Draft prompt");
+    await expect(prompt).toHaveValue("");
     await expect(page.getByText("ai_width")).toBeVisible();
     await expect(page.getByLabel("AI patch preview")).toHaveCount(0);
 

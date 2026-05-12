@@ -936,6 +936,14 @@ body.code-collapsed .code-panel {
   cursor: pointer;
 }
 
+.ai-submit-btn:hover,
+.ai-submit-btn:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  outline: none;
+}
+
 .ai-submit-btn:disabled {
   opacity: 0.55;
   cursor: default;

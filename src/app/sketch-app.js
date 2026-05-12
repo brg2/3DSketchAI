@@ -3741,6 +3741,8 @@ export class SketchApp {
       return;
     }
     this._recordAiPrompt(prompt);
+    this.aiPromptInput.value = "";
+    this.aiPromptDraft = "";
     this._setAiSubmitBusy(true);
     try {
       const patch = await this.runtimeController.requestAiPatch({
