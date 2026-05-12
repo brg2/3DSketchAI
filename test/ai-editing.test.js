@@ -52,8 +52,50 @@ test("feature graph patch creates parameters and applies parameter references", 
     },
   });
 
-  assert.deepEqual(result.parameters, [{ name: "width", value: 2 }]);
+  assert.deepEqual(result.parameters, [{ name: "width", value: 2, min: -100, max: 100, step: 0.1 }]);
   assert.deepEqual(result.features[0].params.size, { x: { $param: "width" }, y: 1, z: 1 });
+});
+
+test("feature graph patch renames and removes parameter references deterministically", () => {
+  const features = featureGraphFromOperations([
+    createPrimitiveOperation({
+      primitive: "box",
+      objectId: "cube",
+      position: { x: 0, y: 0, z: 0 },
+      size: { x: 1, y: 1, z: 1 },
+    }),
+  ]);
+  features[0].params.size.x = { $param: "width" };
+
+  const renamed = applyFeatureGraphPatch({
+    features,
+    parameters: [{ name: "width", value: 3 }],
+    patch: {
+      operations: [{ type: "rename_parameter", name: "width", nextName: "height" }],
+    },
+  });
+
+  assert.equal(renamed.parameters[0].name, "height");
+  assert.deepEqual(renamed.features[0].params.size.x, { $param: "height" });
+
+  assert.throws(() => applyFeatureGraphPatch({
+    features: renamed.features,
+    parameters: renamed.parameters,
+    patch: {
+      operations: [{ type: "remove_parameter", name: "height" }],
+    },
+  }), /Unknown feature graph parameter reference/);
+
+  const removed = applyFeatureGraphPatch({
+    features: renamed.features,
+    parameters: renamed.parameters,
+    patch: {
+      operations: [{ type: "remove_parameter", name: "height", replaceReferencesWithValue: true }],
+    },
+  });
+
+  assert.deepEqual(removed.parameters, []);
+  assert.equal(removed.features[0].params.size.x, 3);
 });
 
 test("feature graph patch rejects mesh or viewer edits", () => {

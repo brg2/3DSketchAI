@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { SketchApp } from "./app/sketch-app.js";
+import { resolveParameterReferences } from "./feature/feature-parameters.js";
 
 const canvas = document.getElementById("viewport");
 const overlayElement = document.getElementById("overlay");
@@ -8,6 +9,8 @@ const codePanel = document.getElementById("code-panel");
 const codeToggle = document.getElementById("code-toggle");
 const codeCopyButton = document.getElementById("code-copy");
 const codeCompressButton = document.getElementById("code-compress");
+const parameterAddButton = document.getElementById("parameter-add");
+const parameterEditorElement = document.getElementById("parameter-editor");
 const aiProviderSelect = document.getElementById("ai-provider");
 const aiApiKeyInput = document.getElementById("ai-api-key");
 const aiKeySaveButton = document.getElementById("ai-key-save");
@@ -63,6 +66,8 @@ if (
   !codeToggle ||
   !codeCopyButton ||
   !codeCompressButton ||
+  !parameterAddButton ||
+  !parameterEditorElement ||
   !aiProviderSelect ||
   !aiApiKeyInput ||
   !aiKeySaveButton ||
@@ -167,6 +172,8 @@ const app = new SketchApp({
   codeToggle,
   codeCopyButton,
   codeCompressButton,
+  parameterAddButton,
+  parameterEditorElement,
   aiProviderSelect,
   aiApiKeyInput,
   aiKeySaveButton,
@@ -390,6 +397,12 @@ function createTestApi(app) {
     async applyFeatureGraphPatch(patch) {
       return app.runtimeController.applyFeatureGraphPatch(patch);
     },
+    async addParameter(parameter) {
+      return app.runtimeController.addParameter(parameter);
+    },
+    async updateParameter(name, parameter) {
+      return app.runtimeController.updateParameter(name, parameter);
+    },
     getSelected() {
       return {
         mode: app.selectionPipeline.selectionMode,
@@ -446,9 +459,9 @@ function createTestApi(app) {
       return {
         name: String(name ?? objectId),
         objectId,
-        position: vector(canonicalPrimitive?.params?.position ?? state.position),
+        position: vector(resolveParameterReferences(canonicalPrimitive?.params?.position ?? state.position, snapshot.parameters)),
         rotation: euler(state.rotation),
-        scale: vector(canonicalPrimitive?.params?.size ?? state.scale),
+        scale: vector(resolveParameterReferences(canonicalPrimitive?.params?.size ?? state.scale, snapshot.parameters)),
         canonicalPrimitive: structuredClone(canonicalPrimitive),
         state: objectTransformState({ [objectId]: state })[objectId],
         mesh: meshSummaryFor(mesh, vector),

@@ -1,4 +1,7 @@
 const PARAM_REF_KEY = "$param";
+export const DEFAULT_PARAMETER_MIN = -100;
+export const DEFAULT_PARAMETER_MAX = 100;
+export const DEFAULT_PARAMETER_STEP = 0.1;
 
 export function isParameterReference(value) {
   return Boolean(
@@ -31,9 +34,21 @@ export function normalizeParameters(parameters = []) {
     if (!Number.isFinite(value)) {
       throw new Error(`Feature graph parameter ${name} value must be finite`);
     }
+    const min = normalizeOptionalFinite(parameter.min, DEFAULT_PARAMETER_MIN);
+    const max = normalizeOptionalFinite(parameter.max, DEFAULT_PARAMETER_MAX);
+    if (min >= max) {
+      throw new Error(`Feature graph parameter ${name} min must be less than max`);
+    }
+    const step = normalizeOptionalFinite(parameter.step, DEFAULT_PARAMETER_STEP);
+    if (step <= 0) {
+      throw new Error(`Feature graph parameter ${name} step must be greater than zero`);
+    }
     return {
       name,
       value,
+      min,
+      max,
+      step,
       ...(typeof parameter.label === "string" ? { label: parameter.label } : {}),
       ...(typeof parameter.unit === "string" ? { unit: parameter.unit } : {}),
     };
@@ -58,7 +73,15 @@ export function featureGraphSchema() {
   return {
     version: 1,
     graph: {
-      parameters: [{ name: "identifier", value: "finite number", label: "optional string", unit: "optional string" }],
+      parameters: [{
+        name: "identifier",
+        value: "finite number",
+        min: "optional finite number, default -100",
+        max: "optional finite number, default 100",
+        step: "optional positive finite number, default 1",
+        label: "optional string",
+        unit: "optional string",
+      }],
       features: "canonical ordered feature array",
     },
     parameterReference: { [PARAM_REF_KEY]: "parameterName" },
@@ -66,6 +89,7 @@ export function featureGraphSchema() {
       operations: [
         "add_parameter",
         "update_parameter",
+        "rename_parameter",
         "remove_parameter",
         "append_feature",
         "replace_feature",
@@ -95,4 +119,15 @@ function resolveValue(value, values) {
     return resolved;
   }
   return value;
+}
+
+function normalizeOptionalFinite(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    throw new Error("Feature graph parameter range values must be finite");
+  }
+  return number;
 }

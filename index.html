@@ -159,6 +159,13 @@
             <h2>Feature Graph</h2>
             <div class="code-actions">
               <button
+                id="parameter-add"
+                class="code-tool-btn parameter-add-btn"
+                type="button"
+                title="Add Parameter"
+                aria-label="Add Parameter"
+              >+</button>
+              <button
                 id="code-compress"
                 class="code-tool-btn"
                 type="button"
@@ -174,7 +181,8 @@
               ></button>
             </div>
           </div>
-          <pre id="code-view" aria-label="Read-only Feature Graph Projection" aria-readonly="true" data-readonly-projection="true"></pre>
+          <div id="parameter-editor" class="parameter-editor" aria-label="Parameter Editor"></div>
+          <div id="code-view" aria-label="Structured Feature Graph JSON Editor" data-structured-json-editor="true"></div>
           <div class="ai-edit-panel">
             <div class="ai-prompt-row">
               <label class="sr-only" for="ai-prompt">Prompt</label>

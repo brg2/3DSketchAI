@@ -80,17 +80,23 @@ Parameters are first-class feature-graph data.
 
 The system MUST support:
 - named parameters for feature dimensions and modeling intent
-- parameter creation from user input and AI-assisted changes
+- explicit parameter creation from user input or AI-assisted changes
 - parameter references inside feature definitions
+- parameter values defined as:
+  - literal numbers
+  - references to other parameters
+  - expressions/functions over other parameters
 - parameter updates that preserve deterministic replay
 - parameter insertion, renaming, deletion, and value editing through controlled UI
-- parameter binding to literal values or parameter names inside feature definitions
+- parameter binding to literal values, parameter names, or expressions inside feature definitions
+- parameter storage independent of automatic feature-field inference
 
 Parameters:
 - belong to the feature graph
 - are not a separate modeling system
 - may be surfaced in the UI only through controlled editing interfaces
 - must remain reproducible from the feature graph and its history
+- must not be inferred automatically from existing feature-graph fields without explicit user or AI intent
 
 ## 4. Interaction Philosophy
 The UI is non-parametric-first.
@@ -270,19 +276,21 @@ A developer-only inspector may expose:
 
 This is not part of the user-facing UI.
 
-## 4.5 Representation Visibility
-The Feature Graph may be projected into a human-readable representation (for example JSON or a TypeScript-like structure) for inspection.
+## 4.5 Feature Graph JSON Editor
+The feature graph may be projected into a human-readable JSON representation for inspection and structured editing.
 
 This projection:
 - must update in real time with model changes
 - must reflect the current Feature Graph exactly
-- must be read-only in the user interface
+- must be editable through a structured JSON editor in the user interface
+- must validate edits against the feature-graph schema before commit
 
 It must not:
-- be editable by users
-- be parsed as input
-- be treated as authoritative state
+- expose raw code editing as the primary graph-editing path
+- allow unvalidated free-form mutation of model state
+- be treated as detached from the canonical feature graph
 
+The structured JSON editor mutates the canonical feature graph representation through validated edits.
 The Feature Graph object remains the only source of truth.
 
 ## 4.6 AI Prompt Interface
@@ -339,7 +347,7 @@ The system MUST provide a controlled parameter editing UI for feature-graph para
 
 The parameter editor:
 - is separate from raw feature-graph editing
-- is an interactive JSON-tree-style view of editable parameter data, not an editable feature-graph editor
+- is an interactive parameter panel for user-authored parameter data, not an inferred parameter list
 - is colocated with the feature graph view and rendered below the feature graph title
 - appears above the feature graph display area inside the feature graph group or component
 - supports editing parameter names, numeric values, and parameter references
@@ -354,9 +362,10 @@ Parameter editor layout:
 - manual numeric input field adjacent to the slider with minimal width
 
 Parameter behavior:
+- parameters are created explicitly by the user or AI; the system MUST NOT infer them from the current feature graph structure
 - parameter sliders MUST update the feature graph preview and commit pipeline instantly
 - changing a parameter MUST redraw affected geometry through the feature graph, not by direct graph mutation
-- a parameter may be assigned a literal value or referenced by name inside the feature graph
+- a parameter may be assigned a literal value, referenced by name, or defined by an expression over other parameters
 - parameter deletion MUST warn when the parameter is in use
 - when deletion is confirmed for an in-use parameter, references MUST be replaced with the parameter's current value at the time of deletion
 - the editor MUST preserve deterministic replay after any parameter change
@@ -372,9 +381,10 @@ The parameter editor MUST NOT:
 - expose raw feature-graph structure editing
 - allow users to directly edit feature graph topology or dependencies
 - bypass validation when adding, renaming, deleting, or rebinding parameters
+- infer parameters automatically from feature-graph fields without explicit intent
 
 Parameter editing MUST remain feature-graph-backed and read from the current model state.
-The feature graph remains read-only in this UI.
+The parameter editor itself MUST remain read-only with respect to feature-graph topology and dependencies.
 
 ## 5. Tooling Scope (V1)
 Required tools:
@@ -836,16 +846,22 @@ The parameter editor MUST be covered by automated E2E tests.
 
 Tests MUST validate:
 - parameter creation from the UI add control
+- parameters are created explicitly rather than inferred from feature-graph fields
 - parameter renaming in the parameter list
 - slider movement updates the live feature graph preview immediately
 - numeric input and slider stay synchronized
+- parameter expressions or parameter-to-parameter references evaluate correctly
 - parameter deletion warning when the parameter is in use
 - confirmation behavior when deleting an in-use parameter
 - replacement of in-use references with the parameter's current value on confirmed deletion
 - redraw behavior after parameter changes remains deterministic
-- the feature graph itself remains read-only in the UI
+- the parameter editor itself does not directly mutate feature-graph topology or dependencies
+- structured JSON editor edits are validated before commit
 
 Tests SHOULD validate:
+- parameter expressions recompute deterministically when source parameters change
+- explicit parameter creation does not depend on the current feature graph shape
+- JSON editor mutations preserve schema validity and provenance
 - parameter values default to the expected range and center value
 - parameter edits preserve provenance and selection context
 - parameter-driven redraws preserve selection visibility and hit testing

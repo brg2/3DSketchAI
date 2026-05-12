@@ -49,18 +49,18 @@ test.describe("AI feature graph editing", () => {
     await expect.poll(async () => {
       const graph = await page.evaluate(() => window.__TEST_API__.getFeatureGraph());
       return graph.parameters;
-    }).toEqual([{ name: "ai_width", value: 2 }]);
+    }).toEqual([{ name: "ai_width", value: 2, min: -100, max: 100, step: 0.1 }]);
     await expect(prompt).toHaveValue("");
 
     await prompt.press("ArrowUp");
     await expect(prompt).toHaveValue("Make the cube wider with a named parameter.");
     await prompt.press("ArrowDown");
     await expect(prompt).toHaveValue("");
-    await expect(page.getByText("ai_width")).toBeVisible();
+    await expect(page.getByLabel("Parameter name ai_width")).toBeVisible();
     await expect(page.getByLabel("AI patch preview")).toHaveCount(0);
 
     const graph = await page.evaluate(() => window.__TEST_API__.getFeatureGraph());
-    expect(graph.parameters).toEqual([{ name: "ai_width", value: 2 }]);
+    expect(graph.parameters).toEqual([{ name: "ai_width", value: 2, min: -100, max: 100, step: 0.1 }]);
     expect(graph.features[0].params.size.x).toEqual({ $param: "ai_width" });
     expect(JSON.stringify(graph)).not.toContain("sk-test-local-only");
 

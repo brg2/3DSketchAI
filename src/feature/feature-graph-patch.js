@@ -4,6 +4,7 @@ import { assertResolvableParameterReferences, normalizeParameters } from "./feat
 const PATCH_TYPES = new Set([
   "add_parameter",
   "update_parameter",
+  "rename_parameter",
   "remove_parameter",
   "append_feature",
   "replace_feature",
@@ -48,6 +49,7 @@ export function applyFeatureGraphPatch({ features = [], parameters = [], patch }
   const parameterOperations = normalizedPatch.operations.filter((operation) => (
     operation.type === "add_parameter" ||
     operation.type === "update_parameter" ||
+    operation.type === "rename_parameter" ||
     operation.type === "remove_parameter"
   ));
   const featureOperations = normalizedPatch.operations.filter((operation) => !parameterOperations.includes(operation));
@@ -69,7 +71,23 @@ export function applyFeatureGraphPatch({ features = [], parameters = [], patch }
       nextParameters = normalizeParameters(nextParameters.map((entry, entryIndex) => entryIndex === index ? merged : entry));
       continue;
     }
+    if (operation.type === "rename_parameter") {
+      const index = paramIndex(operation.name);
+      if (index < 0) throw new Error(`Unknown parameter: ${operation.name}`);
+      if (paramIndex(operation.nextName) >= 0) {
+        throw new Error(`Parameter already exists: ${operation.nextName}`);
+      }
+      const renamed = { ...nextParameters[index], name: operation.nextName };
+      nextParameters = normalizeParameters(nextParameters.map((entry, entryIndex) => entryIndex === index ? renamed : entry));
+      nextFeatures = replaceParameterReferences(nextFeatures, operation.name, { $param: operation.nextName });
+      continue;
+    }
     if (operation.type === "remove_parameter") {
+      if (operation.replaceReferencesWithValue) {
+        const index = paramIndex(operation.name);
+        if (index < 0) throw new Error(`Unknown parameter: ${operation.name}`);
+        nextFeatures = replaceParameterReferences(nextFeatures, operation.name, nextParameters[index].value);
+      }
       nextParameters = normalizeParameters(nextParameters.filter((parameter) => parameter.name !== operation.name));
     }
   }
@@ -123,9 +141,17 @@ function normalizePatchOperation(operation, index) {
     if (typeof name !== "string") throw new Error("update_parameter requires name");
     return { type, name, parameter: operation.parameter ?? operation.value ?? {} };
   }
+  if (type === "rename_parameter") {
+    const name = operation.name ?? operation.from;
+    const nextName = operation.nextName ?? operation.to;
+    if (typeof name !== "string" || typeof nextName !== "string") {
+      throw new Error("rename_parameter requires name and nextName");
+    }
+    return { type, name, nextName };
+  }
   if (type === "remove_parameter") {
     if (typeof operation.name !== "string") throw new Error("remove_parameter requires name");
-    return { type, name: operation.name };
+    return { type, name: operation.name, replaceReferencesWithValue: Boolean(operation.replaceReferencesWithValue) };
   }
   if (type === "append_feature") {
     return { type, feature: normalizeFeature(operation.feature) };
@@ -141,6 +167,23 @@ function normalizePatchOperation(operation, index) {
     throw new Error(`${type} requires params object`);
   }
   return { type, featureId: operation.featureId, params: structuredClone(operation.params) };
+}
+
+function replaceParameterReferences(value, name, replacement) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => replaceParameterReferences(entry, name, replacement));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  if (value.$param === name && Object.keys(value).length === 1) {
+    return structuredClone(replacement);
+  }
+  const next = {};
+  for (const [key, entry] of Object.entries(value)) {
+    next[key] = replaceParameterReferences(entry, name, replacement);
+  }
+  return next;
 }
 
 function assertGraphResolvable(features, parameters) {

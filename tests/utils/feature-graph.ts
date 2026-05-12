@@ -2,7 +2,7 @@ import { expect, type Page } from "@playwright/test";
 
 export type FeatureGraphSnapshot = {
   featureCount: number;
-  parameters: Array<{ name: string; value: number; label?: string; unit?: string }>;
+  parameters: Array<{ name: string; value: number; min?: number; max?: number; step?: number; label?: string; unit?: string }>;
   features: Array<{
     id: string;
     type: string;

@@ -16,6 +16,7 @@ import { AppSessionStore } from "../persistence/app-session-store.js";
 import { ModelScriptHistoryStore } from "../persistence/model-script-history-store.js";
 import { createGroupingOperation, createPrimitiveOperation, createSketchSplitOperation, mapToolGestureToOperation } from "../operation/operation-mapper.js";
 import { OPERATION_TYPES, SELECTION_MODES } from "../operation/operation-types.js";
+import { isParameterReference } from "../feature/feature-parameters.js";
 import { SKY_THEMES, DEFAULT_SOLID_SKY_COLOR, normalizeSkyColor, normalizeSkyTheme, skyThemePreset } from "../theme/sky-theme.js";
 import { UI_THEME_MODES, normalizeUiThemeMode, resolveUiThemeMode } from "../theme/ui-theme.js";
 import {
@@ -80,6 +81,8 @@ export class SketchApp {
     codeToggle,
     codeCopyButton,
     codeCompressButton,
+    parameterAddButton,
+    parameterEditorElement,
     aiProviderSelect,
     aiApiKeyInput,
     aiKeySaveButton,
@@ -128,6 +131,8 @@ export class SketchApp {
     this.codeToggle = codeToggle;
     this.codeCopyButton = codeCopyButton;
     this.codeCompressButton = codeCompressButton;
+    this.parameterAddButton = parameterAddButton;
+    this.parameterEditorElement = parameterEditorElement;
     this.aiProviderSelect = aiProviderSelect;
     this.aiApiKeyInput = aiApiKeyInput;
     this.aiKeySaveButton = aiKeySaveButton;
@@ -198,6 +203,8 @@ export class SketchApp {
     this.aiPromptHistory = [];
     this.aiPromptHistoryCursor = null;
     this.aiPromptDraft = "";
+    this.parameterEditQueue = Promise.resolve();
+    this.parameterRenderSignature = "";
 
     this.viewport = new Viewport({
       canvas,
@@ -230,6 +237,7 @@ export class SketchApp {
       representationStore: this.representationStore,
       onCanonicalCodeChanged: (projection) => {
         this._renderFeatureGraphProjection(projection);
+        this._renderParameterEditor();
       },
       onPreviewChanged: () => this._requestFrame(),
     });
@@ -288,6 +296,7 @@ export class SketchApp {
     await this._persistSessionState();
     await this._restoreModelHistory();
     this._syncHistoryButtons();
+    this._renderParameterEditor({ force: true });
 
     this._requestFrame();
   }
@@ -1373,6 +1382,7 @@ export class SketchApp {
     }
 
     this._updatePreselectionOverlays();
+    this._renderParameterEditor();
     this._requestFrame();
   }
 
@@ -3138,6 +3148,14 @@ export class SketchApp {
       });
     }
 
+    if (this.parameterAddButton) {
+      this.parameterAddButton.classList.add("icon-btn");
+      this._setButtonIcon(this.parameterAddButton, "plus", "Add Parameter");
+      this.parameterAddButton.addEventListener("click", () => {
+        void this._addParameterFromEditor();
+      });
+    }
+
     if (this.aiKeySaveButton) {
       this.aiKeySaveButton.addEventListener("click", () => {
         void this._saveAiProviderKey();
@@ -3704,12 +3722,358 @@ export class SketchApp {
 
   _renderFeatureGraphProjection(projection = this._currentFeatureGraphProjection()) {
     if (this.codeElement) {
-      this.codeElement.textContent = projection;
+      if (this._isStructuredGraphEditorEditing()) {
+        return;
+      }
+      const graph = typeof projection === "string" ? JSON.parse(projection) : projection;
+      this.codeElement.replaceChildren(this._createJsonTreeNode({
+        key: "featureGraph",
+        value: graph,
+        path: [],
+        root: true,
+      }));
     }
   }
 
   _currentFeatureGraphProjection() {
     return this.runtimeController.getSnapshot().canonicalGraphJson;
+  }
+
+  _createJsonTreeNode({ key, value, path, root = false }) {
+    if (Array.isArray(value) || (value && typeof value === "object" && !isParameterReference(value))) {
+      const details = document.createElement("details");
+      details.className = "json-tree-node";
+      details.open = true;
+      const summary = document.createElement("summary");
+      summary.className = "json-tree-summary";
+      const keyLabel = document.createElement("span");
+      keyLabel.className = "json-tree-key";
+      keyLabel.textContent = String(key);
+      const meta = document.createElement("span");
+      meta.className = "json-tree-meta";
+      meta.textContent = Array.isArray(value) ? `[${value.length}]` : "{ }";
+      summary.append(keyLabel, meta);
+      details.appendChild(summary);
+
+      const children = document.createElement("div");
+      children.className = "json-tree-children";
+      for (const [childKey, childValue] of Object.entries(value)) {
+        children.appendChild(this._createJsonTreeNode({
+          key: childKey,
+          value: childValue,
+          path: [...path, Array.isArray(value) ? Number(childKey) : childKey],
+        }));
+      }
+      details.appendChild(children);
+      return details;
+    }
+
+    const row = document.createElement("div");
+    row.className = "json-leaf-row";
+    const label = document.createElement("label");
+    label.className = "json-leaf-label";
+    label.textContent = String(key);
+    const input = document.createElement("input");
+    input.className = "json-leaf-input";
+    input.type = "text";
+    input.value = graphLeafText(value);
+    input.setAttribute("aria-label", `Feature graph ${path.join(".")}`);
+    input.addEventListener("change", () => {
+      void this._applyStructuredGraphEdit(path, input.value);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+        return;
+      }
+      const current = Number(input.value);
+      if (!Number.isFinite(current)) {
+        return;
+      }
+      event.preventDefault();
+      const direction = event.key === "ArrowUp" ? 1 : -1;
+      const nextValue = roundGraphNumber(current + direction * graphNumberStep(event));
+      input.value = String(nextValue);
+      void this._applyStructuredGraphEdit(path, input.value);
+    });
+
+    const valueWrap = document.createElement("div");
+    valueWrap.className = "json-leaf-value";
+    valueWrap.appendChild(input);
+    if (typeof value === "number") {
+      valueWrap.appendChild(this._createJsonStepper(path, input));
+    }
+    row.append(label, valueWrap);
+    return row;
+  }
+
+  _createJsonStepper(path, input) {
+    const stepper = document.createElement("div");
+    stepper.className = "json-stepper";
+    const increment = document.createElement("button");
+    increment.className = "json-stepper-btn";
+    increment.type = "button";
+    increment.textContent = "▲";
+    increment.title = "Increment value";
+    increment.setAttribute("aria-label", `Increment ${path.join(".")}`);
+    const decrement = document.createElement("button");
+    decrement.className = "json-stepper-btn";
+    decrement.type = "button";
+    decrement.textContent = "▼";
+    decrement.title = "Decrement value";
+    decrement.setAttribute("aria-label", `Decrement ${path.join(".")}`);
+    increment.addEventListener("click", (event) => this._stepStructuredGraphInput(path, input, 1, event));
+    decrement.addEventListener("click", (event) => this._stepStructuredGraphInput(path, input, -1, event));
+    stepper.append(increment, decrement);
+    return stepper;
+  }
+
+  _stepStructuredGraphInput(path, input, direction, event) {
+    const current = Number(input.value);
+    if (!Number.isFinite(current)) {
+      return;
+    }
+    const nextValue = roundGraphNumber(current + direction * graphNumberStep(event));
+    input.value = String(nextValue);
+    void this._applyStructuredGraphEdit(path, input.value);
+  }
+
+  async _applyStructuredGraphEdit(path, text) {
+    const snapshot = this.runtimeController.getSnapshot();
+    const graph = JSON.parse(snapshot.canonicalGraphJson);
+    const currentValue = getPathValue(graph, path);
+    const nextValue = parseStructuredGraphValue(text, {
+      currentValue,
+      parameters: graph.parameters ?? [],
+    });
+    setPathValue(graph, path, nextValue);
+
+    try {
+      await this.runtimeController.reloadFromFeatureGraphJson(JSON.stringify(graph, null, 2), { cleanSlate: false });
+      const graphJson = await this.runtimeController.persistCanonicalModel();
+      await this._recordModelHistory(graphJson, "Feature Graph Edit");
+      this._dropInvalidSelections();
+      this._applySelectionHighlights();
+      this._renderOverlay();
+      this._renderFeatureGraphProjection(graphJson);
+      await this._persistSessionState();
+    } catch (error) {
+      console.warn("Failed to apply structured feature graph edit", error);
+      this._renderFeatureGraphProjection(snapshot.canonicalGraphJson);
+    }
+  }
+
+  _isStructuredGraphEditorEditing() {
+    const active = document.activeElement;
+    return Boolean(active && this.codeElement?.contains(active));
+  }
+
+  _renderParameterEditor({ force = false } = {}) {
+    if (!this.parameterEditorElement) {
+      return;
+    }
+    if (!force && this._isParameterEditorEditing()) {
+      return;
+    }
+
+    const snapshot = this.runtimeController.getSnapshot();
+    const parameters = snapshot.parameters ?? [];
+    const signature = JSON.stringify({
+      parameters,
+    });
+    if (!force && signature === this.parameterRenderSignature) {
+      return;
+    }
+    this.parameterRenderSignature = signature;
+
+    this.parameterEditorElement.replaceChildren();
+    if (parameters.length === 0) {
+      this.parameterEditorElement.classList.add("empty");
+      return;
+    }
+    this.parameterEditorElement.classList.remove("empty");
+
+    const parameterList = document.createElement("div");
+    parameterList.className = "parameter-list";
+    for (const parameter of parameters) {
+      parameterList.appendChild(this._createParameterRow(parameter));
+    }
+    this.parameterEditorElement.appendChild(parameterList);
+  }
+
+  _createParameterRow(parameter) {
+    const row = document.createElement("div");
+    row.className = "parameter-row";
+    row.dataset.parameterName = parameter.name;
+
+    const nameInput = document.createElement("input");
+    nameInput.className = "parameter-name-input";
+    nameInput.type = "text";
+    nameInput.value = parameter.name;
+    nameInput.setAttribute("aria-label", `Parameter name ${parameter.name}`);
+    nameInput.addEventListener("change", () => {
+      void this._renameParameterFromEditor(parameter.name, nameInput.value);
+    });
+
+    const deleteButton = document.createElement("button");
+    deleteButton.className = "parameter-delete-btn";
+    deleteButton.type = "button";
+    deleteButton.textContent = "×";
+    deleteButton.title = `Delete ${parameter.name}`;
+    deleteButton.setAttribute("aria-label", `Delete parameter ${parameter.name}`);
+    deleteButton.addEventListener("click", () => {
+      void this._deleteParameterFromEditor(parameter.name);
+    });
+
+    const slider = document.createElement("input");
+    slider.className = "parameter-slider";
+    slider.type = "range";
+    slider.min = String(parameter.min);
+    slider.max = String(parameter.max);
+    slider.step = String(parameter.step);
+    slider.value = String(parameter.value);
+    slider.setAttribute("aria-label", `Parameter ${parameter.name} slider`);
+
+    const numberInput = document.createElement("input");
+    numberInput.className = "parameter-number-input";
+    numberInput.type = "number";
+    numberInput.min = String(parameter.min);
+    numberInput.max = String(parameter.max);
+    numberInput.step = String(parameter.step);
+    numberInput.value = String(parameter.value);
+    numberInput.setAttribute("aria-label", `Parameter ${parameter.name} value`);
+
+    const applyValue = (value, { recordHistory = false } = {}) => {
+      const nextValue = Number(value);
+      if (!Number.isFinite(nextValue)) {
+        return;
+      }
+      slider.value = String(nextValue);
+      numberInput.value = String(nextValue);
+      void this._applyParameterEditorPatch({
+        operations: [{ type: "update_parameter", name: parameter.name, parameter: { value: nextValue } }],
+      }, { recordHistory });
+    };
+
+    slider.addEventListener("input", () => applyValue(slider.value));
+    slider.addEventListener("change", () => applyValue(slider.value, { recordHistory: true }));
+    numberInput.addEventListener("input", () => {
+      slider.value = numberInput.value;
+    });
+    numberInput.addEventListener("change", () => applyValue(numberInput.value, { recordHistory: true }));
+    numberInput.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+        return;
+      }
+      const current = Number(numberInput.value);
+      if (!Number.isFinite(current)) {
+        return;
+      }
+      event.preventDefault();
+      const direction = event.key === "ArrowUp" ? 1 : -1;
+      applyValue(roundGraphNumber(current + direction * graphNumberStep(event)), { recordHistory: true });
+    });
+
+    const valueWrap = document.createElement("div");
+    valueWrap.className = "parameter-value";
+    valueWrap.append(numberInput, this._createParameterStepper(numberInput, applyValue));
+
+    row.append(nameInput, deleteButton, slider, valueWrap);
+    return row;
+  }
+
+  _createParameterStepper(input, applyValue) {
+    const stepper = document.createElement("div");
+    stepper.className = "json-stepper parameter-stepper";
+    const increment = document.createElement("button");
+    increment.className = "json-stepper-btn parameter-stepper-btn";
+    increment.type = "button";
+    increment.textContent = "▲";
+    increment.title = "Increment value";
+    increment.setAttribute("aria-label", "Increase parameter value");
+    const decrement = document.createElement("button");
+    decrement.className = "json-stepper-btn parameter-stepper-btn";
+    decrement.type = "button";
+    decrement.textContent = "▼";
+    decrement.title = "Decrement value";
+    decrement.setAttribute("aria-label", "Decrease parameter value");
+    const step = (direction, event) => {
+      const current = Number(input.value);
+      if (!Number.isFinite(current)) {
+        return;
+      }
+      applyValue(roundGraphNumber(current + direction * graphNumberStep(event)), { recordHistory: true });
+    };
+    increment.addEventListener("click", (event) => step(1, event));
+    decrement.addEventListener("click", (event) => step(-1, event));
+    stepper.append(increment, decrement);
+    return stepper;
+  }
+
+  async _addParameterFromEditor() {
+    const snapshot = this.runtimeController.getSnapshot();
+    const existing = new Set((snapshot.parameters ?? []).map((parameter) => parameter.name));
+    let index = existing.size + 1;
+    let name = `param_${index}`;
+    while (existing.has(name)) {
+      index += 1;
+      name = `param_${index}`;
+    }
+    await this._applyParameterEditorPatch({
+      operations: [{ type: "add_parameter", parameter: { name, value: 0, min: -100, max: 100, step: 0.1 } }],
+    }, { recordHistory: true, forceRender: true });
+  }
+
+  async _renameParameterFromEditor(name, nextName) {
+    const normalized = String(nextName ?? "").trim();
+    if (!normalized || normalized === name) {
+      this._renderParameterEditor({ force: true });
+      return;
+    }
+    await this._applyParameterEditorPatch({
+      operations: [{ type: "rename_parameter", name, nextName: normalized }],
+    }, { recordHistory: true, forceRender: true });
+  }
+
+  async _deleteParameterFromEditor(name) {
+    const snapshot = this.runtimeController.getSnapshot();
+    const inUse = parameterReferenceCount(snapshot.featureGraph, name) > 0;
+    if (inUse) {
+      const confirmed = window.confirm(`Delete "${name}" and replace its references with the current value?`);
+      if (!confirmed) {
+        return;
+      }
+    }
+    await this._applyParameterEditorPatch({
+      operations: [{ type: "remove_parameter", name, replaceReferencesWithValue: inUse }],
+    }, { recordHistory: true, forceRender: true });
+  }
+
+  async _applyParameterEditorPatch(patch, { recordHistory = false, forceRender = false } = {}) {
+    const run = async () => {
+      const result = await this.runtimeController.applyFeatureGraphPatch(patch);
+      if (recordHistory) {
+        await this._recordModelHistory(result?.canonicalGraphJson, "Parameter Edit");
+      }
+      this._dropInvalidSelections();
+      this._applySelectionHighlights();
+      this._renderOverlay();
+      this._renderParameterEditor({ force: forceRender || recordHistory });
+      await this._persistSessionState();
+      return result;
+    };
+    this.parameterEditQueue = this.parameterEditQueue.then(run, run);
+    try {
+      return await this.parameterEditQueue;
+    } catch (error) {
+      console.warn("Failed to apply parameter edit", error);
+      this._renderParameterEditor({ force: true });
+      return null;
+    }
+  }
+
+  _isParameterEditorEditing() {
+    const active = document.activeElement;
+    return Boolean(active && this.parameterEditorElement?.contains(active));
   }
 
   async _saveAiProviderKey() {
@@ -3936,6 +4300,81 @@ export class SketchApp {
     button.title = label;
     button.setAttribute("aria-label", label);
   }
+}
+
+function parameterReferenceCount(value, name) {
+  if (Array.isArray(value)) {
+    return value.reduce((count, entry) => count + parameterReferenceCount(entry, name), 0);
+  }
+  if (!value || typeof value !== "object") {
+    return 0;
+  }
+  if (isParameterReference(value)) {
+    return value.$param === name ? 1 : 0;
+  }
+  return Object.values(value).reduce((count, entry) => count + parameterReferenceCount(entry, name), 0);
+}
+
+function graphLeafText(value) {
+  if (isParameterReference(value)) {
+    return value.$param;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  return JSON.stringify(value);
+}
+
+function parseStructuredGraphValue(text, { currentValue, parameters = [] } = {}) {
+  const raw = String(text ?? "").trim();
+  if (raw && parameters.some((parameter) => parameter.name === raw)) {
+    return { $param: raw };
+  }
+  if (typeof currentValue === "number" || isParameterReference(currentValue)) {
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric)) {
+      throw new Error("Numeric feature graph values must be finite numbers or parameter names");
+    }
+    return numeric;
+  }
+  if (typeof currentValue === "boolean") {
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    throw new Error("Boolean feature graph values must be true or false");
+  }
+  if (currentValue === null) {
+    return raw === "null" ? null : raw;
+  }
+  if (typeof currentValue === "string") {
+    return raw;
+  }
+  return JSON.parse(raw);
+}
+
+function getPathValue(root, path) {
+  return path.reduce((value, key) => value?.[key], root);
+}
+
+function setPathValue(root, path, value) {
+  if (!Array.isArray(path) || path.length === 0) {
+    throw new Error("Cannot replace the feature graph root from a leaf edit");
+  }
+  const parent = getPathValue(root, path.slice(0, -1));
+  parent[path.at(-1)] = value;
+}
+
+function graphNumberStep(event) {
+  if (event?.ctrlKey) {
+    return 10;
+  }
+  if (event?.altKey) {
+    return 0.1;
+  }
+  return 1;
+}
+
+function roundGraphNumber(value) {
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 function cloneMaterialForExport(material) {

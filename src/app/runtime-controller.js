@@ -227,6 +227,30 @@ export class RuntimeController {
     };
   }
 
+  async addParameter(parameter) {
+    return this.applyFeatureGraphPatch({
+      operations: [{ type: "add_parameter", parameter }],
+    });
+  }
+
+  async updateParameter(name, parameter) {
+    return this.applyFeatureGraphPatch({
+      operations: [{ type: "update_parameter", name, parameter }],
+    });
+  }
+
+  async renameParameter(name, nextName) {
+    return this.applyFeatureGraphPatch({
+      operations: [{ type: "rename_parameter", name, nextName }],
+    });
+  }
+
+  async removeParameter(name, { replaceReferencesWithValue = false } = {}) {
+    return this.applyFeatureGraphPatch({
+      operations: [{ type: "remove_parameter", name, replaceReferencesWithValue }],
+    });
+  }
+
   assembleAiContext({ prompt = "", selection = null, provenance = null, view = null } = {}) {
     return assembleAiPromptContext({
       graphJson: this.canonicalModel.toFeatureGraphJSON(),

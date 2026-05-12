@@ -12,7 +12,7 @@ test("feature graph JSON includes parameters and loads older graphs", () => {
   assert.deepEqual(JSON.parse(model.toFeatureGraphJSON()).parameters, []);
 
   model.replaceParameters([{ name: "height", value: 3, unit: "m" }]);
-  assert.deepEqual(JSON.parse(model.toFeatureGraphJSON()).parameters, [{ name: "height", value: 3, unit: "m" }]);
+  assert.deepEqual(JSON.parse(model.toFeatureGraphJSON()).parameters, [{ name: "height", value: 3, min: -100, max: 100, step: 0.1, unit: "m" }]);
 });
 
 test("parameter references resolve deterministically", () => {
@@ -33,6 +33,8 @@ test("parameter references resolve deterministically", () => {
 test("invalid and duplicate parameters are rejected", () => {
   assert.throws(() => normalizeParameters([{ name: "1bad", value: 1 }]), /identifier/);
   assert.throws(() => normalizeParameters([{ name: "w", value: 1 }, { name: "w", value: 2 }]), /Duplicate/);
+  assert.throws(() => normalizeParameters([{ name: "w", value: 1, min: 10, max: 1 }]), /min must be less than max/);
+  assert.throws(() => normalizeParameters([{ name: "w", value: 1, step: 0 }]), /step must be greater than zero/);
 });
 
 test("canonical model operations resolve parameter refs but graph preserves them", () => {
