@@ -7,18 +7,20 @@ export class ModelExecutor {
     this.adapter = adapter || new ReplicadOpenCascadeAdapter();
   }
 
-  async executeCanonicalModel({ features, operations, sceneState }) {
+  async executeCanonicalModel({ features, parameters = [], operations, sceneState }) {
     return this.adapter.execute({
       features: features ?? featureGraphFromOperations(operations ?? []),
+      parameters,
       sceneState,
     });
   }
 
-  async executeStateReplay({ features, operations, sceneState, exactBackend = "state-replay:no-exact-kernel" }) {
+  async executeStateReplay({ features, parameters = [], operations, sceneState, exactBackend = "state-replay:no-exact-kernel" }) {
     await Promise.resolve();
     void sceneState;
     return replayFeaturesToSceneState({
       features: features ?? featureGraphFromOperations(operations ?? []),
+      parameters,
       exactBackend,
     });
   }

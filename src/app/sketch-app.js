@@ -43,6 +43,7 @@ const DEFAULT_TERRAIN_VARIATION = 0.5;
 const DEFAULT_TERRAIN_DENSITY = 0.5;
 const DEFAULT_TERRAIN_SEED = 0;
 const DEFAULT_MODEL_NAME = "Untitled";
+const AI_PROMPT_HISTORY_LIMIT = 50;
 const TOUCH_PICK_OFFSETS = Object.freeze([
   [0, 0],
   [0, -14],
@@ -79,6 +80,13 @@ export class SketchApp {
     codeToggle,
     codeCopyButton,
     codeCompressButton,
+    aiProviderSelect,
+    aiApiKeyInput,
+    aiKeySaveButton,
+    aiKeyRemoveButton,
+    aiPromptInput,
+    aiSubmitButton,
+    aiKeyStatusElement,
     docNameElement,
     modelOpenButton,
     modelOpenInput,
@@ -120,6 +128,13 @@ export class SketchApp {
     this.codeToggle = codeToggle;
     this.codeCopyButton = codeCopyButton;
     this.codeCompressButton = codeCompressButton;
+    this.aiProviderSelect = aiProviderSelect;
+    this.aiApiKeyInput = aiApiKeyInput;
+    this.aiKeySaveButton = aiKeySaveButton;
+    this.aiKeyRemoveButton = aiKeyRemoveButton;
+    this.aiPromptInput = aiPromptInput;
+    this.aiSubmitButton = aiSubmitButton;
+    this.aiKeyStatusElement = aiKeyStatusElement;
     this.docNameElement = docNameElement;
     this.modelOpenButton = modelOpenButton;
     this.modelOpenInput = modelOpenInput;
@@ -180,6 +195,9 @@ export class SketchApp {
     this.lastPersistedSessionSignature = "";
     this.isRestoringSession = false;
     this.frameRequestId = null;
+    this.aiPromptHistory = [];
+    this.aiPromptHistoryCursor = null;
+    this.aiPromptDraft = "";
 
     this.viewport = new Viewport({
       canvas,
@@ -3120,6 +3138,41 @@ export class SketchApp {
       });
     }
 
+    if (this.aiKeySaveButton) {
+      this.aiKeySaveButton.addEventListener("click", () => {
+        void this._saveAiProviderKey();
+      });
+    }
+
+    if (this.aiKeyRemoveButton) {
+      this.aiKeyRemoveButton.addEventListener("click", () => {
+        void this._removeAiProviderKey();
+      });
+    }
+
+    if (this.aiSubmitButton) {
+      this.aiSubmitButton.addEventListener("click", () => {
+        void this._submitAiPrompt();
+      });
+    }
+
+    if (this.aiPromptInput) {
+      this.aiPromptInput.addEventListener("keydown", (event) => {
+        if (event.isComposing) {
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          void this._submitAiPrompt();
+          return;
+        }
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          this._cycleAiPromptHistory(event.key === "ArrowUp" ? -1 : 1);
+        }
+      });
+    }
+
     if (this.gridToggleButton) {
       this.gridToggleButton.addEventListener("click", () => {
         this._setGridVisible(!this.viewport.isGridVisible());
@@ -3476,6 +3529,7 @@ export class SketchApp {
         skyTheme: this.skyTheme,
         skySolidColor: this.skySolidColor,
         groundThemeSelection: this.groundThemeSelection,
+        aiPromptHistory: [...this.aiPromptHistory],
       },
       selection: {
         selectedObjectIds: [...this.selectionPipeline.selectedObjectIds],
@@ -3527,6 +3581,9 @@ export class SketchApp {
         ...restoredGroundTheme,
         theme: state?.ui?.groundThemeSelection ?? restoredGroundTheme.theme,
       });
+      this.aiPromptHistory = this._normalizeAiPromptHistory(state?.ui?.aiPromptHistory);
+      this.aiPromptHistoryCursor = null;
+      this.aiPromptDraft = "";
 
       const selectable = new Set(
         this.representationStore.getSelectableMeshes().map((mesh) => mesh.userData.objectId).filter(Boolean),
@@ -3653,6 +3710,142 @@ export class SketchApp {
 
   _currentFeatureGraphProjection() {
     return this.runtimeController.getSnapshot().canonicalGraphJson;
+  }
+
+  async _saveAiProviderKey() {
+    const provider = this.aiProviderSelect?.value ?? "openai";
+    const apiKey = this.aiApiKeyInput?.value ?? "";
+    if (!apiKey.trim()) {
+      this._setAiKeyStatus("Enter a key to store locally.");
+      return;
+    }
+    try {
+      await this.runtimeController.saveAiProviderKey(provider, apiKey.trim());
+      this.aiApiKeyInput.value = "";
+      this._setAiKeyStatus("Key stored locally encrypted.");
+    } catch (error) {
+      console.warn("Failed to save AI provider key", error);
+      this._setAiKeyStatus("Key save failed.");
+    }
+  }
+
+  async _removeAiProviderKey() {
+    const provider = this.aiProviderSelect?.value ?? "openai";
+    await this.runtimeController.removeAiProviderKey(provider);
+    this._setAiKeyStatus("Key removed.");
+  }
+
+  async _submitAiPrompt() {
+    const prompt = this.aiPromptInput?.value ?? "";
+    if (!prompt.trim()) {
+      return;
+    }
+    this._recordAiPrompt(prompt);
+    this._setAiSubmitBusy(true);
+    try {
+      const patch = await this.runtimeController.requestAiPatch({
+        provider: this.aiProviderSelect?.value ?? "openai",
+        prompt,
+        selection: this._currentAiSelectionContext(),
+        provenance: this._currentAiProvenanceContext(),
+        view: this._currentAiViewContext(),
+      });
+      const result = await this.runtimeController.applyFeatureGraphPatch(patch);
+      await this._recordModelHistory(result?.canonicalGraphJson, "AI Edit");
+      this._applySelectionHighlights();
+      this._renderOverlay();
+      await this._persistSessionState();
+    } catch (error) {
+      console.warn("Failed to submit AI edit", error);
+    } finally {
+      this._setAiSubmitBusy(false);
+    }
+  }
+
+  _recordAiPrompt(prompt) {
+    const normalized = String(prompt ?? "").trim();
+    if (!normalized) {
+      return;
+    }
+    this.aiPromptHistory = [
+      ...this.aiPromptHistory.filter((entry) => entry !== normalized),
+      normalized,
+    ].slice(-AI_PROMPT_HISTORY_LIMIT);
+    this.aiPromptHistoryCursor = null;
+    this.aiPromptDraft = "";
+    this._scheduleSessionPersist();
+  }
+
+  _cycleAiPromptHistory(direction) {
+    if (!this.aiPromptInput || this.aiPromptHistory.length === 0) {
+      return;
+    }
+    if (this.aiPromptHistoryCursor === null) {
+      this.aiPromptDraft = this.aiPromptInput.value ?? "";
+      this.aiPromptHistoryCursor = this.aiPromptHistory.length;
+    }
+
+    const nextCursor = Math.max(0, Math.min(
+      this.aiPromptHistory.length,
+      this.aiPromptHistoryCursor + direction,
+    ));
+    this.aiPromptHistoryCursor = nextCursor;
+    const nextValue = nextCursor === this.aiPromptHistory.length
+      ? this.aiPromptDraft
+      : this.aiPromptHistory[nextCursor];
+    this.aiPromptInput.value = nextValue;
+    this.aiPromptInput.setSelectionRange(nextValue.length, nextValue.length);
+  }
+
+  _normalizeAiPromptHistory(history) {
+    if (!Array.isArray(history)) {
+      return [];
+    }
+    const normalized = [];
+    for (const entry of history) {
+      const prompt = String(entry ?? "").trim();
+      if (prompt && !normalized.includes(prompt)) {
+        normalized.push(prompt);
+      }
+    }
+    return normalized.slice(-AI_PROMPT_HISTORY_LIMIT);
+  }
+
+  _setAiSubmitBusy(busy) {
+    if (this.aiSubmitButton) {
+      this.aiSubmitButton.disabled = Boolean(busy);
+      this.aiSubmitButton.title = busy ? "Submitting" : "Submit prompt";
+      this.aiSubmitButton.setAttribute("aria-label", busy ? "Submitting" : "Submit prompt");
+    }
+  }
+
+  _setAiKeyStatus(message) {
+    if (this.aiKeyStatusElement) {
+      this.aiKeyStatusElement.textContent = message;
+    }
+  }
+
+  _currentAiSelectionContext() {
+    return {
+      mode: this.selectionPipeline.selectionMode,
+      selectedObjectIds: [...this.selectionPipeline.selectedObjectIds],
+      hoveredObjectId: this.hoveredObjectId,
+      hoveredSelection: this.hoveredHit?.selection ? structuredClone(this.hoveredHit.selection) : null,
+    };
+  }
+
+  _currentAiProvenanceContext() {
+    const selector = this.hoveredHit?.selection?.selector ?? null;
+    return selector ? structuredClone(selector) : null;
+  }
+
+  _currentAiViewContext() {
+    return {
+      projection: this.viewport.camera.isOrthographicCamera ? "orthographic" : "perspective",
+      position: this._roundedVector(this.viewport.camera.position),
+      target: this._roundedVector(this.viewport.controls.target),
+      zoom: this.viewport.camera.zoom,
+    };
   }
 
   async _compressModelScript() {

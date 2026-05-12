@@ -75,6 +75,23 @@ System rules:
 - redundant operations may be collapsed only when safe
 - correctness must be preserved over compactness
 
+## 3.3 Parameter Model
+Parameters are first-class feature-graph data.
+
+The system MUST support:
+- named parameters for feature dimensions and modeling intent
+- parameter creation from user input and AI-assisted changes
+- parameter references inside feature definitions
+- parameter updates that preserve deterministic replay
+- parameter insertion, renaming, deletion, and value editing through controlled UI
+- parameter binding to literal values or parameter names inside feature definitions
+
+Parameters:
+- belong to the feature graph
+- are not a separate modeling system
+- may be surfaced in the UI only through controlled editing interfaces
+- must remain reproducible from the feature graph and its history
+
 ## 4. Interaction Philosophy
 The UI is non-parametric-first.
 
@@ -268,6 +285,97 @@ It must not:
 
 The Feature Graph object remains the only source of truth.
 
+## 4.6 AI Prompt Interface
+The system MUST provide a prompt-based AI editing interface adjacent to the feature graph.
+
+The interface MUST:
+- present a simple prompt text box for AI-assisted feature-graph changes
+- accept a user prompt plus the current selection as context
+- treat the current selection and its provenance as pre-context
+- include the current feature graph schema in the prompt context
+- include the current feature graph snapshot in the prompt context
+- include a current-view snapshot in the prompt context
+- include feature provenance needed to identify the intended edit target
+- support suggested changes such as resizing primitives or modifying feature parameters
+
+Context assembly MUST include:
+- feature graph schema
+- current feature graph snapshot
+- current selection
+- selection provenance
+- current view snapshot
+- user prompt text
+
+The AI output MUST:
+- describe changes to the current feature graph only
+- return a patch or diff against the current feature graph rather than a full replacement when possible
+- remain machine-applicable and deterministic
+- not directly mutate meshes or viewer geometry
+- not bypass the feature graph
+
+AI prompt behavior MUST be feature-graph aware and selection-aware.
+AI suggestions MUST be applied only through validated feature-graph edits.
+
+AI provider support MUST include:
+- OpenAI
+- Claude
+- Gemini
+- Grok
+
+API key handling requirements:
+- provider API keys MUST be stored locally in an encrypted, origin-scoped vault
+- keys MUST NOT be sent to a backend proxy
+- the system SHOULD use platform-backed secure storage when available
+- the system MUST provide a local encrypted fallback when platform storage is unavailable
+- keys are user-controlled and may be removed at any time
+
+Security boundary:
+- the system cannot guarantee that a compromised local device is unobservable
+- the system MUST minimize key exposure and keep keys outside remote application state
+- no provider key may be exposed in the feature graph, prompt history, or exported model data
+
+## 4.7 Parameter Editor
+The system MUST provide a controlled parameter editing UI for feature-graph parameters.
+
+The parameter editor:
+- is separate from raw feature-graph editing
+- is an interactive JSON-tree-style view of editable parameter data, not an editable feature-graph editor
+- is colocated with the feature graph view and rendered below the feature graph title
+- appears above the feature graph display area inside the feature graph group or component
+- supports editing parameter names, numeric values, and parameter references
+- supports adding and removing parameters
+- updates the rendered feature graph immediately when a parameter changes
+
+Parameter editor layout:
+- add-parameter control near the feature-graph controls such as compress and copy
+- parameter name field on the left
+- delete control on the far side of the parameter row
+- slider with full-width allocation for the remaining row space
+- manual numeric input field adjacent to the slider with minimal width
+
+Parameter behavior:
+- parameter sliders MUST update the feature graph preview and commit pipeline instantly
+- changing a parameter MUST redraw affected geometry through the feature graph, not by direct graph mutation
+- a parameter may be assigned a literal value or referenced by name inside the feature graph
+- parameter deletion MUST warn when the parameter is in use
+- when deletion is confirmed for an in-use parameter, references MUST be replaced with the parameter's current value at the time of deletion
+- the editor MUST preserve deterministic replay after any parameter change
+- the editor MUST keep selection and provenance intact while parameter-driven redraw is in progress
+
+Default numeric range:
+- default minimum is `-100`
+- default maximum is `+100`
+- default initial value is `0`
+- range tuning MAY be exposed in settings if needed
+
+The parameter editor MUST NOT:
+- expose raw feature-graph structure editing
+- allow users to directly edit feature graph topology or dependencies
+- bypass validation when adding, renaming, deleting, or rebinding parameters
+
+Parameter editing MUST remain feature-graph-backed and read from the current model state.
+The feature graph remains read-only in this UI.
+
 ## 5. Tooling Scope (V1)
 Required tools:
 - selection (face, edge, object)
@@ -459,6 +567,21 @@ Rules:
 - feature graph JSON persistence
 - TypeScript export generation from feature graph
 
+### 8.7 AI Editing Layer
+- prompt text box for AI-assisted feature-graph edits
+- local prompt assembly from schema, snapshot, selection, provenance, and user prompt
+- provider abstraction for OpenAI, Claude, Gemini, and Grok
+- local encrypted API-key vault
+- patch/diff application against the feature graph
+- validated feature-graph mutation only
+
+Rules:
+- AI outputs MUST be applied as feature-graph patches or equivalent machine-applicable diffs
+- AI outputs MUST NOT mutate meshes directly
+- AI outputs MUST NOT bypass the feature graph
+- AI outputs MUST NOT require a backend proxy
+- AI key usage MUST remain origin-scoped and local to the app
+
 ## 9. Testing and Behavioral Consistency (Non-Optional)
 The system MUST implement deterministic, automated, end-to-end testing for all user-facing modeling tools using Playwright.
 
@@ -631,9 +754,6 @@ Tests MUST assert all of the following after each operation:
 - additional line draws on an already split face MUST modify the originating sketch when sketch continuation semantics apply
 - tests MUST fail if a new split feature is created instead of re-entering the upstream sketch under sketch continuation semantics
 - tests MUST fail if the implementation produces overlay geometry, offset fans, or viewer-side fake splits
-- additional line draws on an already split face MUST modify the originating sketch when sketch continuation semantics apply
-- tests MUST fail if a new split feature is created instead of re-entering the upstream sketch under sketch continuation semantics
-- tests MUST fail if the implementation produces overlay geometry, offset fans, or viewer-side fake splits
 - committed sketch-on-face results MUST have no residual overlay geometry
 - committed sketch-on-face results MUST be verified as real BREP topology changes
 
@@ -694,6 +814,41 @@ Long-term requirements for the feature graph:
 - stable (predictable updates)
 - editable (supports safe modification)
 - testable (fully asserted through E2E workflows)
+
+## 9.10 AI Editing Validation (Non-Optional)
+The AI editing interface MUST be tested as part of the application contract.
+
+Tests MUST validate:
+- prompt assembly includes feature graph schema, current feature graph snapshot, current selection, provenance, current view snapshot, and user prompt
+- AI output is a patch or diff against the current feature graph, not a mesh edit
+- AI output mutates the feature graph only through validated edits
+- AI editing works without a backend proxy
+- provider configuration does not leak API keys into feature graph data or exported model data
+- provider switches remain local and deterministic
+
+Tests SHOULD validate:
+- parameter creation and parameter updates through AI-assisted edits
+- selection-aware edits target the intended face or object
+- provenance-aware edits preserve downstream correctness
+
+## 9.11 Parameter Editing Validation (Non-Optional)
+The parameter editor MUST be covered by automated E2E tests.
+
+Tests MUST validate:
+- parameter creation from the UI add control
+- parameter renaming in the parameter list
+- slider movement updates the live feature graph preview immediately
+- numeric input and slider stay synchronized
+- parameter deletion warning when the parameter is in use
+- confirmation behavior when deleting an in-use parameter
+- replacement of in-use references with the parameter's current value on confirmed deletion
+- redraw behavior after parameter changes remains deterministic
+- the feature graph itself remains read-only in the UI
+
+Tests SHOULD validate:
+- parameter values default to the expected range and center value
+- parameter edits preserve provenance and selection context
+- parameter-driven redraws preserve selection visibility and hit testing
 
 ## 10. Performance Requirements
 System requirements:

@@ -3,11 +3,11 @@ import { operationFromFeature, orderedFeatures } from "./feature-store.js";
 
 const AXES = ["x", "y", "z"];
 
-export function replayFeaturesToSceneState({ features, exactBackend = "feature-replay:no-exact-kernel" } = {}) {
+export function replayFeaturesToSceneState({ features, parameters = [], exactBackend = "feature-replay:no-exact-kernel" } = {}) {
   const sceneState = {};
 
   for (const feature of orderedFeatures(features)) {
-    applyFeatureToSceneState(sceneState, feature);
+    applyFeatureToSceneState(sceneState, feature, { parameters });
   }
 
   return {
@@ -18,13 +18,13 @@ export function replayFeaturesToSceneState({ features, exactBackend = "feature-r
   };
 }
 
-export function replayFeaturesToShapes({ features, r, sai, bakeObjectRotations = true }) {
+export function replayFeaturesToShapes({ features, parameters = [], r, sai, bakeObjectRotations = true }) {
   if (!r || !sai) {
     throw new Error("Feature replay requires modeling runtime and 3DSAI library");
   }
 
   const ordered = orderedFeatures(features);
-  const context = createShapeReplayContext({ features: ordered, r, sai, bakeObjectRotations });
+  const context = createShapeReplayContext({ features: ordered, parameters, r, sai, bakeObjectRotations });
   for (const feature of ordered) {
     applyFeature(context, feature);
   }
@@ -45,7 +45,7 @@ export function replayFeaturesToShapes({ features, r, sai, bakeObjectRotations =
 }
 
 export function applyFeature(context, feature) {
-  const operation = operationFromFeature(feature);
+  const operation = operationFromFeature(feature, { parameters: context.parameters ?? [] });
   const targetId = operation.targetId;
   const current = targetId ? context.objectValues.get(targetId) : null;
 
@@ -86,8 +86,8 @@ export function applyFeature(context, feature) {
   }
 }
 
-function applyFeatureToSceneState(sceneState, feature) {
-  const operation = operationFromFeature(feature);
+function applyFeatureToSceneState(sceneState, feature, { parameters = [] } = {}) {
+  const operation = operationFromFeature(feature, { parameters });
   const target = operation.targetId ? sceneState[operation.targetId] : null;
 
   switch (operation.type) {
@@ -234,15 +234,16 @@ function projectedTargetBounds(state, axis) {
   return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
 }
 
-function createShapeReplayContext({ features, r, sai, bakeObjectRotations = true }) {
+function createShapeReplayContext({ features, parameters = [], r, sai, bakeObjectRotations = true }) {
   return {
     r,
     sai,
+    parameters,
     bakeObjectRotations,
     objectOrder: [],
     objectValues: new Map(),
     objectState: new Map(),
-    editableTargets: editableTargetIds(features),
+    editableTargets: editableTargetIds(features, parameters),
   };
 }
 
@@ -407,10 +408,10 @@ function firstShape(objectShapes) {
   return null;
 }
 
-function editableTargetIds(features) {
+function editableTargetIds(features, parameters = []) {
   const editableTargets = new Set();
   for (const feature of features) {
-    const operation = operationFromFeature(feature);
+    const operation = operationFromFeature(feature, { parameters });
     if (!operation.targetId) {
       continue;
     }

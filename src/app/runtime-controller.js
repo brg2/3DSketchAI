@@ -6,14 +6,19 @@ import { validateOperation } from "../operation/operation-validator.js";
 import { ModelScriptStore } from "../persistence/model-script-store.js";
 import { applyOperationToFeatureGraph } from "../feature/feature-resolution.js";
 import { operationFromFeature } from "../feature/feature-store.js";
+import { applyFeatureGraphPatch } from "../feature/feature-graph-patch.js";
+import { assembleAiPromptContext, aiSystemPrompt } from "../ai/ai-context.js";
+import { requestAiFeatureGraphPatch } from "../ai/ai-providers.js";
+import { ApiKeyVault } from "../ai/api-key-vault.js";
 import { OPERATION_TYPES } from "../operation/operation-types.js";
 
 export class RuntimeController {
-  constructor({ canonicalModel, modelExecutor, representationStore, modelScriptStore, onCanonicalCodeChanged, onPreviewChanged } = {}) {
+  constructor({ canonicalModel, modelExecutor, representationStore, modelScriptStore, apiKeyVault, onCanonicalCodeChanged, onPreviewChanged } = {}) {
     this.canonicalModel = canonicalModel || new CanonicalModel();
     this.modelExecutor = modelExecutor || new ModelExecutor();
     this.representationStore = representationStore || new RepresentationStore();
     this.modelScriptStore = modelScriptStore || new ModelScriptStore();
+    this.apiKeyVault = apiKeyVault || new ApiKeyVault();
     this.onCanonicalCodeChanged = onCanonicalCodeChanged || (() => {});
     this.onPreviewChanged = onPreviewChanged || (() => {});
     this._activeSession = null;
@@ -80,7 +85,8 @@ export class RuntimeController {
 
     const exactRepresentation = await this._executeModelForDisplay({
       features: nextFeatures,
-      operations: nextFeatures.map((feature) => operationFromFeature(feature)),
+      parameters: this.canonicalModel.getParameters(),
+      operations: nextFeatures.map((feature) => operationFromFeature(feature, { parameters: this.canonicalModel.getParameters() })),
       sceneState: this.representationStore.getExactSceneState(),
     });
 
@@ -106,6 +112,7 @@ export class RuntimeController {
     const sceneState = cleanSlate ? {} : this.representationStore.getExactSceneState();
     const exactRepresentation = await this._executeModelForDisplay({
       features: this.canonicalModel.getFeatures(),
+      parameters: this.canonicalModel.getParameters(),
       operations: this.canonicalModel.getOperations(),
       sceneState,
     });
@@ -131,6 +138,7 @@ export class RuntimeController {
 
     const exactRepresentation = await this._executeModelForDisplay({
       features: this.canonicalModel.getFeatures(),
+      parameters: this.canonicalModel.getParameters(),
       operations: this.canonicalModel.getOperations(),
       sceneState: {},
     });
@@ -194,6 +202,63 @@ export class RuntimeController {
     this.onCanonicalCodeChanged(this.canonicalModel.toFeatureGraphJSON());
   }
 
+  async applyFeatureGraphPatch(patch) {
+    const result = applyFeatureGraphPatch({
+      features: this.canonicalModel.getFeatures(),
+      parameters: this.canonicalModel.getParameters(),
+      patch,
+    });
+    const exactRepresentation = await this._executeModelForDisplay({
+      features: result.features,
+      parameters: result.parameters,
+      operations: result.features.map((feature) => operationFromFeature(feature, { parameters: result.parameters })),
+      sceneState: this.representationStore.getExactSceneState(),
+    });
+    this.canonicalModel.replaceGraph({ features: result.features, parameters: result.parameters });
+    const featureGraphJson = this.canonicalModel.toFeatureGraphJSON();
+    this._lastExactBackend = exactRepresentation.exactBackend;
+    this.representationStore.replaceWithExact(exactRepresentation);
+    await this.modelScriptStore.saveScript(featureGraphJson);
+    this.onCanonicalCodeChanged(featureGraphJson);
+    return {
+      canonicalGraphJson: featureGraphJson,
+      exactRepresentation,
+      patch: result.patch,
+    };
+  }
+
+  assembleAiContext({ prompt = "", selection = null, provenance = null, view = null } = {}) {
+    return assembleAiPromptContext({
+      graphJson: this.canonicalModel.toFeatureGraphJSON(),
+      featureGraph: this.canonicalModel.getFeatures(),
+      parameters: this.canonicalModel.getParameters(),
+      selection,
+      provenance,
+      view,
+      prompt,
+    });
+  }
+
+  async requestAiPatch({ provider, prompt, selection = null, provenance = null, view = null, fetchImpl } = {}) {
+    const context = this.assembleAiContext({ prompt, selection, provenance, view });
+    const apiKey = await this.apiKeyVault.loadKey(provider);
+    return requestAiFeatureGraphPatch({
+      provider,
+      apiKey,
+      context,
+      systemPrompt: aiSystemPrompt(),
+      fetchImpl,
+    });
+  }
+
+  async saveAiProviderKey(provider, apiKey) {
+    await this.apiKeyVault.saveKey(provider, apiKey);
+  }
+
+  async removeAiProviderKey(provider) {
+    await this.apiKeyVault.removeKey(provider);
+  }
+
   getSnapshot() {
     return {
       hasActiveSession: Boolean(this._activeSession?.isActive()),
@@ -201,6 +266,7 @@ export class RuntimeController {
       canonicalGraphJson: this.canonicalModel.toFeatureGraphJSON(),
       canonicalCode: this.canonicalModel.toFeatureGraphJSON(),
       typescriptExport: this.canonicalModel.toTypeScriptModule(),
+      parameters: this.canonicalModel.getParameters(),
       featureGraph: this.canonicalModel.getFeatures(),
       representation: this.representationStore.snapshot(),
       exactBackend: this._lastExactBackend,
@@ -241,7 +307,9 @@ export class RuntimeController {
   }
 
   _usesExactPreview(operation) {
-    return operation?.type === OPERATION_TYPES.PUSH_PULL;
+    return operation?.type === OPERATION_TYPES.PUSH_PULL &&
+      typeof this.representationStore.getExactSceneState === "function" &&
+      typeof this.representationStore.setPreviewExactRepresentation === "function";
   }
 
   async _updateExactPreview(operation) {
@@ -261,7 +329,8 @@ export class RuntimeController {
     const nextFeatures = featureGraphUpdate.features;
     const exactRepresentation = await this._executeModelForDisplay({
       features: nextFeatures,
-      operations: nextFeatures.map((feature) => operationFromFeature(feature)),
+      parameters: this.canonicalModel.getParameters(),
+      operations: nextFeatures.map((feature) => operationFromFeature(feature, { parameters: this.canonicalModel.getParameters() })),
       sceneState: this.representationStore.getExactSceneState(),
     });
 

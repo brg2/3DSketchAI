@@ -1,6 +1,10 @@
 import { OPERATION_TYPES } from "./operation-types.js";
+import { isParameterReference } from "../feature/feature-parameters.js";
 
 function assertNumber(value, label) {
+  if (isParameterReference(value)) {
+    return;
+  }
   if (typeof value !== "number" || Number.isNaN(value) || !Number.isFinite(value)) {
     throw new Error(`${label} must be a finite number`);
   }

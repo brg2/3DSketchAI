@@ -28,6 +28,18 @@
   box-sizing: border-box;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 html,
 body {
   margin: 0;
@@ -812,7 +824,8 @@ body.code-collapsed .code-panel {
   min-height: 0;
 }
 
-.panel-page.active[data-panel-page-content="settings"] {
+.panel-page.active[data-panel-page-content="settings"],
+.panel-page.active[data-panel-page-content="ai"] {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 2px;
@@ -872,10 +885,91 @@ body.code-collapsed .code-panel {
   overflow: auto;
 }
 
+.ai-edit-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  flex: 0 0 auto;
+}
+
+.ai-prompt-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 8px;
+  align-items: center;
+}
+
+.ai-prompt-row input,
+.settings-field input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--control-bg);
+  color: var(--text);
+  font: inherit;
+  min-height: 34px;
+  padding: 7px 12px;
+}
+
+.ai-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.ai-submit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--accent);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ai-submit-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ai-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ai-status:empty {
+  display: none;
+}
+
 .settings-list {
   display: grid;
   grid-template-columns: 1fr;
   gap: 12px;
+}
+
+.settings-group {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-group h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 800;
 }
 
 .settings-btn {

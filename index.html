@@ -175,10 +175,40 @@
             </div>
           </div>
           <pre id="code-view" aria-label="Read-only Feature Graph Projection" aria-readonly="true" data-readonly-projection="true"></pre>
+          <div class="ai-edit-panel">
+            <div class="ai-prompt-row">
+              <label class="sr-only" for="ai-prompt">Prompt</label>
+              <input id="ai-prompt" type="text" spellcheck="true" autocomplete="off" placeholder="Ask AI to edit the feature graph" />
+              <button id="ai-submit" class="ai-submit-btn" type="button" aria-label="Submit prompt" title="Submit prompt">
+                <span aria-hidden="true">↑</span>
+              </button>
+            </div>
+          </div>
         </div>
         <div class="panel-page" data-panel-page-content="settings">
           <h2>Settings</h2>
           <div class="settings-list">
+            <div class="settings-group">
+              <h3>AI Provider</h3>
+              <label class="settings-field" for="ai-provider">
+                <span>Provider</span>
+                <select id="ai-provider">
+                  <option value="openai">OpenAI</option>
+                  <option value="claude">Claude</option>
+                  <option value="gemini">Gemini</option>
+                  <option value="grok">Grok</option>
+                </select>
+              </label>
+              <label class="settings-field" for="ai-api-key">
+                <span>API Key</span>
+                <input id="ai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Stored locally encrypted" />
+              </label>
+              <div class="ai-actions">
+                <button id="ai-key-save" class="settings-btn" type="button">Save Key</button>
+                <button id="ai-key-remove" class="settings-btn" type="button">Remove Key</button>
+              </div>
+              <p id="ai-key-status" class="ai-status" aria-live="polite"></p>
+            </div>
             <button id="grid-toggle" class="settings-btn" type="button" aria-pressed="false">Ground Grid: Off</button>
             <button id="ground-effects-toggle" class="settings-btn" type="button" aria-pressed="true">Ground: On</button>
             <button id="dev-console-toggle" class="settings-btn" type="button" aria-pressed="false">Dev Console: Off</button>

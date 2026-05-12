@@ -1,5 +1,6 @@
 import { OPERATION_TYPES, assertValidOperationType, normalizeOperationParams } from "../operation/operation-types.js";
 import { validateOperation } from "../operation/operation-validator.js";
+import { resolveParameterReferences } from "./feature-parameters.js";
 import { sanitizeSelectionForFeature, selectorFaceIdentity } from "./feature-selectors.js";
 
 export class FeatureStore {
@@ -78,13 +79,13 @@ export function featureFromOperation(operation, { id, dependsOn = [] } = {}) {
   });
 }
 
-export function operationFromFeature(feature) {
+export function operationFromFeature(feature, { parameters = [] } = {}) {
   const normalized = normalizeFeature(feature);
   return validateOperation({
     type: normalized.type,
     targetId: normalized.type === OPERATION_TYPES.CREATE_PRIMITIVE ? null : normalized.target.objectId,
     selection: normalized.target.selection ? structuredClone(normalized.target.selection) : null,
-    params: normalizeOperationParams(normalized.params),
+    params: normalizeOperationParams(resolveParameterReferences(normalized.params, parameters)),
   });
 }
 

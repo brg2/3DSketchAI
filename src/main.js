@@ -8,6 +8,13 @@ const codePanel = document.getElementById("code-panel");
 const codeToggle = document.getElementById("code-toggle");
 const codeCopyButton = document.getElementById("code-copy");
 const codeCompressButton = document.getElementById("code-compress");
+const aiProviderSelect = document.getElementById("ai-provider");
+const aiApiKeyInput = document.getElementById("ai-api-key");
+const aiKeySaveButton = document.getElementById("ai-key-save");
+const aiKeyRemoveButton = document.getElementById("ai-key-remove");
+const aiPromptInput = document.getElementById("ai-prompt");
+const aiSubmitButton = document.getElementById("ai-submit");
+const aiKeyStatusElement = document.getElementById("ai-key-status");
 const docNameElement = document.getElementById("doc-name");
 const modelOpenButton = document.getElementById("model-open");
 const modelOpenInput = document.getElementById("model-open-input");
@@ -56,6 +63,13 @@ if (
   !codeToggle ||
   !codeCopyButton ||
   !codeCompressButton ||
+  !aiProviderSelect ||
+  !aiApiKeyInput ||
+  !aiKeySaveButton ||
+  !aiKeyRemoveButton ||
+  !aiPromptInput ||
+  !aiSubmitButton ||
+  !aiKeyStatusElement ||
   !docNameElement ||
   !modelOpenButton ||
   !modelOpenInput ||
@@ -153,6 +167,13 @@ const app = new SketchApp({
   codeToggle,
   codeCopyButton,
   codeCompressButton,
+  aiProviderSelect,
+  aiApiKeyInput,
+  aiKeySaveButton,
+  aiKeyRemoveButton,
+  aiPromptInput,
+  aiSubmitButton,
+  aiKeyStatusElement,
   docNameElement,
   modelOpenButton,
   modelOpenInput,
@@ -323,6 +344,7 @@ function createTestApi(app) {
         exactBackend: snapshot.exactBackend,
         hasActiveSession: snapshot.hasActiveSession,
         previewFeatureGraphUpdate: snapshot.previewFeatureGraphUpdate ? structuredClone(snapshot.previewFeatureGraphUpdate) : null,
+        parameters: structuredClone(snapshot.parameters ?? []),
         featureGraph: structuredClone(snapshot.featureGraph),
         objects: objectTransformState(snapshot.representation.exactSceneState),
         meshes: meshSummaries(app.representationStore.getSelectableMeshes(), vector),
@@ -345,7 +367,28 @@ function createTestApi(app) {
       };
     },
     getFeatureGraph() {
-      return normalizedFeatureGraphSnapshot(app.runtimeController.getSnapshot().featureGraph);
+      const snapshot = app.runtimeController.getSnapshot();
+      return normalizedFeatureGraphSnapshot(snapshot.featureGraph, snapshot.parameters);
+    },
+    getAiContext(prompt = "") {
+      return app.runtimeController.assembleAiContext({
+        prompt,
+        selection: {
+          mode: app.selectionPipeline.selectionMode,
+          selectedObjectIds: [...app.selectionPipeline.selectedObjectIds],
+          hoveredObjectId: app.hoveredObjectId,
+        },
+        provenance: app.hoveredHit?.selection?.selector ?? null,
+        view: {
+          projection: app.viewport.camera.isOrthographicCamera ? "orthographic" : "perspective",
+          position: vector(app.viewport.camera.position),
+          target: vector(app.viewport.controls.target),
+          zoom: round(app.viewport.camera.zoom),
+        },
+      });
+    },
+    async applyFeatureGraphPatch(patch) {
+      return app.runtimeController.applyFeatureGraphPatch(patch);
     },
     getSelected() {
       return {
@@ -879,7 +922,7 @@ function screenMovePlaneFromPoint(point, camera) {
   return new THREE.Plane().setFromNormalAndCoplanarPoint(normal, point);
 }
 
-function normalizedFeatureGraphSnapshot(features = []) {
+function normalizedFeatureGraphSnapshot(features = [], parameters = []) {
   const childrenById = new Map();
   for (const feature of features) {
     for (const parentId of feature.dependsOn ?? []) {
@@ -891,6 +934,7 @@ function normalizedFeatureGraphSnapshot(features = []) {
 
   return {
     featureCount: features.length,
+    parameters: structuredClone(parameters ?? []),
     features: features.map((feature) => ({
       id: feature.id,
       type: feature.type,

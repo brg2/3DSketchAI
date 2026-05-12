@@ -10,11 +10,11 @@ export class ReplicadOpenCascadeAdapter {
     this._cachedReplicad = null;
   }
 
-  async execute({ features = [] }) {
+  async execute({ features = [], parameters = [] }) {
     const replicad = await this._loadReplicad();
     const sai = create3dsaiModelingLibrary();
-    const transformReplay = replayFeaturesToSceneState({ features, exactBackend: "replicad:transforms" });
-    const replayed = replayFeaturesToShapes({ features, r: replicad, sai, bakeObjectRotations: false });
+    const transformReplay = replayFeaturesToSceneState({ features, parameters, exactBackend: "replicad:transforms" });
+    const replayed = replayFeaturesToShapes({ features, parameters, r: replicad, sai, bakeObjectRotations: false });
     const sceneState = {};
 
     if (!replayed.shape) {

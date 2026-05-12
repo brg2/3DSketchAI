@@ -18,6 +18,17 @@ The canonical feature graph is the absolute, singular source of truth for the mo
 - When additional subdivision lines are added to a face created by an existing sketch-driven split, the originating sketch must be modified and the same split feature recomputed instead of creating incremental split features or overlay geometry.
 - If the kernel is unavailable or execution fails, the application should report the error rather than falling back to an approximate, mesh-based, or non-BREP model.
 
+## AI Editing Contract
+
+AI-assisted editing must remain feature-graph driven and patch-based.
+
+- AI prompt context must include the feature graph schema, current feature graph snapshot, current selection, provenance, current view snapshot, and user prompt.
+- AI output must be a patch or diff against the current feature graph, not a mesh edit or full model replacement.
+- AI edits must be applied only through validated feature-graph mutations.
+- AI must not require a backend proxy.
+- Provider API keys must be stored locally in an encrypted, origin-scoped vault and must never be serialized into feature graph data or exported model state.
+- AI provider switching must remain local and deterministic.
+
 ## Orchestration Workflow
 
 When `INTENT.md` changes:

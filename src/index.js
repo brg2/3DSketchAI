@@ -10,6 +10,22 @@ export {
   orderedFeatures,
 } from "./feature/feature-store.js";
 export {
+  featureGraphSchema,
+  isParameterReference,
+  normalizeParameters,
+  resolveParameterReferences,
+} from "./feature/feature-parameters.js";
+export {
+  applyFeatureGraphPatch,
+  normalizeFeatureGraphPatch,
+} from "./feature/feature-graph-patch.js";
+export {
+  assembleAiPromptContext,
+} from "./ai/ai-context.js";
+export {
+  ApiKeyVault,
+} from "./ai/api-key-vault.js";
+export {
   applyFeature,
   replayFeaturesToSceneState,
   replayFeaturesToShapes,
